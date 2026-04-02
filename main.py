@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from database import init_db
+from routes.auth import router as auth_router
 from routes.cases import router as cases_router
 from routes.evidence_disambig import router as evidence_disambig_router
 from routes.investigate import router as investigate_router
@@ -23,13 +25,27 @@ logger = logging.getLogger(__name__)
 
 
 def check_config_warnings() -> None:
-    """Log warnings for common misconfiguration (non-fatal)."""
+    """
+    BASE_URL: hard fail in production if missing or localhost; warn in development.
+    CONGRESS_API_KEY: always a non-fatal warning when missing.
+    """
+    env = os.getenv("ENV", "development").lower()
     base_url = os.getenv("BASE_URL", "")
-    if not base_url or "localhost" in base_url.lower():
+    bad_base = not base_url or "localhost" in base_url.lower()
+
+    if bad_base:
+        if env == "production":
+            logger.error(
+                "BASE_URL is not set to a production URL. "
+                "Cannot start in production mode with localhost or empty BASE_URL. "
+                "Receipt card OG tags would break public shares. "
+                "Set BASE_URL=https://your-domain.com or ENV=development."
+            )
+            sys.exit(1)
         logger.warning(
             "BASE_URL is not set or points to localhost. "
             "Receipt card OG tags will use localhost URLs. "
-            "Set BASE_URL=https://your-domain.com in .env for public deployments."
+            "Set BASE_URL=https://your-domain.com before public deployment."
         )
 
     if not os.getenv("CONGRESS_API_KEY"):
@@ -48,6 +64,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="OPEN CASE", version="0.2.0", lifespan=lifespan)
+app.include_router(auth_router)
 app.include_router(cases_router)
 app.include_router(investigate_router)
 app.include_router(evidence_disambig_router)
