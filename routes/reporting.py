@@ -89,13 +89,89 @@ def _parse_cross_case_officials(signal: Signal) -> list[str]:
     return [str(x) for x in parsed]
 
 
+def _receipt_crypto_block(case: CaseFile) -> dict[str, Any]:
+    """Display-only crypto metadata for HTML report (fingerprint previews, not full secrets)."""
+    block: dict[str, Any] = {
+        "case_id": str(case.id),
+        "signed_at": case.last_signed_at.isoformat() if case.last_signed_at else None,
+        "algorithm": "Ed25519",
+        "content_hash_preview": "",
+        "signature_preview": "",
+        "public_key_preview": "",
+        "has_material": False,
+    }
+    packed = (case.signed_hash or "").strip()
+    if not packed:
+        return block
+    try:
+        data = json.loads(packed)
+        ch = str(data.get("content_hash") or "")
+        sig = str(data.get("signature") or "")
+        if ch:
+            block["content_hash_preview"] = ch[:16] + ("…" if len(ch) > 16 else "")
+        if sig:
+            block["signature_preview"] = sig[:16] + ("…" if len(sig) > 16 else "")
+        block["has_material"] = bool(ch or sig)
+        pub = os.environ.get("OPEN_CASE_PUBLIC_KEY", "").strip()
+        if pub:
+            block["public_key_preview"] = pub[:16] + ("…" if len(pub) > 16 else "")
+    except json.JSONDecodeError:
+        block["content_hash_preview"] = packed[:24] + ("…" if len(packed) > 24 else packed)
+        block["has_material"] = bool(packed)
+    return block
+
+
+def _source_status_lines(case: CaseFile) -> list[dict[str, Any]]:
+    """Last investigate adapter statuses for journalist-facing disclosure."""
+    raw = getattr(case, "last_source_statuses", None) or ""
+    if not str(raw).strip():
+        return []
+    try:
+        rows = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("display_name") or row.get("adapter") or "Source")
+        st = str(row.get("status") or "").strip().lower()
+        detail = str(row.get("detail") or "").strip()
+        if st == "clean":
+            line = detail if detail else "Completed successfully"
+        elif st == "credential_unavailable":
+            line = "Not checked — credential not configured"
+            if detail:
+                line = f"{line}. {detail}"
+        elif st in ("network_failure", "processing_failure", "credential_failure"):
+            line = detail if detail else st.replace("_", " ")
+        elif st == "rate_limited":
+            line = "Temporarily unavailable"
+            if detail:
+                line = f"{line}: {detail}"
+        elif st == "fallback":
+            line = detail if detail else "Used rate-limited or fallback API path"
+        elif st == "cached":
+            line = detail if detail else "Served from adapter cache"
+        else:
+            line = detail if detail else (st or "unknown")
+        out.append({"display_name": name, "status": st, "line": line})
+    return out
+
+
 def _signal_to_report_row(db: Session, s: Signal) -> dict[str, Any]:
     bd = _sig_breakdown(s)
     rel = float(getattr(s, "relevance_score", 0.0) or bd.get("relevance_score") or 0.0)
     wd = getattr(s, "weight_delta", None)
     xco = _parse_cross_case_officials(s)
+    donor_label = str(bd.get("donor") or s.actor_a or "").strip()
+    official_label = str(bd.get("official") or s.actor_b or "").strip()
     return {
         "id": str(s.id),
+        "entity_name": donor_label or "Unknown donor",
+        "official_name": official_label,
         "type": s.signal_type,
         "weight": s.weight,
         "description": s.description,
@@ -116,8 +192,8 @@ def _signal_to_report_row(db: Session, s: Signal) -> dict[str, Any]:
         "is_featured": (s.weight or 0) >= 0.5,
         "relevance_score": rel,
         "is_donor_cluster": bd.get("kind") == "donor_cluster",
-        "donor_display": str(bd.get("donor") or s.actor_a or ""),
-        "official_display": str(bd.get("official") or s.actor_b or ""),
+        "donor_display": donor_label,
+        "official_display": official_label,
         "total_amount": float(bd.get("total_amount") or s.amount or 0.0),
         "min_gap_days": bd.get("min_gap_days"),
         "exemplar_vote": str(bd.get("exemplar_vote") or ""),
@@ -322,6 +398,8 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
             "sources_checked": len(source_checks),
             "contributors": len(contributors),
         },
+        "receipt_crypto": _receipt_crypto_block(case),
+        "source_status_lines": _source_status_lines(case),
     }
 
 

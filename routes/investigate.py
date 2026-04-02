@@ -765,6 +765,13 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
     if bd.get("kind") != "donor_cluster":
         out["type"] = s.signal_type
         out["signal_type"] = s.signal_type
+    # Journalist/client parity: entity_name must track donor_cluster donor (not only internal label).
+    donor_api = out.get("donor")
+    if donor_api is not None and str(donor_api).strip():
+        out["entity_name"] = str(donor_api).strip()
+    official_api = out.get("official")
+    if official_api is not None and str(official_api).strip():
+        out["official_name"] = str(official_api).strip()
     return out
 
 

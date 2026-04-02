@@ -28,6 +28,11 @@
     .cross-case-flag { font-size: 0.82rem; color: #8b4513; margin: 0.35rem 0; font-weight: 600; }
     .weight-delta { font-size: 0.82rem; color: var(--muted); }
     .signal-compact { font-size: 0.88rem; padding: 0.45rem 0; border-bottom: 1px solid #dcd6cc; }
+    .crypto-box { margin-top: 1.5rem; padding: 1rem 1.1rem; border: 1px solid var(--rule); background: rgba(255,255,255,0.85); font-family: ui-monospace, monospace; font-size: 0.78rem; line-height: 1.5; }
+    .crypto-box h3 { font-family: Georgia, serif; font-size: 0.95rem; margin: 0 0 0.5rem; color: var(--accent); text-transform: uppercase; letter-spacing: 0.06em; }
+    .sources-grid { font-size: 0.88rem; }
+    .sources-grid li { margin: 0.35rem 0; }
+    .src-name { font-weight: 600; }
     details.lead-evidence { margin-top: 0.6rem; font-size: 0.85rem; }
     details.lead-evidence summary { cursor: pointer; color: #1a5276; user-select: none; }
   </style>
@@ -66,7 +71,7 @@
           {% endif %}
           <div class="badge-row">
             {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
-            {% if s.has_lda_filing %}<span class="badge">LDA Filing</span>{% endif %}
+            {% if s.has_lda_filing or (s.breakdown and s.breakdown.get('has_lda_filing')) %}<span class="badge">LDA Filing</span>{% endif %}
             {% if s.has_regulatory_comment and s.regulatory_comment_confidence == 'confirmed' %}<span class="badge">Regulatory Comment</span>{% elif s.has_regulatory_comment %}<span class="badge">Regulatory Comment — probable</span>{% endif %}
             {% if s.has_hearing_appearance %}<span class="badge">Testified at Hearing</span>{% endif %}
             {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
@@ -125,6 +130,14 @@
           <span class="footnote"> · w={{ "%.2f"|format(s.weight) }} · rel={{ "%.2f"|format(s.relevance_score) }}{% if s.confirmed %} · confirmed{% endif %}</span>
           {% if s.is_donor_cluster %}
           <div class="footnote">${{ "{:,.0f}".format(s.total_amount) }} · gap {{ s.min_gap_days if s.min_gap_days is not none else "—" }}d {% if s.exemplar_vote %}· {{ s.exemplar_vote }}{% endif %}</div>
+          <div class="badge-row" style="margin-top:0.35rem;">
+            {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
+            {% if s.has_lda_filing or (s.breakdown and s.breakdown.get('has_lda_filing')) %}<span class="badge">LDA Filing</span>{% endif %}
+            {% if s.has_regulatory_comment and s.regulatory_comment_confidence == 'confirmed' %}<span class="badge">Regulatory Comment</span>{% elif s.has_regulatory_comment %}<span class="badge">Regulatory Comment — probable</span>{% endif %}
+            {% if s.has_hearing_appearance %}<span class="badge">Testified at Hearing</span>{% endif %}
+            {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
+            {% if s.confirmed %}<span class="badge" style="border-color:var(--accent);">Confirmed</span>{% endif %}
+          </div>
           {% endif %}
           {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
           <div class="footnote" style="color:#8b4513;">Cross-case: {{ s.cross_case_appearances }} other official(s)</div>
@@ -149,6 +162,46 @@
       {% else %}
         <p class="footnote">No timeline entries.</p>
       {% endif %}
+    </section>
+    <section>
+      <h2>Sources checked</h2>
+      <p class="footnote">Adapters and enrichment from the most recent investigation run (what was queried and whether credentials were available).</p>
+      {% if report.source_status_lines %}
+        <ul class="sources-grid compact">
+          {% for row in report.source_status_lines %}
+          <li><span class="src-name">{{ row.display_name }}</span> — {{ row.line }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="footnote">No source status recorded yet. Run <code>POST …/investigate</code> to refresh this receipt.</p>
+      {% endif %}
+    </section>
+    <section>
+      <div class="crypto-box">
+        <h3>Receipt seal</h3>
+        <p style="margin:0 0 0.5rem;font-family:Georgia,serif;font-size:0.85rem;color:var(--ink);">
+          This page summarizes the case. The platform signs a canonical payload of case metadata and evidence after each investigation run.
+        </p>
+        <div><strong>Case</strong> {{ report.receipt_crypto.case_id }}</div>
+        <div><strong>Signed</strong> {{ report.receipt_crypto.signed_at or "—" }}</div>
+        <div><strong>Algorithm</strong> {{ report.receipt_crypto.algorithm }}</div>
+        {% if report.receipt_crypto.content_hash_preview %}
+        <div><strong>Content fingerprint (SHA-256)</strong> {{ report.receipt_crypto.content_hash_preview }}</div>
+        {% endif %}
+        {% if report.receipt_crypto.signature_preview %}
+        <div><strong>Signature (Ed25519, base64 prefix)</strong> {{ report.receipt_crypto.signature_preview }}</div>
+        {% endif %}
+        {% if report.receipt_crypto.public_key_preview %}
+        <div><strong>Verify key (public, prefix)</strong> {{ report.receipt_crypto.public_key_preview }}</div>
+        {% endif %}
+        {% if not report.receipt_crypto.has_material %}
+        <p class="footnote" style="margin:0.75rem 0 0;">No cryptographic seal stored for this case yet (signing keys may still be bootstrapping on first deploy).</p>
+        {% else %}
+        <p class="footnote" style="margin:0.75rem 0 0;">
+          <strong>Verification</strong> — This receipt is cryptographically signed. The seal covers the canonical case bundle (case fields and evidence entries) from the last signing run. Any change to signed content would invalidate the digest.
+        </p>
+        {% endif %}
+      </div>
     </section>
   </main>
 </body>
