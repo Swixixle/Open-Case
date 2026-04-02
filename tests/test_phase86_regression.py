@@ -110,7 +110,7 @@ def test_fec_produces_financial_evidence_without_committee_id(
         ),
     ):
         response = client.post(
-            f"/api/v1/cases/{case_id}/investigate",
+            f"/api/v1/cases/{case_id}/investigate?debug=true",
             json={
                 "subject_name": "Todd Young",
                 "investigator_handle": handle,
@@ -124,6 +124,9 @@ def test_fec_produces_financial_evidence_without_committee_id(
     assert data["source_row_counts"]["fec_raw_results"] > 0
     assert data["source_row_counts"]["fec_evidence_written"] > 0
     assert data["pairing_diagnostics"]["temporal"]["financial_entries_seen"] > 0
+    sigs = data.get("signals") or []
+    assert sigs and sigs[0].get("entity_name")
+    assert sigs[0]["entity_name"] != "Signal"
 
 
 def test_congress_produces_votes_for_known_bioguide(client, seeded_public_official_case) -> None:
@@ -181,7 +184,7 @@ def test_congress_produces_votes_for_known_bioguide(client, seeded_public_offici
                 )
             )
             response = client.post(
-                f"/api/v1/cases/{case_id}/investigate",
+                f"/api/v1/cases/{case_id}/investigate?debug=true",
                 json=payload,
                 headers=headers,
             )
@@ -263,7 +266,7 @@ def test_http_error_not_cached_for_congress(client, seeded_public_official_case)
         ),
     ):
         r2 = client.post(
-            f"/api/v1/cases/{case_id}/investigate",
+            f"/api/v1/cases/{case_id}/investigate?debug=true",
             json={
                 "subject_name": "Todd Young",
                 "investigator_handle": handle,

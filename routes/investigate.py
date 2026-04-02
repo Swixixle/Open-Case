@@ -652,6 +652,37 @@ def _signal_breakdown_local(s: Signal) -> dict[str, Any]:
         return {}
 
 
+def _signal_primary_entity_label(s: Signal, bd: dict[str, Any]) -> str:
+    """
+    Journalist-facing label for the primary economic actor (donor / contributor).
+    Never null/undefined in API JSON (avoids {\"entity_name\": null} in clients).
+    """
+    if bd.get("kind") == "donor_cluster":
+        name = str(bd.get("donor") or s.actor_a or "").strip()
+        return name or "Unknown donor"
+    if s.signal_type == "contract_proximity":
+        return str(s.actor_a or "").strip() or "Unknown donor"
+    if s.signal_type == "contract_anomaly":
+        if s.actor_a and str(s.actor_a).strip():
+            return str(s.actor_a).strip()
+        desc = (s.description or "").strip()
+        if desc:
+            return desc if len(desc) <= 160 else desc[:157] + "…"
+        return "Contract anomaly"
+    name = str(s.actor_a or "").strip()
+    if name:
+        return name
+    desc = (s.description or "").strip()
+    return desc or "Signal"
+
+
+def _signal_official_label(s: Signal, bd: dict[str, Any]) -> str:
+    """Subject official / second party; empty string when not applicable or unknown."""
+    if bd.get("kind") == "donor_cluster":
+        return str(bd.get("official") or s.actor_b or "").strip()
+    return str(s.actor_b or "").strip()
+
+
 def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
     bd = _signal_breakdown_local(s)
     featured = (s.weight or 0) >= 0.5 and s.exposure_state != "unresolved"
@@ -669,8 +700,12 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
         except json.JSONDecodeError:
             conf_basis = []
     rel_sc = float(getattr(s, "relevance_score", 0.0) or bd.get("relevance_score") or 0.0)
+    entity_name = _signal_primary_entity_label(s, bd)
+    official_name = _signal_official_label(s, bd)
     out: dict[str, Any] = {
         "id": str(s.id),
+        "entity_name": entity_name,
+        "official_name": official_name,
         "weight": s.weight,
         "weight_explanation": s.weight_explanation,
         "weight_breakdown": bd,
@@ -1054,6 +1089,13 @@ async def run_investigation(
         False,
         description="If true, include signals_unresolved_detail for quarantined clusters.",
     ),
+    debug: bool = Query(
+        False,
+        description=(
+            "If true, include pairing_diagnostics and source_row_counts "
+            "(internal QA; omit for cleaner journalist-facing receipts)."
+        ),
+    ),
     db: Session = Depends(get_db),
     auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, Any] | JSONResponse:
@@ -1131,32 +1173,30 @@ async def run_investigation(
             rs_ready, rs_missing = _required_sources_ready_and_missing(
                 case, source_statuses
             )
-            return JSONResponse(
-                status_code=422,
-                content={
-                    "detail": detail_msg,
-                    "case_id": str(case_id),
-                    "subject_searched": request.subject_name,
-                    "address_searched": request.address,
-                    "sources_checked": len(source_check_tracker),
-                    "cache_hits": cache_hits,
-                    "evidence_entries_created": 0,
-                    "signals_detected": 0,
-                    "signals_unresolved": 0,
-                    "errors": errors,
-                    "signals": [],
-                    "collision_warnings": [],
-                    "source_statuses": source_statuses,
-                    "pairing_diagnostics": {
-                        "temporal": new_temporal_pairing_stats(),
-                        "contract": new_contract_pairing_stats(),
-                    },
-                    "required_sources_ready": rs_ready,
-                    "required_sources_missing": rs_missing,
-                    # TODO: remove after 8.6 verified
-                    "source_row_counts": source_row_counts,
-                },
-            )
+            err_body: dict[str, Any] = {
+                "detail": detail_msg,
+                "case_id": str(case_id),
+                "subject_searched": request.subject_name,
+                "address_searched": request.address,
+                "sources_checked": len(source_check_tracker),
+                "cache_hits": cache_hits,
+                "evidence_entries_created": 0,
+                "signals_detected": 0,
+                "signals_unresolved": 0,
+                "errors": errors,
+                "signals": [],
+                "collision_warnings": [],
+                "source_statuses": source_statuses,
+                "required_sources_ready": rs_ready,
+                "required_sources_missing": rs_missing,
+            }
+            if debug:
+                err_body["pairing_diagnostics"] = {
+                    "temporal": new_temporal_pairing_stats(),
+                    "contract": new_contract_pairing_stats(),
+                }
+                err_body["source_row_counts"] = source_row_counts
+            return JSONResponse(status_code=422, content=err_body)
 
         bg_for_intel = request.bioguide_id or (prof.bioguide_id if prof else None)
         await _ingest_lda_for_unique_donors(
@@ -1322,7 +1362,7 @@ async def run_investigation(
         _required_sources_ready_and_missing(case, source_statuses)
     )
 
-    return {
+    ok_body: dict[str, Any] = {
         "case_id": str(case_id),
         "subject_searched": request.subject_name,
         "address_searched": request.address,
@@ -1331,15 +1371,8 @@ async def run_investigation(
         "evidence_entries_created": len(created_entries),
         "signals_detected": signals_detected_total,
         "signals_unresolved": signals_unresolved_total,
-        # TODO: remove after 8.3 verified
-        "pairing_diagnostics": {
-            "temporal": temporal_pairing_stats,
-            "contract": contract_pairing_stats,
-        },
         "required_sources_ready": required_sources_ready,
         "required_sources_missing": required_sources_missing,
-        # TODO: remove after 8.6 verified
-        "source_row_counts": source_row_counts,
         "errors": errors,
         "signals": signal_payloads_response,
         **(
@@ -1360,6 +1393,13 @@ async def run_investigation(
         ],
         "source_statuses": source_statuses,
     }
+    if debug:
+        ok_body["pairing_diagnostics"] = {
+            "temporal": temporal_pairing_stats,
+            "contract": contract_pairing_stats,
+        }
+        ok_body["source_row_counts"] = source_row_counts
+    return ok_body
 
 
 async def _run_investigation_adapters(
