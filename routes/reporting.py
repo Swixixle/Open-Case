@@ -76,6 +76,63 @@ def _parse_signal_evidence_ids(s: Signal) -> list[str]:
         return []
 
 
+def _parse_cross_case_officials(signal: Signal) -> list[str]:
+    raw = getattr(signal, "cross_case_officials", None)
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(x) for x in parsed]
+
+
+def _signal_to_report_row(db: Session, s: Signal) -> dict[str, Any]:
+    bd = _sig_breakdown(s)
+    rel = float(getattr(s, "relevance_score", 0.0) or bd.get("relevance_score") or 0.0)
+    wd = getattr(s, "weight_delta", None)
+    xco = _parse_cross_case_officials(s)
+    return {
+        "id": str(s.id),
+        "type": s.signal_type,
+        "weight": s.weight,
+        "description": s.description,
+        "explanation": s.weight_explanation,
+        "breakdown": bd,
+        "proximity_summary": s.proximity_summary,
+        "exposure_state": s.exposure_state,
+        "repeat_count": s.repeat_count,
+        "evidence_ids": _parse_signal_evidence_ids(s),
+        "supporting_evidence": _supporting_evidence_summaries(db, s),
+        "parse_warning": s.parse_warning,
+        "confirmed": s.confirmed,
+        "dismissed": s.dismissed,
+        "dismissed_reason": s.dismissed_reason,
+        "days_between": s.days_between,
+        "amount": s.amount,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "is_featured": (s.weight or 0) >= 0.5,
+        "relevance_score": rel,
+        "is_donor_cluster": bd.get("kind") == "donor_cluster",
+        "donor_display": str(bd.get("donor") or s.actor_a or ""),
+        "official_display": str(bd.get("official") or s.actor_b or ""),
+        "total_amount": float(bd.get("total_amount") or s.amount or 0.0),
+        "min_gap_days": bd.get("min_gap_days"),
+        "exemplar_vote": str(bd.get("exemplar_vote") or ""),
+        "exemplar_direction": str(bd.get("exemplar_direction") or ""),
+        "has_jurisdictional_match": bool(bd.get("has_jurisdictional_match")),
+        "has_lda_filing": bool(bd.get("has_lda_filing")),
+        "has_sponsorship": bool(bd.get("has_sponsorship")),
+        "cross_case_appearances": int(getattr(s, "cross_case_appearances", 0) or 0),
+        "cross_case_officials": xco,
+        "weight_delta": float(wd) if wd is not None else None,
+        "new_top_signal": bool(getattr(s, "new_top_signal", False)),
+        "first_appearance": bool(getattr(s, "first_appearance", False)),
+    }
+
+
 def _supporting_evidence_summaries(db: Session, signal: Signal) -> list[dict[str, Any]]:
     raw_ids = _parse_signal_evidence_ids(signal)
     if not raw_ids:
@@ -97,11 +154,14 @@ def _supporting_evidence_summaries(db: Session, signal: Signal) -> list[dict[str
         e = by_id.get(str(u))
         if not e:
             continue
+        display_source = e.source_name
+        if e.entry_type == "lobbying_filing":
+            display_source = "Senate LDA Lobbying Filing"
         ordered.append(
             {
                 "id": str(e.id),
                 "title": e.title or "",
-                "source_name": e.source_name,
+                "source_name": display_source,
                 "date_of_event": e.date_of_event.isoformat() if e.date_of_event else None,
                 "amount": e.amount,
                 "entry_type": e.entry_type,
@@ -165,6 +225,15 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
                 display_recipient = cl
                 break
 
+    signal_rows_active = [
+        _signal_to_report_row(db, s) for s in signals if not s.dismissed
+    ]
+    top_leads = [
+        r
+        for r in signal_rows_active
+        if r["confirmed"] or r["relevance_score"] >= 0.5
+    ][:5]
+
     return {
         "case_id": str(case_id),
         "case_number": str(case.id).replace("-", "").upper()[:8],
@@ -178,32 +247,8 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
         "opened_at": case.created_at.isoformat() if case.created_at else None,
         "pickup_note": case.pickup_note,
         "summary": case.summary,
-        "signals": [
-            {
-                "id": str(s.id),
-                "type": s.signal_type,
-                "weight": s.weight,
-                "description": s.description,
-                "explanation": s.weight_explanation,
-                "breakdown": _sig_breakdown(s),
-                "proximity_summary": s.proximity_summary,
-                "exposure_state": s.exposure_state,
-                "repeat_count": s.repeat_count,
-                "evidence_ids": _parse_signal_evidence_ids(s),
-                "supporting_evidence": _supporting_evidence_summaries(db, s),
-                "parse_warning": s.parse_warning,
-                "confirmed": s.confirmed,
-                "dismissed": s.dismissed,
-                "dismissed_reason": s.dismissed_reason,
-                "days_between": s.days_between,
-                "amount": s.amount,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-                "is_featured": (s.weight or 0) >= 0.5,
-                "relevance_score": float(getattr(s, "relevance_score", 0.0) or 0.0),
-            }
-            for s in signals
-            if not s.dismissed
-        ],
+        "signals": signal_rows_active,
+        "top_leads": top_leads,
         "dismissed_signals": [
             {
                 "id": str(s.id),
@@ -264,6 +309,7 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
             "signals_detected": len(signals),
             "signals_confirmed": sum(1 for s in signals if s.confirmed),
             "signals_dismissed": sum(1 for s in signals if s.dismissed),
+            "top_leads_count": len(top_leads),
             "sources_checked": len(source_checks),
             "contributors": len(contributors),
         },

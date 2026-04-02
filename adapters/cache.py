@@ -81,6 +81,7 @@ def response_from_cache_dict(d: dict[str, Any]) -> AdapterResponse:
         retrieved_at=d.get("retrieved_at") or "",
         result_hash=d.get("result_hash") or "",
         parse_warning=d.get("parse_warning"),
+        credential_mode=d.get("credential_mode"),
     )
 
 
@@ -104,6 +105,7 @@ def store_cached_response(
             "retrieved_at": response.retrieved_at,
             "result_hash": response.result_hash,
             "parse_warning": response.parse_warning,
+            "credential_mode": response.credential_mode,
             "results": [
                 {
                     "source_name": r.source_name,

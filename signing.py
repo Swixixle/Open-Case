@@ -24,7 +24,12 @@ from cryptography.hazmat.primitives.serialization import (
 
 
 def _load_private_key() -> Ed25519PrivateKey | None:
-    raw = os.environ.get("OPEN_CASE_PRIVATE_KEY", "")
+    from core.credentials import CredentialRegistry, CredentialUnavailable
+
+    try:
+        raw = CredentialRegistry.get_credential("open_case_signing") or ""
+    except CredentialUnavailable:
+        raw = ""
     if not raw:
         return None
     return load_der_private_key(base64.b64decode(raw), password=None)

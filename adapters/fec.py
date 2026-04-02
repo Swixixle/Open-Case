@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter, apply_collision_rule
+from core.credentials import CredentialRegistry, CredentialUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,13 @@ class FECAdapter(BaseAdapter):
     BASE_URL = "https://api.open.fec.gov/v1"
 
     async def search(self, query: str, query_type: str = "person") -> AdapterResponse:
-        api_key = os.getenv("FEC_API_KEY", "DEMO_KEY")
-        key_source = "FEC_API_KEY env" if os.getenv("FEC_API_KEY") else "default DEMO_KEY"
+        key_from_env = bool(CredentialRegistry.get_adapter_status("fec")["key_present"])
+        try:
+            api_key = CredentialRegistry.get_credential("fec") or "DEMO_KEY"
+        except CredentialUnavailable:
+            api_key = "DEMO_KEY"
+        cred_mode = "ok" if key_from_env else "fallback"
+        key_source = "FEC_API_KEY env" if key_from_env else "registry_fallback"
         try:
             if query_type == "committee":
                 params: dict[str, str | int | bool] = {
@@ -112,6 +117,7 @@ class FECAdapter(BaseAdapter):
             if not items:
                 empty = self._make_empty_response(query)
                 empty.result_hash = raw_hash
+                empty.credential_mode = cred_mode
                 return empty
 
             unique_names = {
@@ -174,6 +180,7 @@ class FECAdapter(BaseAdapter):
                 results=results,
                 found=True,
                 result_hash=raw_hash,
+                credential_mode=cred_mode,
             )
 
         except Exception as e:
@@ -183,4 +190,5 @@ class FECAdapter(BaseAdapter):
                 results=[],
                 found=False,
                 error=str(e),
+                credential_mode=cred_mode,
             )

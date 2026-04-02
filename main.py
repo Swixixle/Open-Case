@@ -15,6 +15,8 @@ from routes.evidence_disambig import router as evidence_disambig_router
 from routes.investigate import router as investigate_router
 from routes.reporting import router as reporting_router
 from routes.subjects import router as subjects_router
+from routes.system import router as system_router
+from core.credentials import CredentialRegistry
 from signing import bootstrap_env_keys
 
 _ROOT = Path(__file__).resolve().parent
@@ -49,7 +51,7 @@ def check_config_warnings() -> None:
             "Set BASE_URL=https://your-domain.com before public deployment."
         )
 
-    if not os.getenv("CONGRESS_API_KEY"):
+    if not CredentialRegistry.get_credential("congress"):
         logger.warning(
             "CONGRESS_API_KEY is not set. "
             "Congress.gov member search and name-based vote matching will be limited. "
@@ -72,3 +74,4 @@ app.include_router(investigate_router)
 app.include_router(evidence_disambig_router)
 app.include_router(reporting_router)
 app.include_router(subjects_router)
+app.include_router(system_router)

@@ -40,6 +40,8 @@ class AdapterResponse:
     retrieved_at: str = field(default_factory=_utc_iso_z)
     result_hash: str = ""
     parse_warning: str | None = None
+    # Credential pipeline: ok | fallback | credential_unavailable | skipped
+    credential_mode: str | None = None
 
 
 class BaseAdapter:

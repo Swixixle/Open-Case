@@ -96,6 +96,10 @@ def build_signals_from_proximity(
             "committee_label": cluster.committee_label,
             "has_collision": cluster.has_collision,
             "has_jurisdictional_match": cluster.has_jurisdictional_match,
+            "has_lda_filing": cluster.has_lda_filing,
+            "has_sponsorship": any(
+                bool(x.get("subject_is_sponsor")) for x in cluster.supporting_pairs
+            ),
             "relevance_score": rel_score,
         }
 

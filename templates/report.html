@@ -20,6 +20,16 @@
     .receipt:hover { background: var(--accent); }
     ul.compact { padding-left: 1.1rem; margin: 0.35rem 0; }
     .signals-muted { opacity: 0.75; }
+    .lead-card { border: 1px solid var(--rule); padding: 1rem 1.1rem; margin: 0 0 1rem; background: rgba(255,255,255,0.72); }
+    .lead-donor { font-size: 1.1rem; display: block; margin-bottom: 0.2rem; }
+    .lead-amount { font-weight: 700; color: var(--accent); }
+    .badge-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.5rem 0; }
+    .badge { font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; padding: 0.2rem 0.45rem; border: 1px solid var(--rule); background: #fff; color: var(--ink); font-family: system-ui, sans-serif; }
+    .cross-case-flag { font-size: 0.82rem; color: #8b4513; margin: 0.35rem 0; font-weight: 600; }
+    .weight-delta { font-size: 0.82rem; color: var(--muted); }
+    .signal-compact { font-size: 0.88rem; padding: 0.45rem 0; border-bottom: 1px solid #dcd6cc; }
+    details.lead-evidence { margin-top: 0.6rem; font-size: 0.85rem; }
+    details.lead-evidence summary { cursor: pointer; color: #1a5276; user-select: none; }
   </style>
 </head>
 <body>
@@ -38,82 +48,87 @@
       <a class="receipt" href="/api/v1/cases/{{ report.case_id }}/report/card">Receipt card (share)</a>
     </section>
     <section>
-      <h2>Signals</h2>
+      <h2>Top leads</h2>
+      <p class="footnote">Up to five donors worth follow-up: <strong>confirmed</strong> or <strong>relevance score ≥ 0.5</strong>.</p>
+      {% if report.top_leads %}
+        {% for s in report.top_leads %}
+        <article class="lead-card">
+          {% if s.is_donor_cluster %}
+          <h3><span class="lead-donor">{{ s.donor_display }}</span> — <span class="lead-amount">${{ "{:,.0f}".format(s.total_amount) }}</span> <span style="font-weight:400;font-size:0.95rem;color:var(--muted);">in window</span></h3>
+          <p class="footnote" style="margin-top:0.25rem;">
+            Tightest gap: <strong>{{ s.min_gap_days if s.min_gap_days is not none else "—" }}</strong> days
+            {% if s.exemplar_direction %} · {{ s.exemplar_direction }}{% endif %}
+            {% if s.exemplar_vote %} · Vote: <strong>{{ s.exemplar_vote }}</strong>{% endif %}
+          </p>
+          {% else %}
+          <h3>{{ s.description }}</h3>
+          <p class="footnote">Type: {{ s.type }} · Weight: {{ "%.2f"|format(s.weight) }}</p>
+          {% endif %}
+          <div class="badge-row">
+            {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
+            {% if s.has_lda_filing %}<span class="badge">LDA Filing</span>{% endif %}
+            {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
+            {% if s.confirmed %}<span class="badge" style="border-color:var(--accent);">Confirmed</span>{% endif %}
+          </div>
+          {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
+          <p class="cross-case-flag">This donor has appeared in proximity signals for {{ s.cross_case_appearances }} other official{{ "s" if s.cross_case_appearances != 1 else "" }} in this system.</p>
+          {% if s.cross_case_officials and s.cross_case_officials|length > 0 %}
+          <p class="footnote">Also flagged near: {{ s.cross_case_officials | join(", ") }}</p>
+          {% endif %}
+          {% endif %}
+          {% if s.weight_delta is not none %}
+          <p class="weight-delta">{% if s.weight_delta > 0 %}↑ Weight increased by {{ "%.2f"|format(s.weight_delta) }} since last run{% elif s.weight_delta < 0 %}↓ Weight decreased by {{ "%.2f"|format(-s.weight_delta) }} since last run{% else %}Weight unchanged since last run{% endif %}</p>
+          {% endif %}
+          {% if s.new_top_signal %}<p class="footnote" style="color:var(--accent);font-weight:600;">New top signal — rose into the lead tier since the last run.</p>{% endif %}
+          {% if s.first_appearance %}<p class="footnote">First appearance in this case’s investigation history.</p>{% endif %}
+          {% if s.explanation %}<p>{{ s.explanation }}</p>{% endif %}
+          {% if s.supporting_evidence %}
+          <details class="lead-evidence">
+            <summary>Supporting evidence ({{ s.supporting_evidence|length }})</summary>
+            <div style="margin-top:0.5rem;border-top:1px solid #c9c3b8;padding-top:0.5rem;">
+              {% for ev in s.supporting_evidence %}
+              <div style="font-size:0.8rem;padding:0.25rem 0;border-bottom:1px solid #e0dcd4;">
+                <span style="color:var(--muted);">{{ (ev.date_of_event or '')[:10] if ev.date_of_event else 'Undated' }}</span>
+                {% if ev.source_url %} · <a href="{{ ev.source_url }}" target="_blank" rel="noopener" style="color:#1a5276;">{{ ev.source_name }}</a>{% else %} · {{ ev.source_name }}{% endif %}
+                · {{ (ev.title or '')[:160] }}{% if ev.amount %} · <span style="color:#8b4513;">${{ "{:,.0f}".format(ev.amount) }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </details>
+          {% endif %}
+          {% if s.confirmed and s.repeat_count and s.repeat_count > 1 %}
+          <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);">
+            Signal reinforced {{ s.repeat_count }} times as evidence accumulated.
+            <a href="/api/v1/signals/{{ s.id }}/history" style="color:#1a5276;">View history →</a>
+          </div>
+          {% endif %}
+          {% if s.parse_warning %}
+          <div style="margin-top:0.5rem;padding:0.45rem;background:#fbeaea;border:1px solid #8b2332;font-size:0.75rem;color:#6b1c1c;">
+            Source warning: {{ s.parse_warning[:300] }}
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      {% else %}
+        <p class="footnote">No signals meet the lead threshold yet. Run investigate again after adding evidence, or review all signals below.</p>
+      {% endif %}
+    </section>
+    <section class="signals-muted">
+      <h2>All signals</h2>
+      <p class="footnote">Full ranked list for investigators who want to dig deeper.</p>
       {% if report.signals %}
-        {% set featured = report.signals | selectattr('is_featured') | list %}
-        {% set other = report.signals | rejectattr('is_featured') | list %}
-
-        {% if featured %}
-        <div class="section">
-          <div class="section-title">▶ Notable signals (weight ≥ 0.5)</div>
-          {% for s in featured %}
-          <div class="signal">
-            <strong>{{ s.description }}</strong>
-            <div class="footnote">Type: {{ s.type }} · Weight: {{ "%.2f"|format(s.weight) }} · State: {{ s.exposure_state }}{% if s.proximity_summary %} · {{ s.proximity_summary }}{% endif %}</div>
-            {% if s.explanation %}<p>{{ s.explanation }}</p>{% endif %}
-            {% if s.supporting_evidence %}
-            <div style="margin-top:0.75rem;border-top:1px solid #c9c3b8;padding-top:0.5rem;">
-              <div style="font-size:0.65rem;letter-spacing:0.12em;color:var(--muted);margin-bottom:0.4rem;text-transform:uppercase;">Supporting evidence</div>
-              {% for ev in s.supporting_evidence %}
-              <div style="font-size:0.8rem;padding:0.25rem 0;border-bottom:1px solid #e0dcd4;">
-                <span style="color:var(--muted);">{{ (ev.date_of_event or '')[:10] if ev.date_of_event else 'Undated' }}</span>
-                {% if ev.source_url %} · <a href="{{ ev.source_url }}" target="_blank" rel="noopener" style="color:#1a5276;">{{ ev.source_name }}</a>{% else %} · {{ ev.source_name }}{% endif %}
-                · {{ (ev.title or '')[:120] }}{% if ev.amount %} · <span style="color:#8b4513;">${{ "{:,.0f}".format(ev.amount) }}</span>{% endif %}
-              </div>
-              {% endfor %}
-            </div>
-            {% endif %}
-            {% if s.confirmed and s.repeat_count and s.repeat_count > 1 %}
-            <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);">
-              Signal reinforced {{ s.repeat_count }} times as evidence accumulated.
-              <a href="/api/v1/signals/{{ s.id }}/history" style="color:#1a5276;">View history →</a>
-            </div>
-            {% endif %}
-            {% if s.parse_warning %}
-            <div style="margin-top:0.5rem;padding:0.45rem;background:#fbeaea;border:1px solid #8b2332;font-size:0.75rem;color:#6b1c1c;">
-              Source warning: {{ s.parse_warning[:300] }}
-            </div>
-            {% endif %}
-          </div>
-          {% endfor %}
+        {% for s in report.signals %}
+        <div class="signal-compact">
+          <strong>{{ s.donor_display if s.is_donor_cluster else s.description }}</strong>
+          <span class="footnote"> · w={{ "%.2f"|format(s.weight) }} · rel={{ "%.2f"|format(s.relevance_score) }}{% if s.confirmed %} · confirmed{% endif %}</span>
+          {% if s.is_donor_cluster %}
+          <div class="footnote">${{ "{:,.0f}".format(s.total_amount) }} · gap {{ s.min_gap_days if s.min_gap_days is not none else "—" }}d {% if s.exemplar_vote %}· {{ s.exemplar_vote }}{% endif %}</div>
+          {% endif %}
+          {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
+          <div class="footnote" style="color:#8b4513;">Cross-case: {{ s.cross_case_appearances }} other official(s)</div>
+          {% endif %}
         </div>
-        {% endif %}
-
-        {% if other %}
-        <div class="section signals-muted">
-          <div class="section-title">All other signals ({{ other|length }} additional)</div>
-          {% for s in other %}
-          <div class="signal">
-            <strong>{{ s.description }}</strong>
-            <div class="footnote">Type: {{ s.type }} · Weight: {{ "%.2f"|format(s.weight) }} · State: {{ s.exposure_state }}{% if s.proximity_summary %} · {{ s.proximity_summary }}{% endif %}</div>
-            {% if s.explanation %}<p>{{ s.explanation }}</p>{% endif %}
-            {% if s.supporting_evidence %}
-            <div style="margin-top:0.75rem;border-top:1px solid #c9c3b8;padding-top:0.5rem;">
-              <div style="font-size:0.65rem;letter-spacing:0.12em;color:var(--muted);margin-bottom:0.4rem;text-transform:uppercase;">Supporting evidence</div>
-              {% for ev in s.supporting_evidence %}
-              <div style="font-size:0.8rem;padding:0.25rem 0;border-bottom:1px solid #e0dcd4;">
-                <span style="color:var(--muted);">{{ (ev.date_of_event or '')[:10] if ev.date_of_event else 'Undated' }}</span>
-                {% if ev.source_url %} · <a href="{{ ev.source_url }}" target="_blank" rel="noopener" style="color:#1a5276;">{{ ev.source_name }}</a>{% else %} · {{ ev.source_name }}{% endif %}
-                · {{ (ev.title or '')[:120] }}{% if ev.amount %} · <span style="color:#8b4513;">${{ "{:,.0f}".format(ev.amount) }}</span>{% endif %}
-              </div>
-              {% endfor %}
-            </div>
-            {% endif %}
-            {% if s.confirmed and s.repeat_count and s.repeat_count > 1 %}
-            <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);">
-              Signal reinforced {{ s.repeat_count }} times as evidence accumulated.
-              <a href="/api/v1/signals/{{ s.id }}/history" style="color:#1a5276;">View history →</a>
-            </div>
-            {% endif %}
-            {% if s.parse_warning %}
-            <div style="margin-top:0.5rem;padding:0.45rem;background:#fbeaea;border:1px solid #8b2332;font-size:0.75rem;color:#6b1c1c;">
-              Source warning: {{ s.parse_warning[:300] }}
-            </div>
-            {% endif %}
-          </div>
-          {% endfor %}
-        </div>
-        {% endif %}
+        {% endfor %}
       {% else %}
         <p class="footnote">No active signals.</p>
       {% endif %}

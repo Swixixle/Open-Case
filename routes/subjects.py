@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
@@ -87,7 +86,9 @@ async def search_subjects(
             ),
         }
 
-    api_key = os.getenv("CONGRESS_API_KEY")
+    from core.credentials import CredentialRegistry
+
+    api_key = CredentialRegistry.get_credential("congress")
     if api_key:
         try:
             params: dict[str, str | int] = {

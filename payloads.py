@@ -23,7 +23,7 @@ def _dt_iso(v: Any) -> str | None:
 
 def case_semantic_dict(c: CaseFile) -> dict[str, Any]:
     """Fields that define the case record; excludes counters, signing metadata."""
-    return {
+    base: dict[str, Any] = {
         "id": str(c.id),
         "slug": c.slug,
         "title": c.title,
@@ -37,6 +37,10 @@ def case_semantic_dict(c: CaseFile) -> dict[str, Any]:
         "pickup_note": c.pickup_note or "",
         "is_public": c.is_public,
     }
+    lss = getattr(c, "last_source_statuses", None)
+    if lss:
+        base["last_source_statuses"] = lss
+    return base
 
 
 def evidence_semantic_dict(e: EvidenceEntry) -> dict[str, Any]:

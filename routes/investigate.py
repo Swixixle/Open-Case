@@ -11,11 +11,12 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from auth import require_api_key, require_matching_handle
-from adapters.base import BaseAdapter
+from adapters.base import AdapterResponse, BaseAdapter
 from adapters.cache import get_cached_response, response_from_cache_dict, store_cached_response
 from adapters.congress_votes import CongressVotesAdapter
 from adapters.dedup import is_duplicate, make_evidence_hash
 from adapters.fec import FECAdapter
+from adapters.lda import fetch_lda_filings
 from adapters.indiana_cf import IndianaCFAdapter
 from adapters.indy_gis import IndyGISAdapter
 from adapters.marion_assessor import MarionCountyAssessorAdapter
@@ -32,7 +33,9 @@ from engines.temporal_proximity import detect_proximity
 from models import (
     CaseContributor,
     CaseFile,
+    DonorFingerprint,
     EvidenceEntry,
+    InvestigationRun,
     Investigator,
     Signal,
     SignalAuditLog,
@@ -52,6 +55,228 @@ router = APIRouter(prefix="/api/v1", tags=["investigate"])
 
 # Top donor-cluster signals in POST investigate body (resolved only; see signals_unresolved).
 INVESTIGATE_SIGNALS_RESPONSE_LIMIT = 10
+MAX_LDA_DONORS_PER_RUN = 25
+
+
+def _adapter_registry_key(adapter: BaseAdapter) -> str:
+    if isinstance(adapter, FECAdapter):
+        return "fec"
+    if isinstance(adapter, CongressVotesAdapter):
+        return "congress"
+    if isinstance(adapter, IndyGISAdapter):
+        return "indy_gis"
+    if isinstance(adapter, MarionCountyAssessorAdapter):
+        return "marion_assessor"
+    if isinstance(adapter, USASpendingAdapter):
+        return "usaspending"
+    if isinstance(adapter, IndianaCFAdapter):
+        return "indiana_cf"
+    return "other"
+
+
+def _append_source_status(
+    bucket: list[dict[str, Any]],
+    registry_key: str,
+    response: AdapterResponse,
+    from_cache: bool,
+) -> None:
+    if from_cache:
+        bucket.append(
+            {
+                "adapter": registry_key,
+                "display_name": response.source_name,
+                "status": "cached",
+                "detail": None,
+            }
+        )
+        return
+    mode = response.credential_mode
+    if mode == "fallback":
+        st = "fallback"
+    elif mode == "credential_unavailable":
+        st = "credential_unavailable"
+    elif mode == "ok":
+        st = "clean"
+    else:
+        st = "clean"
+    bucket.append(
+        {
+            "adapter": registry_key,
+            "display_name": response.source_name,
+            "status": st,
+            "detail": response.error,
+        }
+    )
+
+
+def _donor_key_from_signal_row(s: Signal) -> str:
+    bd = _signal_breakdown_local(s)
+    if bd.get("donor"):
+        return str(bd["donor"]).strip().lower()
+    return (s.actor_a or "").strip().lower()
+
+
+async def _ingest_lda_for_unique_donors(
+    db: Session,
+    case_id: uuid.UUID,
+    created_entries: list[EvidenceEntry],
+    investigator: str,
+    source_statuses: list[dict[str, Any]],
+) -> None:
+    seen_pairs: set[tuple[str, str]] = set()
+    for e in created_entries:
+        if e.entry_type != "financial_connection" or e.source_name != "FEC":
+            continue
+        try:
+            raw = json.loads(e.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            raw = {}
+        donor = str(raw.get("contributor_name") or "").strip()
+        org = str(raw.get("contributor_employer") or "").strip()
+        if not donor:
+            continue
+        key = (donor.lower(), org.lower())
+        if key in seen_pairs:
+            continue
+        seen_pairs.add(key)
+        if len(seen_pairs) > MAX_LDA_DONORS_PER_RUN:
+            break
+        try:
+            filings = await fetch_lda_filings(donor, org)
+        except Exception:
+            continue
+        donor_key_norm = donor.strip().lower()
+        for f in filings:
+            uid = f.get("filing_uuid")
+            if not uid:
+                continue
+            rd = {
+                **f,
+                "donor_key": donor_key_norm,
+                "lda_detail_url": f"https://lda.senate.gov/filings/{uid}/",
+            }
+            eh = make_evidence_hash(
+                case_id,
+                "Senate LDA",
+                str(uid),
+                None,
+                None,
+                donor_key_norm,
+            )
+            if is_duplicate(db, case_id, eh):
+                continue
+            fn = str(f.get("filing_year") or "")
+            rn = str(f.get("registrant_name") or "")
+            cn = str(f.get("client_name") or "")
+            entry = EvidenceEntry(
+                case_file_id=case_id,
+                entry_type="lobbying_filing",
+                title=f"Senate LDA Lobbying Filing ({fn}): {rn or cn or uid}",
+                body=(
+                    f"LDA filing {uid}. Registrant: {rn}. Client: {cn}. "
+                    f"Linked research donor key: {donor_key_norm}."
+                ),
+                source_url=f"https://lda.senate.gov/filings/{uid}/",
+                source_name="Senate LDA",
+                adapter_name="Senate LDA",
+                entered_by=investigator,
+                confidence="confirmed",
+                is_absence=False,
+                flagged_for_review=False,
+                raw_data_json=json.dumps(rd, sort_keys=True, default=str),
+                evidence_hash=eh,
+            )
+            db.add(entry)
+            db.flush()
+            sign_evidence_entry(entry)
+            created_entries.append(entry)
+    source_statuses.append(
+        {
+            "adapter": "lda",
+            "display_name": "Senate LDA (Lobbying Disclosure)",
+            "status": "clean",
+            "detail": "Public API; no key required",
+        }
+    )
+
+
+def _apply_cross_case_baseline_and_fingerprints(
+    db: Session,
+    case_id: uuid.UUID,
+    stored_signals: list[Signal],
+    prev_top: list[dict[str, Any]],
+    bioguide_id: str | None,
+) -> None:
+    prev_by_donor = {
+        str(r.get("donor_key") or "").strip().lower(): r
+        for r in prev_top
+        if isinstance(r, dict) and r.get("donor_key")
+    }
+    prev_top_keys = [
+        str(r.get("donor_key") or "").strip().lower()
+        for r in prev_top[:10]
+        if isinstance(r, dict) and r.get("donor_key")
+    ]
+    temporal_resolved = [
+        s
+        for s in stored_signals
+        if s.signal_type == "temporal_proximity" and s.exposure_state != "unresolved"
+    ]
+    temporal_sorted = sorted(
+        temporal_resolved, key=lambda s: float(s.weight or 0.0), reverse=True
+    )
+
+    for i, s in enumerate(temporal_sorted):
+        dk = _donor_key_from_signal_row(s)
+        if not dk:
+            continue
+        cc_count = (
+            db.scalar(
+                select(func.count(func.distinct(DonorFingerprint.case_file_id)))
+                .select_from(DonorFingerprint)
+                .where(
+                    DonorFingerprint.normalized_donor_key == dk,
+                    DonorFingerprint.case_file_id != case_id,
+                )
+            )
+            or 0
+        )
+        other_off = db.scalars(
+            select(DonorFingerprint.official_name)
+            .where(
+                DonorFingerprint.normalized_donor_key == dk,
+                DonorFingerprint.case_file_id != case_id,
+            )
+            .distinct()
+        ).all()
+        s.cross_case_appearances = int(cc_count)
+        s.cross_case_officials = json.dumps(
+            [str(x) for x in other_off if x], separators=(",", ":")
+        )
+        prev = prev_by_donor.get(dk)
+        if prev is not None and prev.get("weight") is not None:
+            s.weight_delta = float(s.weight or 0.0) - float(prev["weight"])
+        else:
+            s.weight_delta = None
+        s.first_appearance = prev is None
+        s.new_top_signal = (i < 10) and (dk not in prev_top_keys)
+        db.add(s)
+
+    for s in temporal_sorted[:10]:
+        dk = _donor_key_from_signal_row(s)
+        if not dk:
+            continue
+        db.add(
+            DonorFingerprint(
+                normalized_donor_key=dk,
+                case_file_id=case_id,
+                signal_id=s.id,
+                weight=float(s.weight or 0.0),
+                official_name=(s.actor_b or "").strip() or "Unknown official",
+                bioguide_id=(bioguide_id or "").strip() or None,
+            )
+        )
+    db.flush()
 
 
 def _signal_breakdown_local(s: Signal) -> dict[str, Any]:
@@ -117,9 +342,24 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
                 "median_gap_days": bd.get("median_gap_days"),
                 "exemplar_vote": bd.get("exemplar_vote"),
                 "exemplar_direction": bd.get("exemplar_direction"),
+                "has_lda_filing": bool(bd.get("has_lda_filing")),
             }
         )
-    else:
+    xco: list[str] = []
+    if getattr(s, "cross_case_officials", None):
+        try:
+            raw_x = json.loads(s.cross_case_officials)
+            xco = raw_x if isinstance(raw_x, list) else []
+        except json.JSONDecodeError:
+            xco = []
+    out["cross_case_appearances"] = int(getattr(s, "cross_case_appearances", 0) or 0)
+    out["cross_case_officials"] = xco
+    wd = getattr(s, "weight_delta", None)
+    out["weight_delta"] = float(wd) if wd is not None else None
+    out["new_top_signal"] = bool(getattr(s, "new_top_signal", False))
+    out["first_appearance"] = bool(getattr(s, "first_appearance", False))
+
+    if bd.get("kind") != "donor_cluster":
         out["type"] = s.signal_type
         out["signal_type"] = s.signal_type
     return out
@@ -455,7 +695,21 @@ async def run_investigation(
     errors: list[str] = []
     source_check_tracker: list[str] = []
     cache_hits: list[str] = []
+    source_statuses: list[dict[str, Any]] = []
     unresolved_payload: list[dict[str, Any]] | None = None
+
+    prev_run_row = db.scalar(
+        select(InvestigationRun)
+        .where(InvestigationRun.case_file_id == case_id)
+        .order_by(InvestigationRun.run_at.desc())
+    )
+    prev_top: list[dict[str, Any]] = []
+    if prev_run_row:
+        try:
+            raw_prev = json.loads(prev_run_row.top_donors or "[]")
+            prev_top = raw_prev if isinstance(raw_prev, list) else []
+        except json.JSONDecodeError:
+            prev_top = []
 
     try:
         _ensure_investigator(db, request.investigator_handle)
@@ -480,9 +734,17 @@ async def run_investigation(
             errors=errors,
             source_check_tracker=source_check_tracker,
             cache_hits=cache_hits,
+            source_statuses=source_statuses,
         )
 
         bg_for_intel = request.bioguide_id or (prof.bioguide_id if prof else None)
+        await _ingest_lda_for_unique_donors(
+            db,
+            case_id,
+            created_entries,
+            request.investigator_handle,
+            source_statuses,
+        )
         await _enrich_fec_evidence_jurisdiction(db, bg_for_intel, created_entries)
 
         substantive = list(
@@ -530,6 +792,14 @@ async def run_investigation(
             stored_by_id.values(), key=lambda s: s.weight or 0.0, reverse=True
         )
 
+        _apply_cross_case_baseline_and_fingerprints(
+            db,
+            case_id,
+            stored_signals,
+            prev_top,
+            bg_for_intel,
+        )
+
         resolved_signals = [
             s for s in stored_signals if s.exposure_state != "unresolved"
         ]
@@ -551,12 +821,42 @@ async def run_investigation(
                 )[:25]
             ]
 
+        temporal_for_run = [
+            s
+            for s in stored_signals
+            if s.signal_type == "temporal_proximity" and s.exposure_state != "unresolved"
+        ]
+        temporal_sorted_run = sorted(
+            temporal_for_run, key=lambda s: float(s.weight or 0.0), reverse=True
+        )
+        top_donor_payload: list[dict[str, Any]] = []
+        for s in temporal_sorted_run[:10]:
+            bd_r = _signal_breakdown_local(s)
+            top_donor_payload.append(
+                {
+                    "donor_key": _donor_key_from_signal_row(s),
+                    "weight": float(s.weight or 0.0),
+                    "min_gap_days": bd_r.get("min_gap_days"),
+                    "total_amount": bd_r.get("total_amount"),
+                }
+            )
+        db.add(
+            InvestigationRun(
+                case_file_id=case_id,
+                signals_detected=signals_detected_total,
+                top_donors=json.dumps(top_donor_payload, separators=(",", ":"), default=str),
+            )
+        )
+
         case_refresh = db.scalar(
             select(CaseFile)
             .options(selectinload(CaseFile.evidence_entries))
             .where(CaseFile.id == case_id)
         )
         if case_refresh:
+            case_refresh.last_source_statuses = json.dumps(
+                source_statuses, separators=(",", ":"), default=str
+            )
             apply_case_file_signature(
                 case_refresh, list(case_refresh.evidence_entries)
             )
@@ -596,6 +896,7 @@ async def run_investigation(
             for e in created_entries
             if e.flagged_for_review and not e.is_absence
         ],
+        "source_statuses": source_statuses,
     }
 
 
@@ -610,6 +911,7 @@ async def _run_investigation_adapters(
     errors: list[str],
     source_check_tracker: list[str],
     cache_hits: list[str],
+    source_statuses: list[dict[str, Any]],
 ) -> None:
     async def get_adapter_response(
         adapter: BaseAdapter, q: str, qt: str = "person"
@@ -624,10 +926,19 @@ async def _run_investigation_adapters(
         return resp, False
 
     async def run_cached(adapter: BaseAdapter, q: str, qt: str = "person") -> None:
+        rk = _adapter_registry_key(adapter)
         try:
             response, from_cache = await get_adapter_response(adapter, q, qt)
         except Exception as e:
             errors.append(f"{adapter.source_name}: {e!s}")
+            source_statuses.append(
+                {
+                    "adapter": rk,
+                    "display_name": adapter.source_name,
+                    "status": "credential_unavailable",
+                    "detail": str(e),
+                }
+            )
             _add_source_log(
                 db,
                 case_id,
@@ -639,6 +950,7 @@ async def _run_investigation_adapters(
                 source_check_tracker,
             )
             return
+        _append_source_status(source_statuses, rk, response, from_cache)
         if from_cache:
             cache_hits.append(adapter.source_name)
         if not response.found:
@@ -662,6 +974,14 @@ async def _run_investigation_adapters(
             )
         except Exception as e:
             errors.append(f"{indy.source_name}: {e!s}")
+            source_statuses.append(
+                {
+                    "adapter": "indy_gis",
+                    "display_name": indy.source_name,
+                    "status": "credential_unavailable",
+                    "detail": str(e),
+                }
+            )
             _add_source_log(
                 db,
                 case_id,
@@ -673,6 +993,7 @@ async def _run_investigation_adapters(
                 source_check_tracker,
             )
         else:
+            _append_source_status(source_statuses, "indy_gis", indy_resp, indy_cached)
             if indy_cached:
                 cache_hits.append(indy.source_name)
             if not indy_resp.found:

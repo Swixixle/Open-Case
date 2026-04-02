@@ -44,6 +44,7 @@ class CaseFile(Base):
     last_signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     is_public: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_source_statuses: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     evidence_entries: Mapped[list["EvidenceEntry"]] = relationship(
         "EvidenceEntry",
@@ -209,6 +210,11 @@ class Signal(Base):
     relevance_score: Mapped[float] = mapped_column(Float, default=0.0)
     confirmation_checks: Mapped[str | None] = mapped_column(Text, nullable=True)
     confirmation_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cross_case_appearances: Mapped[int] = mapped_column(Integer, default=0)
+    cross_case_officials: Mapped[str | None] = mapped_column(Text, nullable=True)
+    weight_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    new_top_signal: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_appearance: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class SignalAuditLog(Base):
@@ -277,3 +283,37 @@ class SenatorCommittee(Base):
     committee_name: Mapped[str] = mapped_column(String(512))
     committee_code: Mapped[str] = mapped_column(String(32))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DonorFingerprint(Base):
+    __tablename__ = "donor_fingerprints"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    normalized_donor_key: Mapped[str] = mapped_column(String(512), index=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    signal_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("signals.id", ondelete="CASCADE"),
+    )
+    weight: Mapped[float] = mapped_column(Float)
+    official_name: Mapped[str] = mapped_column(String(512))
+    bioguide_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class InvestigationRun(Base):
+    __tablename__ = "investigation_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    signals_detected: Mapped[int] = mapped_column(Integer, default=0)
+    top_donors: Mapped[str] = mapped_column(Text, default="[]")

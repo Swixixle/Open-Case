@@ -234,4 +234,17 @@ def upsert_signal(
         )
     if "confirmed" in signal_dict:
         existing.confirmed = bool(signal_dict["confirmed"])
+    if signal_dict.get("cross_case_appearances") is not None:
+        existing.cross_case_appearances = int(signal_dict["cross_case_appearances"])
+    if signal_dict.get("cross_case_officials") is not None:
+        co = signal_dict["cross_case_officials"]
+        existing.cross_case_officials = (
+            json.dumps(co, separators=(",", ":")) if isinstance(co, list) else str(co)
+        )
+    if "weight_delta" in signal_dict:
+        existing.weight_delta = signal_dict["weight_delta"]
+    if signal_dict.get("new_top_signal") is not None:
+        existing.new_top_signal = bool(signal_dict["new_top_signal"])
+    if signal_dict.get("first_appearance") is not None:
+        existing.first_appearance = bool(signal_dict["first_appearance"])
     return existing

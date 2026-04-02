@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 from datetime import date, datetime
 from typing import Any
@@ -12,6 +11,7 @@ from xml.etree import ElementTree as ET
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
+from core.credentials import CredentialRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ def _parse_vote_date(raw: str) -> str:
 async def _fetch_member_identity(
     client: httpx.AsyncClient, bioguide_id: str
 ) -> dict[str, str] | None:
-    key = os.getenv("CONGRESS_API_KEY")
+    key = CredentialRegistry.get_credential("congress")
     if not key:
         return None
     url = f"https://api.congress.gov/v3/member/{bioguide_id}"
@@ -385,7 +385,7 @@ async def _apply_cosponsorship_flags(
 ) -> None:
     vote.setdefault("subject_is_sponsor", False)
     vote.setdefault("subject_is_cosponsor", False)
-    key = os.getenv("CONGRESS_API_KEY")
+    key = CredentialRegistry.get_credential("congress")
     if not key:
         return
 
@@ -465,6 +465,11 @@ class CongressVotesAdapter(BaseAdapter):
         when = date.today()
         congress = _congress_number_for_date(when)
         session = _senate_session_for_date(when)
+        cred_mode = (
+            "ok"
+            if CredentialRegistry.get_credential("congress")
+            else "credential_unavailable"
+        )
 
         headers = {"User-Agent": DEFAULT_UA}
 
@@ -548,6 +553,7 @@ class CongressVotesAdapter(BaseAdapter):
             empty = self._make_empty_response(bioguide_id, parse_warning=" ".join(pw_parts))
             empty.result_hash = raw_hash
             empty.found = False
+            empty.credential_mode = cred_mode
             return empty
 
         results: list[AdapterResult] = []
@@ -568,6 +574,7 @@ class CongressVotesAdapter(BaseAdapter):
             found=True,
             result_hash=raw_hash,
             parse_warning=pw,
+            credential_mode=cred_mode,
         )
 
     def _vote_to_result(
@@ -662,7 +669,7 @@ class CongressVotesAdapter(BaseAdapter):
         )
 
     async def _resolve_and_fetch(self, name: str) -> AdapterResponse:
-        congress_key = os.getenv("CONGRESS_API_KEY")
+        congress_key = CredentialRegistry.get_credential("congress")
         if not congress_key:
             raw_hash = _hash_raw({"mode": "name_resolve", "missing": "CONGRESS_API_KEY"})
             return AdapterResponse(
@@ -683,6 +690,7 @@ class CongressVotesAdapter(BaseAdapter):
                 ],
                 found=True,
                 result_hash=raw_hash,
+                credential_mode="credential_unavailable",
             )
 
         params = {
@@ -708,6 +716,7 @@ class CongressVotesAdapter(BaseAdapter):
         if not members:
             empty = self._make_empty_response(name)
             empty.result_hash = raw_hash
+            empty.credential_mode = "ok"
             return empty
 
         if len(members) > 1:
@@ -739,15 +748,19 @@ class CongressVotesAdapter(BaseAdapter):
                 ],
                 found=True,
                 result_hash=raw_hash,
+                credential_mode="ok",
             )
 
         m0 = members[0]
         if not isinstance(m0, dict):
-            return self._make_empty_response(name)
+            e = self._make_empty_response(name)
+            e.credential_mode = "ok"
+            return e
         bioguide_id = m0.get("bioguideId") or m0.get("bioguide_id")
         if bioguide_id:
             return await self._fetch_senate_votes_by_bioguide(str(bioguide_id))
 
         empty = self._make_empty_response(name)
         empty.result_hash = raw_hash
+        empty.credential_mode = "ok"
         return empty

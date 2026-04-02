@@ -57,6 +57,7 @@ class DonorCluster:
     amount_multiplier: float
     has_collision: bool
     has_jurisdictional_match: bool = False
+    has_lda_filing: bool = False
     relevance_score: float = 0.0
     exemplar_financial_date: str = ""
     exemplar_decision_date: str = ""
@@ -123,6 +124,21 @@ def _financial_jurisdictional_from_entry(entry: Any) -> bool:
     v = getattr(entry, "jurisdictional_match", None)
     if v is not None:
         return bool(v)
+    return False
+
+
+def _donor_has_lda(donor_key: str, evidence_entries: list[Any]) -> bool:
+    dk = (donor_key or "").strip().lower()
+    for e in evidence_entries:
+        if getattr(e, "entry_type", "") != "lobbying_filing":
+            continue
+        raw = getattr(e, "raw_data_json", "") or "{}"
+        try:
+            j = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if str(j.get("donor_key", "")).strip().lower() == dk:
+            return True
     return False
 
 
@@ -268,6 +284,7 @@ def _select_exemplar_pair(rel_pairs: list[RawProximityPair]) -> RawProximityPair
 def _cluster_from_pairs(
     rel_pairs: list[RawProximityPair],
     committee_label: str,
+    evidence_entries: list[Any],
 ) -> DonorCluster | None:
     if not rel_pairs:
         return None
@@ -290,6 +307,7 @@ def _cluster_from_pairs(
     pair_count = len(rel_pairs)
     has_collision = any(p.financial_flagged for p in rel_pairs)
     has_jurisdictional_match = any(p.financial_jurisdictional_match for p in rel_pairs)
+    has_lda_filing = _donor_has_lda(donor_key, evidence_entries)
 
     gaps = [p.days_between for p in rel_pairs]
     median_gap = float(statistics.median(gaps)) if gaps else 0.0
@@ -316,6 +334,7 @@ def _cluster_from_pairs(
         has_jurisdictional_match=has_jurisdictional_match,
         subject_is_sponsor_any=any(p.subject_is_sponsor for p in rel_pairs),
         subject_is_cosponsor_any=any(p.subject_is_cosponsor for p in rel_pairs),
+        has_lda_filing=has_lda_filing,
     )
     final_weight = round(
         min(1.0, prox * mult * (1.0 + relevance_score * 0.5)),
@@ -359,6 +378,7 @@ def _cluster_from_pairs(
         amount_multiplier=mult,
         has_collision=has_collision,
         has_jurisdictional_match=has_jurisdictional_match,
+        has_lda_filing=has_lda_filing,
         relevance_score=relevance_score,
         exemplar_financial_date=exemplar.financial_date,
         exemplar_decision_date=exemplar.decision_date,
@@ -455,7 +475,7 @@ def detect_proximity(
 
     clusters: list[DonorCluster] = []
     for rel_pairs in by_rel.values():
-        c = _cluster_from_pairs(rel_pairs, committee_label)
+        c = _cluster_from_pairs(rel_pairs, committee_label, evidence_entries)
         if c is not None and c.final_weight > 0.01:
             clusters.append(c)
 
