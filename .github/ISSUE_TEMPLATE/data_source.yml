@@ -1,0 +1,41 @@
+name: Document a data source
+description: Describe a public records source (often more valuable than a PR with code)
+title: "[data-source] "
+labels: ["data-source"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Thank you.** Jurisdiction-level data (contracts, minutes, local finance) is the bottleneck.
+        You do not need to write code — a clear description is enough to build an adapter later.
+
+  - type: input
+    id: jurisdiction
+    attributes:
+      label: Jurisdiction
+      description: City, county, state, or special district
+      placeholder: e.g. Marion County, Indiana / City of Indianapolis
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What data exists?
+      description: Types of records, time range, identifiers if any
+    validations:
+      required: true
+
+  - type: textarea
+    id: access
+    attributes:
+      label: How to access it
+      description: URL, portal name, FOIA-only, API, bulk download, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: quirks
+    attributes:
+      label: Quirks and caveats
+      description: Pagination, auth, weird fields, PDF-only, rate limits…

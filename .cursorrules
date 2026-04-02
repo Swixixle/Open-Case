@@ -1,0 +1,8 @@
+Project: OPEN CASE — civic investigation platform
+Stack: FastAPI, SQLite (SQLAlchemy), Ed25519 signing
+Current phase: Phase 0 — data model and core endpoints only
+Do not suggest UI, frontend, or game layer features yet
+Do not suggest changes to the data models — they are intentionally designed for future features
+Ed25519 signing pattern is already established in prior Nikodemus projects — reuse it
+Commit messages in plain English
+When writing Cursor instructions, produce complete copy-paste documents

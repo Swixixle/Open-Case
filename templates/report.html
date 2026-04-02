@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>{{ report.title }} — Case report</title>
+  <style>
+    :root { --ink: #0a0c10; --paper: #f4f1ea; --rule: #2a2f3a; --accent: #8b2332; --muted: #5c6473; }
+    body { font-family: "Georgia", "Times New Roman", serif; background: var(--paper); color: var(--ink); margin: 0; line-height: 1.45; }
+    header { border-bottom: 3px double var(--rule); padding: 1.25rem 6vw; background: linear-gradient(180deg, #fff 0%, var(--paper) 100%); }
+    h1 { font-size: 1.45rem; letter-spacing: 0.04em; text-transform: uppercase; margin: 0 0 0.25rem; }
+    .meta { color: var(--muted); font-size: 0.9rem; }
+    main { padding: 1.5rem 6vw 3rem; max-width: 920px; }
+    section { margin-bottom: 2rem; }
+    h2 { font-size: 1rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.35rem; margin: 0 0 0.75rem; color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+    .signal { border-left: 4px solid var(--rule); padding: 0.75rem 1rem; margin: 0 0 0.75rem; background: rgba(255,255,255,0.65); }
+    .signal strong { display: block; font-size: 1.05rem; margin-bottom: 0.35rem; }
+    .footnote { font-size: 0.85rem; color: var(--muted); }
+    .receipt { display: inline-block; margin-top: 1.25rem; padding: 0.55rem 1rem; background: var(--ink); color: #fff; text-decoration: none; font-family: system-ui, sans-serif; font-size: 0.85rem; letter-spacing: 0.04em; border: 2px solid var(--accent); }
+    .receipt:hover { background: var(--accent); }
+    ul.compact { padding-left: 1.1rem; margin: 0.35rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{{ report.title }}</h1>
+    <div class="meta">
+      Case #{{ report.case_number }} · {{ report.subject }}
+      · {{ report.jurisdiction }}
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Summary</h2>
+      <p>{{ report.summary or "—" }}</p>
+      <p class="footnote">Opened {{ report.opened_at or "—" }} by {{ report.opened_by }}</p>
+      <a class="receipt" href="/api/v1/cases/{{ report.case_id }}/report/card">Receipt card (share)</a>
+    </section>
+    <section>
+      <h2>Signals</h2>
+      {% if report.signals %}
+        {% for s in report.signals %}
+          <div class="signal">
+            <strong>{{ s.description }}</strong>
+            <div class="footnote">Type: {{ s.type }} · Weight: {{ "%.2f"|format(s.weight) }} · State: {{ s.exposure_state }}{% if s.proximity_summary %} · {{ s.proximity_summary }}{% endif %}</div>
+            {% if s.explanation %}<p>{{ s.explanation }}</p>{% endif %}
+            {% if s.supporting_evidence %}
+            <div style="margin-top:0.75rem;border-top:1px solid #c9c3b8;padding-top:0.5rem;">
+              <div style="font-size:0.65rem;letter-spacing:0.12em;color:var(--muted);margin-bottom:0.4rem;text-transform:uppercase;">Supporting evidence</div>
+              {% for ev in s.supporting_evidence %}
+              <div style="font-size:0.8rem;padding:0.25rem 0;border-bottom:1px solid #e0dcd4;">
+                <span style="color:var(--muted);">{{ (ev.date_of_event or '')[:10] if ev.date_of_event else 'Undated' }}</span>
+                {% if ev.source_url %} · <a href="{{ ev.source_url }}" target="_blank" rel="noopener" style="color:#1a5276;">{{ ev.source_name }}</a>{% else %} · {{ ev.source_name }}{% endif %}
+                · {{ (ev.title or '')[:120] }}{% if ev.amount %} · <span style="color:#8b4513;">${{ "{:,.0f}".format(ev.amount) }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+            {% endif %}
+            {% if s.confirmed and s.repeat_count and s.repeat_count > 1 %}
+            <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);">
+              Signal reinforced {{ s.repeat_count }} times as evidence accumulated.
+              <a href="/api/v1/signals/{{ s.id }}/history" style="color:#1a5276;">View history →</a>
+            </div>
+            {% endif %}
+            {% if s.parse_warning %}
+            <div style="margin-top:0.5rem;padding:0.45rem;background:#fbeaea;border:1px solid #8b2332;font-size:0.75rem;color:#6b1c1c;">
+              Source warning: {{ s.parse_warning[:300] }}
+            </div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="footnote">No active signals.</p>
+      {% endif %}
+    </section>
+    <section>
+      <h2>Evidence timeline</h2>
+      {% if report.timeline %}
+        <ul class="compact">
+          {% for e in report.timeline[:40] %}
+            <li><strong>{{ e.date_of_event or "?" }}</strong> — {{ e.title }} ({{ e.source_name }})</li>
+          {% endfor %}
+        </ul>
+        {% if report.timeline|length > 40 %}
+          <p class="footnote">Showing first 40 entries.</p>
+        {% endif %}
+      {% else %}
+        <p class="footnote">No timeline entries.</p>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>
