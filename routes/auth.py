@@ -17,10 +17,10 @@ from auth import generate_raw_key, hash_key
 from database import get_db
 from models import Investigator
 
-router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+router = APIRouter()
 
 
-@router.post("/keys")
+@router.post("/api/v1/auth/keys")
 def generate_api_key(
     handle: str = Query(..., description="Investigator handle to generate key for"),
     db: Session = Depends(get_db),
