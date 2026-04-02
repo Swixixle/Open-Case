@@ -13,6 +13,7 @@ from routes.auth import router as auth_router
 from routes.cases import router as cases_router
 from routes.evidence_disambig import router as evidence_disambig_router
 from routes.investigate import router as investigate_router
+from routes.patterns import router as patterns_router
 from routes.reporting import router as reporting_router
 from routes.subjects import router as subjects_router
 from routes.system import router as system_router
@@ -71,6 +72,7 @@ app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(cases_router)
 app.include_router(investigate_router)
+app.include_router(patterns_router)
 app.include_router(evidence_disambig_router)
 app.include_router(reporting_router)
 app.include_router(subjects_router)

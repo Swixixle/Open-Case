@@ -317,3 +317,22 @@ class InvestigationRun(Base):
     run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     signals_detected: Mapped[int] = mapped_column(Integer, default=0)
     top_donors: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class PatternAlertRecord(Base):
+    """Persisted snapshot of pattern engine output (global; refreshed when cases are sealed)."""
+
+    __tablename__ = "pattern_alert_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    rule_id: Mapped[str] = mapped_column(String(64), index=True)
+    pattern_version: Mapped[str] = mapped_column(String(32))
+    donor_entity: Mapped[str] = mapped_column(String(512))
+    matched_officials: Mapped[str] = mapped_column(Text)
+    matched_case_ids: Mapped[str] = mapped_column(Text)
+    committee: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_refs: Mapped[str] = mapped_column(Text)
+    disclaimer: Mapped[str] = mapped_column(Text)
+    fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -163,6 +163,26 @@
         <p class="footnote">No timeline entries.</p>
       {% endif %}
     </section>
+    {% if report.pattern_alerts %}
+    <section>
+      <h2>Cross-Official Patterns</h2>
+      <p class="footnote">Pattern alerts are read from the donor fingerprint ledger across investigations. They are separate from per-signal relevance and do not change weights.</p>
+      {% for p in report.pattern_alerts %}
+      <div class="signal" style="margin-top:0.75rem;">
+        <div class="badge-row" style="margin-bottom:0.35rem;">
+          <span class="badge">{{ p.badge }}</span>
+          <strong style="font-size:1rem;margin-left:0.25rem;">{{ p.donor_entity }}</strong>
+        </div>
+        <p class="footnote" style="margin:0.35rem 0;"><strong>Rule:</strong> {{ p.rule_line }}</p>
+        <p class="footnote" style="margin:0.35rem 0;"><strong>Officials:</strong> {{ p.matched_officials | join(", ") }}</p>
+        {% if p.window_phrase %}
+        <p class="footnote" style="margin:0.35rem 0;"><strong>Window:</strong> {{ p.window_phrase }}</p>
+        {% endif %}
+        <p class="footnote" style="margin-top:0.65rem;font-style:italic;color:var(--muted);">{{ p.disclaimer }}</p>
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
     <section>
       <h2>Sources checked</h2>
       <p class="footnote">Adapters and enrichment from the most recent investigation run (what was queried and whether credentials were available).</p>

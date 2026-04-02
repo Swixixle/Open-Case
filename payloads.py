@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from core.datetime_utils import coerce_utc
 from models import CaseFile, EvidenceEntry
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 
 def _dt_iso(v: Any) -> str | None:
@@ -88,20 +91,43 @@ def sign_evidence_entry(entry: EvidenceEntry) -> None:
     entry.signed_hash = pack_signed_hash(signed["content_hash"], signed["signature"])
 
 
-def full_case_signing_payload(case: CaseFile, entries: list[EvidenceEntry]) -> dict[str, Any]:
+def full_case_signing_payload(
+    case: CaseFile,
+    entries: list[EvidenceEntry],
+    pattern_alerts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     ordered = sorted(entries, key=lambda x: str(x.id))
+    pal = pattern_alerts if pattern_alerts is not None else []
     return {
-        "schema_version": "open-case-full-1",
+        "schema_version": "open-case-full-2",
         "case": case_semantic_dict(case),
         "evidence": [evidence_semantic_dict(x) for x in ordered],
+        "pattern_alerts": pal,
     }
 
 
-def apply_case_file_signature(case: CaseFile, entries: list[EvidenceEntry]) -> None:
+def apply_case_file_signature(
+    case: CaseFile,
+    entries: list[EvidenceEntry],
+    *,
+    db: "Session | None" = None,
+) -> None:
     """Update case.signed_hash / last_signed_at from full case + evidence canonical payload."""
     from signing import pack_signed_hash, sign_payload
 
-    payload = full_case_signing_payload(case, entries)
+    pattern_payload: list[dict[str, Any]] = []
+    if db is not None:
+        from engines.pattern_engine import (
+            pattern_alerts_for_signing,
+            run_pattern_engine,
+            sync_pattern_alert_records,
+        )
+
+        raw = run_pattern_engine(db)
+        pattern_payload = pattern_alerts_for_signing(raw)
+        sync_pattern_alert_records(db, raw)
+
+    payload = full_case_signing_payload(case, entries, pattern_payload)
     signed = sign_payload(payload)
     case.signed_hash = pack_signed_hash(signed["content_hash"], signed["signature"])
     case.last_signed_at = datetime.now(timezone.utc)

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from auth import require_api_key, require_matching_handle
 from database import get_db
 from models import CaseFile, CaseSnapshot, Investigator
+from engines.pattern_engine import pattern_alerts_for_signing, run_pattern_engine
 from payloads import apply_case_file_signature, full_case_signing_payload
 from signing import pack_signed_hash, sign_payload, verify_signed_hash_string
 from routes.evidence import case_detail_response
@@ -51,7 +52,8 @@ def attach_snapshot_routes(router: APIRouter) -> None:
         next_num = (max_num or 0) + 1
 
         entries = list(case.evidence_entries)
-        payload = full_case_signing_payload(case, entries)
+        pal = pattern_alerts_for_signing(run_pattern_engine(db))
+        payload = full_case_signing_payload(case, entries, pal)
         payload["snapshot"] = {
             "snapshot_number": next_num,
             "taken_at": datetime.now(timezone.utc).isoformat(),
@@ -76,7 +78,7 @@ def attach_snapshot_routes(router: APIRouter) -> None:
         db.flush()
         snap.share_url = f"/cases/{case.id}/snapshots/{snap.id}"
 
-        apply_case_file_signature(case, entries)
+        apply_case_file_signature(case, entries, db=db)
 
         add_credibility(db, body.taken_by, 1, "generated snapshot")
         db.commit()

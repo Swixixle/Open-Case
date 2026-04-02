@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from auth import require_api_key, require_matching_handle
 from database import get_db
+from engines.pattern_engine import pattern_alerts_for_case, run_pattern_engine
 from models import (
     CaseContributor,
     CaseFile,
@@ -400,6 +401,7 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
         },
         "receipt_crypto": _receipt_crypto_block(case),
         "source_status_lines": _source_status_lines(case),
+        "pattern_alerts": pattern_alerts_for_case(case_id, run_pattern_engine(db)),
     }
 
 

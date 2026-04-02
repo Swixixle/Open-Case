@@ -1340,7 +1340,7 @@ async def run_investigation(
                 source_statuses, separators=(",", ":"), default=str
             )
             apply_case_file_signature(
-                case_refresh, list(case_refresh.evidence_entries)
+                case_refresh, list(case_refresh.evidence_entries), db=db
             )
 
         new_signal_count = len(stored_signals)

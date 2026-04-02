@@ -192,7 +192,7 @@ def attach_evidence_routes(router: APIRouter) -> None:
         all_entries = db.scalars(
             select(EvidenceEntry).where(EvidenceEntry.case_file_id == case.id)
         ).all()
-        apply_case_file_signature(case, list(all_entries))
+        apply_case_file_signature(case, list(all_entries), db=db)
 
         add_credibility(db, body.entered_by, 1, "added evidence")
         db.commit()

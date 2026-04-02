@@ -98,7 +98,7 @@ def create_case(
         )
     )
 
-    apply_case_file_signature(case, [])
+    apply_case_file_signature(case, [], db=db)
     add_credibility(db, body.created_by, 2, "opened case")
     db.commit()
     db.refresh(case)
