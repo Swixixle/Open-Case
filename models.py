@@ -290,6 +290,9 @@ class DonorFingerprint(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     normalized_donor_key: Mapped[str] = mapped_column(String(512), index=True)
+    canonical_id: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    resolution_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    normalized_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
     case_file_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("case_files.id", ondelete="CASCADE"),

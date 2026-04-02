@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
@@ -38,6 +39,7 @@ from engines.signal_scorer import (
     build_signals_from_proximity,
     evidence_tier_from_checks,
 )
+from engines.entity_resolution import resolve
 from engines.temporal_proximity import (
     DonorCluster,
     detect_proximity,
@@ -483,6 +485,21 @@ def _donor_key_from_signal_row(s: Signal) -> str:
     return (s.actor_a or "").strip().lower()
 
 
+def _raw_donor_from_signal(s: Signal) -> str:
+    bd = _signal_breakdown_local(s)
+    if bd.get("donor"):
+        return str(bd["donor"]).strip()
+    return (s.actor_a or "").strip()
+
+
+def _fingerprint_donor_key(s: Signal) -> str:
+    """Cross-case fingerprint key: resolved canonical_id (slug)."""
+    raw = _raw_donor_from_signal(s)
+    if not raw:
+        return ""
+    return resolve(raw).canonical_id
+
+
 async def _ingest_lda_for_unique_donors(
     db: Session,
     case_id: uuid.UUID,
@@ -594,7 +611,7 @@ def _apply_cross_case_baseline_and_fingerprints(
     )
 
     for i, s in enumerate(temporal_sorted):
-        dk = _donor_key_from_signal_row(s)
+        dk = _fingerprint_donor_key(s)
         if not dk:
             continue
         cc_count = (
@@ -630,12 +647,17 @@ def _apply_cross_case_baseline_and_fingerprints(
         db.add(s)
 
     for s in temporal_sorted[:10]:
-        dk = _donor_key_from_signal_row(s)
+        dk = _fingerprint_donor_key(s)
         if not dk:
             continue
+        raw_d = _raw_donor_from_signal(s)
+        ent = resolve(raw_d)
         db.add(
             DonorFingerprint(
                 normalized_donor_key=dk,
+                canonical_id=ent.canonical_id,
+                resolution_method=ent.resolution_method,
+                normalized_name=ent.normalized_name or None,
                 case_file_id=case_id,
                 signal_id=s.id,
                 weight=float(s.weight or 0.0),
@@ -749,6 +771,15 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
                 "has_hearing_appearance": bool(bd.get("has_hearing_appearance")),
             }
         )
+        raw_dr = str(bd.get("donor") or s.actor_a or "").strip()
+        if raw_dr:
+            r = resolve(raw_dr)
+            out["donor_resolution"] = {
+                "raw_name": r.raw_name,
+                "normalized_name": r.normalized_name,
+                "canonical_id": r.canonical_id,
+                "resolution_method": r.resolution_method,
+            }
     xco: list[str] = []
     if getattr(s, "cross_case_officials", None):
         try:
@@ -814,6 +845,19 @@ class InvestigateRequest(BaseModel):
         None,
         description="Optional FEC committee ID (e.g. C00459255) for schedule_a by committee.",
     )
+
+
+class BatchOpenSubject(BaseModel):
+    subject_name: str = Field(..., min_length=1)
+    bioguide_id: str = Field(..., min_length=1)
+    fec_committee_id: str = Field(..., min_length=1)
+    committee_focus: str | None = None
+
+
+class BatchOpenRequest(BaseModel):
+    subjects: list[BatchOpenSubject] = Field(..., min_length=1)
+    created_by: str = Field(..., min_length=1)
+    description: str = ""
 
 
 class ConfirmSignalBody(BaseModel):
@@ -1112,6 +1156,75 @@ def _ingest_adapter_results(
         )
 
 
+def _unique_batch_case_slug(db: Session, subject_name: str, bioguide_id: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", subject_name.lower().strip())
+    base = (base.strip("-") or "official")[:200]
+    slug_try = f"{base}-{bioguide_id.strip().lower()}"
+    slug = slug_try
+    while db.scalar(select(CaseFile.id).where(CaseFile.slug == slug)):
+        slug = f"{slug_try}-{uuid.uuid4().hex[:8]}"
+    return slug
+
+
+@router.post("/cases/batch-open")
+def batch_open_cases(
+    body: BatchOpenRequest,
+    db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
+) -> dict[str, Any]:
+    """Create multiple case files (no investigations)."""
+    require_matching_handle(auth_inv, body.created_by)
+    inv_row = db.scalar(select(Investigator).where(Investigator.handle == body.created_by))
+    if not inv_row:
+        inv_row = Investigator(handle=body.created_by, public_key="")
+        db.add(inv_row)
+        db.flush()
+    created: list[str] = []
+    for sub in body.subjects:
+        slug = _unique_batch_case_slug(db, sub.subject_name, sub.bioguide_id)
+        summary_bits: list[str] = []
+        if body.description.strip():
+            summary_bits.append(body.description.strip())
+        summary_bits.append(f"FEC principal committee: {sub.fec_committee_id.strip()}")
+        if sub.committee_focus and str(sub.committee_focus).strip():
+            summary_bits.append(f"Committee focus: {str(sub.committee_focus).strip()}")
+        summary = "\n".join(summary_bits)
+        case = CaseFile(
+            slug=slug,
+            title=sub.subject_name,
+            subject_name=sub.subject_name,
+            subject_type="public_official",
+            jurisdiction="United States",
+            status="open",
+            created_by=body.created_by,
+            summary=summary,
+        )
+        db.add(case)
+        db.flush()
+        inv_row.cases_opened = (inv_row.cases_opened or 0) + 1
+        db.add(
+            CaseContributor(
+                case_file_id=case.id,
+                investigator_handle=body.created_by,
+                role="originator",
+            )
+        )
+        db.add(
+            SubjectProfile(
+                case_file_id=case.id,
+                subject_name=sub.subject_name,
+                subject_type="public_official",
+                bioguide_id=sub.bioguide_id.strip(),
+                updated_by=body.created_by,
+            )
+        )
+        apply_case_file_signature(case, [], db=db)
+        add_credibility(db, body.created_by, 2, "opened case")
+        created.append(str(case.id))
+    db.commit()
+    return {"case_ids": created}
+
+
 @router.post("/cases/{case_id}/investigate", response_model=None)
 async def run_investigation(
     case_id: uuid.UUID,
@@ -1340,7 +1453,7 @@ async def run_investigation(
             bd_r = _signal_breakdown_local(s)
             top_donor_payload.append(
                 {
-                    "donor_key": _donor_key_from_signal_row(s),
+                    "donor_key": _fingerprint_donor_key(s),
                     "weight": float(s.weight or 0.0),
                     "min_gap_days": bd_r.get("min_gap_days"),
                     "total_amount": bd_r.get("total_amount"),

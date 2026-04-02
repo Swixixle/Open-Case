@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from auth import require_api_key, require_matching_handle
 from database import get_db
+from engines.entity_resolution import resolve
 from engines.pattern_engine import pattern_alerts_for_case, run_pattern_engine
 from engines.signal_scorer import evidence_tier_from_checks
 from models import (
@@ -312,6 +313,14 @@ def _signal_to_report_row(
     xco = _parse_cross_case_officials(s)
     donor_label = str(bd.get("donor") or s.actor_a or "").strip()
     official_label = str(bd.get("official") or s.actor_b or "").strip()
+    resolution_method_label = ""
+    if bd.get("kind") == "donor_cluster" and donor_label:
+        rm = resolve(donor_label).resolution_method
+        resolution_method_label = {
+            "exact": "[exact]",
+            "alias_table": "[alias]",
+            "unresolved": "[unresolved]",
+        }.get(rm, "")
     conf_checks = _confirmation_checks_dict(s)
     evidence_tier = evidence_tier_from_checks(conf_checks)
     is_anti = _report_row_is_anticipatory(s, bd)
@@ -342,6 +351,7 @@ def _signal_to_report_row(
         "relevance_score": rel,
         "is_donor_cluster": bd.get("kind") == "donor_cluster",
         "donor_display": donor_label,
+        "resolution_method_label": resolution_method_label,
         "official_display": official_label,
         "total_amount": float(bd.get("total_amount") or s.amount or 0.0),
         "min_gap_days": bd.get("min_gap_days"),

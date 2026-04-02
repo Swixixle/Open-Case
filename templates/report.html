@@ -42,6 +42,7 @@
     .src-pill a { color: #1a5276; }
     .reporters-box { border: 1px solid var(--rule); padding: 1rem 1.1rem; background: rgba(255,255,255,0.75); font-size: 0.9rem; }
     .temporal-note { font-size: 0.82rem; font-style: italic; color: var(--muted); margin: 0.5rem 0 1rem; }
+    .res-method-label { font-size: 0.68rem; font-family: system-ui, sans-serif; letter-spacing: 0.06em; color: var(--muted); vertical-align: middle; margin-left: 0.35rem; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -68,7 +69,7 @@
         {% for s in report.top_leads_anticipatory %}
         <article class="lead-card">
           {% if s.is_donor_cluster %}
-          <h3><span class="lead-donor">{{ s.donor_display }}</span> — <span class="lead-amount">${{ "{:,.0f}".format(s.total_amount) }}</span> <span style="font-weight:400;font-size:0.95rem;color:var(--muted);">in window</span></h3>
+          <h3><span class="lead-donor">{{ s.donor_display }}</span>{% if s.resolution_method_label %}<span class="res-method-label">{{ s.resolution_method_label }}</span>{% endif %} — <span class="lead-amount">${{ "{:,.0f}".format(s.total_amount) }}</span> <span style="font-weight:400;font-size:0.95rem;color:var(--muted);">in window</span></h3>
           <p class="footnote" style="margin-top:0.25rem;">{{ s.chronology_line }} {% if s.exemplar_vote %}· <strong>{{ s.exemplar_vote }}</strong>{% endif %}</p>
           {% else %}
           <h3>{{ s.description }}</h3>
@@ -135,7 +136,7 @@
         {% for s in report.top_leads_retrospective %}
         <article class="lead-card">
           {% if s.is_donor_cluster %}
-          <h3><span class="lead-donor">{{ s.donor_display }}</span> — <span class="lead-amount">${{ "{:,.0f}".format(s.total_amount) }}</span> <span style="font-weight:400;font-size:0.95rem;color:var(--muted);">in window</span></h3>
+          <h3><span class="lead-donor">{{ s.donor_display }}</span>{% if s.resolution_method_label %}<span class="res-method-label">{{ s.resolution_method_label }}</span>{% endif %} — <span class="lead-amount">${{ "{:,.0f}".format(s.total_amount) }}</span> <span style="font-weight:400;font-size:0.95rem;color:var(--muted);">in window</span></h3>
           <p class="footnote" style="margin-top:0.25rem;">{{ s.chronology_line }} {% if s.exemplar_vote %}· <strong>{{ s.exemplar_vote }}</strong>{% endif %}</p>
           {% else %}
           <h3>{{ s.description }}</h3>

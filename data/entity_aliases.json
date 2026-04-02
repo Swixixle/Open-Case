@@ -1,0 +1,16 @@
+{
+  "aliases": [
+    {
+      "canonical_id": "morgan-stanley",
+      "canonical_name": "MORGAN STANLEY",
+      "aliases": [
+        "MORGAN STANLEY PAC",
+        "MORGAN STANLEY POLITICAL ACTION COMMITTEE",
+        "MORGAN STANLEY SMITH BARNEY LLC PAC"
+      ],
+      "provenance": "manual_review",
+      "added_by": "alex",
+      "added_at": "2026-04-02"
+    }
+  ]
+}
