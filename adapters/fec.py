@@ -12,6 +12,77 @@ from core.credentials import CredentialRegistry, CredentialUnavailable
 
 logger = logging.getLogger(__name__)
 
+_CANDIDATE_SEARCH_PATH = "/candidates/search/"
+
+
+async def resolve_principal_committee_id_for_official(
+    subject_name: str,
+    jurisdiction: str,
+) -> str | None:
+    """
+    OpenFEC principal campaign committee for a named federal candidate.
+
+    Used when investigating a public official without an explicit fec_committee_id:
+    schedule_a by committee_id returns receipts *to* that committee (donors to pair
+    with votes). schedule_a by contributor_name searches the wrong economic direction
+    for this use case.
+    """
+    try:
+        api_key = CredentialRegistry.get_credential("fec") or "DEMO_KEY"
+    except CredentialUnavailable:
+        api_key = "DEMO_KEY"
+
+    search_name = (subject_name or "").strip()
+    if not search_name:
+        return None
+
+    state_filter: str | None = None
+    j = (jurisdiction or "").strip().upper()
+    if len(j) == 2 and j.isalpha():
+        state_filter = j
+
+    api = f"{FECAdapter.BASE_URL}{_CANDIDATE_SEARCH_PATH}"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for office in ("S", "H"):
+            params: dict[str, str | int] = {
+                "api_key": api_key,
+                "name": search_name,
+                "office": office,
+                "per_page": 20,
+                "sort": "-last_file_date",
+            }
+            try:
+                r = await client.get(api, params=params)
+            except httpx.HTTPError:
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                data = r.json()
+            except Exception:
+                continue
+            for cand in data.get("results") or []:
+                if not isinstance(cand, dict):
+                    continue
+                if state_filter and str(cand.get("state") or "").upper() != state_filter:
+                    continue
+                if cand.get("candidate_inactive") is True:
+                    continue
+                committees = cand.get("principal_committees") or []
+                for pc in committees:
+                    if not isinstance(pc, dict):
+                        continue
+                    cid = pc.get("committee_id")
+                    if not cid:
+                        continue
+                    des_full = str(pc.get("designation_full") or "")
+                    if "Principal" in des_full or pc.get("designation") == "P":
+                        return str(cid).strip().upper()
+                for pc in committees:
+                    if isinstance(pc, dict) and pc.get("committee_id"):
+                        return str(pc["committee_id"]).strip().upper()
+    return None
+
 # Donor shapes that are very unlikely to be accidental multi-entity personal-name matches.
 _UNAMBIGUOUS_NAME_MARKERS = (
     "PAC",
@@ -102,6 +173,10 @@ class FECAdapter(BaseAdapter):
             ).hexdigest()
 
             items = data.get("results", [])
+            logger.debug(
+                "FEC raw schedule_a count: %s",
+                len(items) if isinstance(items, list) else 0,
+            )
             pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
             api_msg = None
             if isinstance(data, dict):

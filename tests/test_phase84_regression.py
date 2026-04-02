@@ -62,6 +62,11 @@ def test_congress_failure_does_not_report_clean(
     api_key = seeded_public_official_case["api_key"]
 
     with (
+        patch(
+            "routes.investigate.resolve_principal_committee_id_for_official",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch.object(
             FECAdapter,
             "search",
@@ -119,6 +124,11 @@ def test_congress_failure_does_not_promote_partial_evidence(
     engine = seeded_case_with_evidence["engine"]
 
     with (
+        patch(
+            "routes.investigate.resolve_principal_committee_id_for_official",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch.object(
             FECAdapter,
             "search",

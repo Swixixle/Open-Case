@@ -17,7 +17,7 @@ from adapters.base import AdapterResponse, BaseAdapter
 from adapters.cache import get_cached_response, response_from_cache_dict, store_cached_response
 from adapters.congress_votes import CongressVotesAdapter
 from adapters.dedup import is_duplicate, make_evidence_hash
-from adapters.fec import FECAdapter
+from adapters.fec import FECAdapter, resolve_principal_committee_id_for_official
 from adapters.govinfo_hearings import current_congress_number, search_hearing_witnesses
 from adapters.lda import fetch_lda_filings
 from adapters.regulations import fetch_docket_comments
@@ -96,6 +96,35 @@ def _required_sources_ready_and_missing(
 ) -> tuple[bool, list[str]]:
     missing = _failed_required_core_adapters(case, source_statuses)
     return (len(missing) == 0, missing)
+
+
+def _fec_congress_evidence_written_counts(
+    created_entries: list[EvidenceEntry],
+) -> tuple[int, int]:
+    """Counts of financial / vote rows written this run (for source_row_counts)."""
+    fec_n = sum(
+        1
+        for e in created_entries
+        if e.entry_type == "financial_connection"
+        and (e.source_name or "") == "FEC"
+        and (e.adapter_name or "") == "FEC"
+    )
+    cong_n = sum(
+        1
+        for e in created_entries
+        if e.entry_type == "vote_record"
+        and (e.source_name or "") == CongressVotesAdapter.source_name
+    )
+    return fec_n, cong_n
+
+
+def _empty_source_row_counts() -> dict[str, int]:
+    return {
+        "fec_raw_results": 0,
+        "fec_evidence_written": 0,
+        "congress_raw_results": 0,
+        "congress_evidence_written": 0,
+    }
 
 
 def _connected_org_for_cluster(
@@ -347,12 +376,15 @@ def _append_source_status(
     from_cache: bool,
 ) -> None:
     if from_cache:
+        dc = None
+        if registry_key in ("fec", "congress"):
+            dc = f"{len(response.results)} row(s) (cached response)"
         bucket.append(
             {
                 "adapter": registry_key,
                 "display_name": response.source_name,
                 "status": "cached",
-                "detail": None,
+                "detail": dc,
             }
         )
         return
@@ -389,12 +421,15 @@ def _append_source_status(
         st = "clean"
     else:
         st = "clean"
+    detail_out = response.error
+    if detail_out is None and registry_key in ("fec", "congress"):
+        detail_out = f"{len(response.results)} result row(s) returned"
     bucket.append(
         {
             "adapter": registry_key,
             "display_name": response.source_name,
             "status": st,
-            "detail": response.error,
+            "detail": detail_out,
         }
     )
 
@@ -999,6 +1034,7 @@ async def run_investigation(
     cache_hits: list[str] = []
     source_statuses: list[dict[str, Any]] = []
     unresolved_payload: list[dict[str, Any]] | None = None
+    source_row_counts: dict[str, int] = _empty_source_row_counts()
 
     prev_run_row = db.scalar(
         select(InvestigationRun)
@@ -1037,7 +1073,12 @@ async def run_investigation(
             source_check_tracker=source_check_tracker,
             cache_hits=cache_hits,
             source_statuses=source_statuses,
+            source_row_counts=source_row_counts,
         )
+
+        fec_w, cong_w = _fec_congress_evidence_written_counts(created_entries)
+        source_row_counts["fec_evidence_written"] = fec_w
+        source_row_counts["congress_evidence_written"] = cong_w
 
         failed_required = _failed_required_core_adapters(case, source_statuses)
         if failed_required:
@@ -1071,6 +1112,8 @@ async def run_investigation(
                     },
                     "required_sources_ready": rs_ready,
                     "required_sources_missing": rs_missing,
+                    # TODO: remove after 8.6 verified
+                    "source_row_counts": source_row_counts,
                 },
             )
 
@@ -1254,6 +1297,8 @@ async def run_investigation(
         },
         "required_sources_ready": required_sources_ready,
         "required_sources_missing": required_sources_missing,
+        # TODO: remove after 8.6 verified
+        "source_row_counts": source_row_counts,
         "errors": errors,
         "signals": signal_payloads_response,
         **(
@@ -1288,6 +1333,7 @@ async def _run_investigation_adapters(
     source_check_tracker: list[str],
     cache_hits: list[str],
     source_statuses: list[dict[str, Any]],
+    source_row_counts: dict[str, int],
 ) -> None:
     async def get_adapter_response(
         adapter: BaseAdapter, q: str, qt: str = "person"
@@ -1298,7 +1344,10 @@ async def _run_investigation_adapters(
             resp.result_hash = (cached.get("result_hash") or "") + "_cached"
             return resp, True
         resp = await adapter.search(q, qt)
-        store_cached_response(db, adapter.source_name, q, resp)
+        # Empty LIS responses were being cached for 4h, causing intermittent 0 vs N votes.
+        skip_cache = isinstance(adapter, CongressVotesAdapter) and len(resp.results) == 0
+        if not skip_cache:
+            store_cached_response(db, adapter.source_name, q, resp)
         return resp, False
 
     async def run_cached(adapter: BaseAdapter, q: str, qt: str = "person") -> None:
@@ -1347,6 +1396,10 @@ async def _run_investigation_adapters(
                 source_check_tracker,
             )
             return
+        if isinstance(adapter, FECAdapter):
+            source_row_counts["fec_raw_results"] = len(response.results)
+        elif isinstance(adapter, CongressVotesAdapter):
+            source_row_counts["congress_raw_results"] = len(response.results)
         _append_source_status(source_statuses, rk, response, from_cache)
         if from_cache:
             cache_hits.append(adapter.source_name)
@@ -1417,6 +1470,15 @@ async def _run_investigation_adapters(
     if request.fec_committee_id:
         cid = request.fec_committee_id.strip().upper()
         await run_cached(FECAdapter(), cid, "committee")
+    elif case.subject_type == "public_official":
+        resolved_committee = await resolve_principal_committee_id_for_official(
+            request.subject_name,
+            case.jurisdiction or "",
+        )
+        if resolved_committee:
+            await run_cached(FECAdapter(), resolved_committee, "committee")
+        else:
+            await run_cached(FECAdapter(), request.subject_name, "person")
     else:
         await run_cached(FECAdapter(), request.subject_name, "person")
     await run_cached(USASpendingAdapter(), request.subject_name, "entity")
