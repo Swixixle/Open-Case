@@ -32,6 +32,8 @@ LEGAL_NOISE = [
 
 
 def _normalize_tokens(name: str) -> set[str]:
+    # Split embedded caps (e.g. MassMutual → Mass Mutual) before lowercasing.
+    name = re.sub(r"([a-z])([A-Z])", r"\1 \2", name)
     name = name.lower()
     name = re.sub(r"[^\w\s]", " ", name)
     tokens = name.split()
