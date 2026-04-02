@@ -6,7 +6,7 @@ from typing import Any
 
 import logging
 
-from core.datetime_utils import coerce_utc, coerce_utc_from_date_only
+from core.datetime_utils import coerce_utc
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +59,12 @@ class ContractProximitySignal:
 
 
 def _entry_event_dt(entry: Any) -> datetime | None:
-    if not getattr(entry, "date_of_event", None):
+    raw = getattr(entry, "date_of_event", None)
+    if raw is None:
         return None
-    d = entry.date_of_event
-    if isinstance(d, datetime):
-        return coerce_utc(d)
-    if isinstance(d, date):
-        return coerce_utc_from_date_only(d)
-    if isinstance(d, str):
-        return coerce_utc(d)
-    return coerce_utc(str(d))
+    if isinstance(raw, (datetime, date, str)):
+        return coerce_utc(raw)
+    return coerce_utc(str(raw))
 
 
 def _label(entry: Any, fallback: str) -> str:
@@ -117,6 +113,9 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
     if not donations or not contracts:
         return []
 
+    _skip_log_count = 0
+    _MAX_SKIP_LOGS = 10
+
     out: list[ContractProximitySignal] = []
     for d_ent in donations:
         d_dt = _entry_event_dt(d_ent)
@@ -133,9 +132,15 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
             d_utc = coerce_utc(d_dt)
             c_utc = coerce_utc(c_dt)
             if d_utc is None or c_utc is None:
-                logger.warning(
-                    "Skipping contract pair: could not coerce event datetimes to UTC."
-                )
+                raw_donation = getattr(d_ent, "date_of_event", None)
+                raw_contract = getattr(c_ent, "date_of_event", None)
+                if _skip_log_count < _MAX_SKIP_LOGS:
+                    logger.warning(
+                        "CONTRACT PROXIMITY SKIP | "
+                        f"donation_raw={repr(raw_donation)} type={type(raw_donation).__name__} | "
+                        f"contract_raw={repr(raw_contract)} type={type(raw_contract).__name__}"
+                    )
+                    _skip_log_count += 1
                 continue
             days_diff = (c_utc - d_utc).days
             if not (-45 <= days_diff <= 270):

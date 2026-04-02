@@ -196,16 +196,12 @@ def _amount_multiplier_from_total(total_amount: float) -> float:
 
 
 def _entry_event_dt(entry: Any) -> datetime | None:
-    if not getattr(entry, "date_of_event", None):
+    raw = getattr(entry, "date_of_event", None)
+    if raw is None:
         return None
-    d = entry.date_of_event
-    if isinstance(d, datetime):
-        return coerce_utc(d)
-    if isinstance(d, date):
-        return coerce_utc_from_date_only(d)
-    if isinstance(d, str):
-        return coerce_utc(d)
-    return coerce_utc(str(d))
+    if isinstance(raw, (datetime, date, str)):
+        return coerce_utc(raw)
+    return coerce_utc(str(raw))
 
 
 def _actor_for(entry: Any, fallback: str) -> str:
@@ -235,6 +231,9 @@ def _collect_raw_pairs(
     if not financial_events or not decision_events:
         return []
 
+    _skip_log_count = 0
+    _MAX_SKIP_LOGS = 10
+
     pairs: list[RawProximityPair] = []
     for f_date, f_entry in financial_events:
         amt = getattr(f_entry, "amount", None) or 0.0
@@ -244,12 +243,18 @@ def _collect_raw_pairs(
             amt = 0.0
         flagged = bool(getattr(f_entry, "flagged_for_review", False))
         for d_date, d_entry in decision_events:
+            raw_donation_val = getattr(f_entry, "date_of_event", None)
+            raw_vote_val = getattr(d_entry, "date_of_event", None)
             f_utc = coerce_utc(f_date)
             d_utc = coerce_utc(d_date)
             if f_utc is None or d_utc is None:
-                logger.warning(
-                    "Skipping proximity pair: could not coerce event datetimes to UTC."
-                )
+                if _skip_log_count < _MAX_SKIP_LOGS:
+                    logger.warning(
+                        "PROXIMITY SKIP | "
+                        f"donation_raw={repr(raw_donation_val)} type={type(raw_donation_val).__name__} | "
+                        f"vote_raw={repr(raw_vote_val)} type={type(raw_vote_val).__name__}"
+                    )
+                    _skip_log_count += 1
                 continue
             days_diff = (d_utc - f_utc).days
             if -30 <= days_diff <= max_days:

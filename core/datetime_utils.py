@@ -1,32 +1,45 @@
 from __future__ import annotations
 
-import logging
 from datetime import date, datetime, time, timezone
 from typing import Optional
 
-logger = logging.getLogger(__name__)
 
-
-def coerce_utc(dt: datetime | str | None) -> Optional[datetime]:
+def coerce_utc(dt: datetime | date | str | None) -> Optional[datetime]:
     """
     Return a UTC-aware datetime regardless of input type.
-    - If None: return None
-    - If naive datetime: attach timezone.utc
-    - If aware datetime: convert to UTC
-    - If string: parse ISO 8601, then coerce
+
+    Handles:
+    - None                  → None
+    - naive datetime        → attach timezone.utc
+    - aware datetime        → convert to UTC
+    - date (no time)        → treat as midnight UTC
+    - ISO datetime string   → parse then coerce ("2025-12-09T14:00:00Z" etc.)
+    - ISO date string       → parse as date then coerce ("2025-12-09")
     """
     if dt is None:
         return None
+
     if isinstance(dt, str):
-        dt = dt.rstrip("Z")
+        s = dt.rstrip("Z")
         try:
-            dt = datetime.fromisoformat(dt)
+            parsed = datetime.fromisoformat(s)
+            return coerce_utc(parsed)
         except ValueError:
-            return None
+            try:
+                d = date.fromisoformat(s)
+                return coerce_utc(d)
+            except ValueError:
+                return None
+
+    # datetime check MUST come before date check — datetime is a subclass of date
     if isinstance(dt, datetime):
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
+
+    if isinstance(dt, date):
+        return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+
     return None
 
 

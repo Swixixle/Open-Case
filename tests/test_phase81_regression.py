@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -35,6 +35,29 @@ def test_coerce_utc_string() -> None:
 
 def test_coerce_utc_none() -> None:
     assert coerce_utc(None) is None
+
+
+def test_coerce_utc_date_object() -> None:
+    d = date(2025, 12, 9)
+    result = coerce_utc(d)
+    assert result is not None
+    assert result.year == 2025 and result.month == 12 and result.day == 9
+    assert result.tzinfo == timezone.utc
+
+
+def test_coerce_utc_date_string() -> None:
+    result = coerce_utc("2025-12-09")
+    assert result is not None
+    assert result.year == 2025
+    assert result.tzinfo == timezone.utc
+
+
+def test_datetime_subclass_order() -> None:
+    """datetime is a subclass of date — time component must be preserved."""
+    dt = datetime(2025, 12, 9, 14, 30, 0)
+    result = coerce_utc(dt)
+    assert result is not None
+    assert result.hour == 14
 
 
 def test_no_crash_on_subtraction() -> None:

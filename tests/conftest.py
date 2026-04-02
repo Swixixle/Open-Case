@@ -25,6 +25,16 @@ def test_engine():
 
 
 @pytest.fixture
+def db_session(test_engine):
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@pytest.fixture
 def client(test_engine):
     import database
     from fastapi.testclient import TestClient
