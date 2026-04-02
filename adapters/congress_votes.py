@@ -13,6 +13,10 @@ from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
 
 logger = logging.getLogger(__name__)
 
+# Congress.gov v3 documents house roll calls only (no public senate-vote or member votes URL).
+MAX_VOTE_RESULTS = 50
+MAX_ROLL_CALL_DETAIL_FETCHES = 160
+
 
 def _mask_url(url: str) -> str:
     return re.sub(r"(api_key=)([^&]+)", r"\1***", url, flags=re.IGNORECASE)
@@ -94,6 +98,92 @@ def _extract_vote_rows(data: dict[str, Any]) -> tuple[list[Any], str]:
         ", ".join(tried) if tried else "(no candidate keys)",
     )
     return [], "none"
+
+
+def _congress_api_error_message(data: Any) -> str:
+    if not isinstance(data, dict):
+        return str(data)[:300]
+    err = data.get("error")
+    if isinstance(err, str):
+        return err[:500]
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("code") or err)[:500]
+    return str(data.get("message", data))[:300]
+
+
+def _member_has_senate_service(member: dict[str, Any]) -> bool:
+    for t in member.get("terms") or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("chamber") == "Senate":
+            return True
+    return False
+
+
+def _house_congress_session_pairs(member: dict[str, Any]) -> list[tuple[int, int]]:
+    """(congress, session) for House terms, recent congresses and session 2 first."""
+    house_congresses: list[int] = []
+    for t in member.get("terms") or []:
+        if not isinstance(t, dict):
+            continue
+        if t.get("chamber") != "House of Representatives":
+            continue
+        c = t.get("congress")
+        if isinstance(c, int):
+            house_congresses.append(c)
+    ordered = sorted(set(house_congresses), reverse=True)
+    pairs: list[tuple[int, int]] = []
+    for c in ordered:
+        pairs.append((c, 2))
+        pairs.append((c, 1))
+    return pairs
+
+
+def _bioguide_matches_row(row: dict[str, Any], bioguide_id: str) -> bool:
+    rid = row.get("bioguideID") or row.get("bioguideId") or ""
+    return str(rid).upper() == str(bioguide_id).upper()
+
+
+def _synthetic_vote_from_house_roll(
+    roll: dict[str, Any], member_row: dict[str, Any], bioguide_id: str
+) -> dict[str, Any]:
+    leg_num = roll.get("legislationNumber")
+    leg_type = roll.get("legislationType")
+    title_bits = [
+        roll.get("amendmentAuthor"),
+        roll.get("voteType"),
+        roll.get("result"),
+    ]
+    title_guess = next((x for x in title_bits if x), "House roll call vote")
+    bill: dict[str, Any] = {
+        "number": (
+            f"{leg_type} {leg_num}".strip() if leg_type and leg_num else "House vote"
+        ),
+        "title": title_guess,
+    }
+    if leg_num:
+        bill["billNumber"] = str(leg_num)
+    vote_date = roll.get("startDate") or roll.get("updateDate") or ""
+    position = member_row.get("voteCast") or "Unknown"
+    return {
+        "congress": roll.get("congress"),
+        "session": roll.get("sessionNumber"),
+        "sessionNumber": roll.get("sessionNumber"),
+        "date": vote_date,
+        "voteDate": vote_date,
+        "rollCallNumber": roll.get("rollCallNumber"),
+        "bill": bill,
+        "legislationNumber": leg_num,
+        "legislationType": leg_type,
+        "legislationUrl": roll.get("legislationUrl"),
+        "sourceDataURL": roll.get("sourceDataURL"),
+        "voteQuestion": title_guess,
+        "memberVote": {
+            "bioguideId": bioguide_id,
+            "vote": position,
+        },
+        "voteCast": position,
+    }
 
 
 def _debug_log_congress_json_shape(
@@ -202,143 +292,253 @@ class CongressVotesAdapter(BaseAdapter):
     async def _fetch_by_bioguide(
         self, bioguide_id: str, api_key: str
     ) -> AdapterResponse:
-        params: dict[str, str | int] = {
-            "api_key": api_key,
-            "format": "json",
-            "limit": 50,
-            "offset": 0,
-        }
+        base_params = {"api_key": api_key, "format": "json"}
 
-        votes_url = f"{self.BASE_URL}/member/{bioguide_id}/votes"
-        member_url = f"{self.BASE_URL}/member/{bioguide_id}"
-        endpoint_used = "member/bioguide/votes"
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.get(votes_url, params=params)
-            logger.warning(
-                "[CongressVotesAdapter DEBUG] bioguide=%s GET votes status=%s url=%s",
-                bioguide_id,
-                resp.status_code,
-                _mask_url(str(resp.request.url)),
-            )
-            if resp.status_code == 404:
-                endpoint_used = "member/bioguide (fallback after votes 404)"
-                resp = await client.get(member_url, params=params)
-                logger.warning(
-                    "[CongressVotesAdapter DEBUG] bioguide=%s GET member fallback status=%s url=%s",
-                    bioguide_id,
-                    resp.status_code,
-                    _mask_url(str(resp.request.url)),
-                )
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            member_url = f"{self.BASE_URL}/member/{bioguide_id}"
+            resp = await client.get(member_url, params=base_params)
             try:
-                data = resp.json()
+                member_payload = resp.json()
             except Exception as e:
                 logger.warning(
-                    "[CongressVotesAdapter DEBUG] bioguide=%s endpoint=%s status=%s json_parse_error=%s text_preview=%r",
+                    "[CongressVotesAdapter DEBUG] bioguide=%s member json_error=%s preview=%r",
                     bioguide_id,
-                    endpoint_used,
-                    resp.status_code,
                     e,
                     (resp.text[:500] + "…") if len(resp.text) > 500 else resp.text,
                 )
                 raise
 
+            logger.warning(
+                "[CongressVotesAdapter DEBUG] bioguide=%s GET member status=%s url=%s",
+                bioguide_id,
+                resp.status_code,
+                _mask_url(str(resp.request.url)),
+            )
             _debug_log_congress_json_shape(
                 bioguide_id=bioguide_id,
                 status_code=resp.status_code,
-                endpoint_label=endpoint_used,
-                data=data,
+                endpoint_label="member/bioguide",
+                data=member_payload,
             )
 
-        raw_hash = hashlib.sha256(
-            json.dumps(data, sort_keys=True, default=str).encode()
-        ).hexdigest()
+            err_early = None
+            if resp.status_code >= 400:
+                err_early = _congress_api_error_message(member_payload)
+            elif not isinstance(member_payload, dict):
+                err_early = "Congress.gov member response was not a JSON object."
 
-        if resp.status_code >= 400:
+            raw_for_hash = {
+                "member": member_payload if isinstance(member_payload, dict) else {},
+                "strategy": "house-vote/members",
+                "bioguideId": bioguide_id,
+            }
+
+            if err_early:
+                raw_hash = hashlib.sha256(
+                    json.dumps(raw_for_hash, sort_keys=True, default=str).encode()
+                ).hexdigest()
+                return AdapterResponse(
+                    source_name=self.source_name,
+                    query=bioguide_id,
+                    results=[],
+                    found=False,
+                    error=err_early,
+                    result_hash=raw_hash,
+                )
+
+            member_obj = member_payload.get("member")
+            if not isinstance(member_obj, dict):
+                raw_hash = hashlib.sha256(
+                    json.dumps(raw_for_hash, sort_keys=True, default=str).encode()
+                ).hexdigest()
+                empty = self._make_empty_response(
+                    bioguide_id,
+                    parse_warning="member payload missing .member object.",
+                )
+                empty.result_hash = raw_hash
+                return empty
+
+            pairs = _house_congress_session_pairs(member_obj)
+            has_senate = _member_has_senate_service(member_obj)
+
+            if not pairs:
+                msg = (
+                    "No House service on record for this member in Congress.gov; "
+                    "the v3 API only exposes House roll-call member votes "
+                    "(house-vote/…/members). Senate per-member votes are not available "
+                    "on this endpoint."
+                )
+                raw_hash = hashlib.sha256(
+                    json.dumps(
+                        {**raw_for_hash, "house_pairs": [], "note": msg},
+                        sort_keys=True,
+                        default=str,
+                    ).encode()
+                ).hexdigest()
+                empty = self._make_empty_response(bioguide_id, parse_warning=msg)
+                empty.result_hash = raw_hash
+                return empty
+
+            collected: list[dict[str, Any]] = []
+            lookups = 0
+
+            for congress, session in pairs:
+                if len(collected) >= MAX_VOTE_RESULTS or lookups >= MAX_ROLL_CALL_DETAIL_FETCHES:
+                    break
+                offset = 0
+                page_limit = 100
+                while (
+                    len(collected) < MAX_VOTE_RESULTS
+                    and lookups < MAX_ROLL_CALL_DETAIL_FETCHES
+                ):
+                    list_params: dict[str, str | int] = {
+                        **base_params,
+                        "limit": page_limit,
+                        "offset": offset,
+                    }
+                    list_url = f"{self.BASE_URL}/house-vote/{congress}/{session}"
+                    list_resp = await client.get(list_url, params=list_params)
+                    try:
+                        list_data = list_resp.json()
+                    except Exception:
+                        logger.warning(
+                            "[CongressVotesAdapter DEBUG] house-vote list parse fail %s/%s offset=%s",
+                            congress,
+                            session,
+                            offset,
+                        )
+                        break
+
+                    if list_resp.status_code >= 400:
+                        logger.warning(
+                            "[CongressVotesAdapter DEBUG] house-vote list status=%s %s/%s msg=%s",
+                            list_resp.status_code,
+                            congress,
+                            session,
+                            _congress_api_error_message(list_data),
+                        )
+                        break
+
+                    batch = list_data.get("houseRollCallVotes") or []
+                    pag = list_data.get("pagination") or {}
+                    total = int(pag.get("count") or 0)
+
+                    for roll in batch:
+                        if len(collected) >= MAX_VOTE_RESULTS or lookups >= MAX_ROLL_CALL_DETAIL_FETCHES:
+                            break
+                        if not isinstance(roll, dict):
+                            continue
+                        rcn = roll.get("rollCallNumber")
+                        if rcn is None:
+                            continue
+                        lookups += 1
+                        member_row = await self._fetch_house_vote_member_row(
+                            client,
+                            congress,
+                            session,
+                            int(rcn),
+                            bioguide_id,
+                            api_key,
+                        )
+                        if member_row is None:
+                            continue
+                        collected.append(
+                            _synthetic_vote_from_house_roll(roll, member_row, bioguide_id)
+                        )
+
+                    offset += len(batch)
+                    if not batch or offset >= total:
+                        break
+
+            raw_for_hash["collected_roll_calls"] = collected
+            raw_hash = hashlib.sha256(
+                json.dumps(raw_for_hash, sort_keys=True, default=str).encode()
+            ).hexdigest()
+
+            logger.warning(
+                "[CongressVotesAdapter DEBUG] bioguide=%s house_vote_rows=%s roll_lookups=%s "
+                "pairs_tried=%s",
+                bioguide_id,
+                len(collected),
+                lookups,
+                pairs,
+            )
+
+            if not collected:
+                empty = self._make_empty_response(
+                    bioguide_id,
+                    parse_warning=(
+                        "No House roll-call rows matched this bioguide after scanning "
+                        f"available house-vote listings (lookups={lookups})."
+                    ),
+                )
+                empty.result_hash = raw_hash
+                return empty
+
+            results: list[AdapterResult] = []
+            for vote in collected[:MAX_VOTE_RESULTS]:
+                vr, _bad = self._vote_to_result(vote, bioguide_id)
+                if vr:
+                    results.append(vr)
+
+            pw_parts: list[str] = []
+            if has_senate:
+                pw_parts.append(
+                    "Congress.gov v3 does not publish Senate roll-call member votes; "
+                    "only House votes from this member's House terms are included."
+                )
+
             return AdapterResponse(
                 source_name=self.source_name,
                 query=bioguide_id,
-                results=[],
-                found=False,
-                error=data.get("error", {}).get("message", resp.text[:200]),
+                results=results,
+                found=True,
                 result_hash=raw_hash,
+                parse_warning=" ".join(pw_parts) if pw_parts else None,
             )
 
-        if not isinstance(data, dict):
-            logger.warning(
-                "[CongressVotesAdapter DEBUG] bioguide=%s response not a dict; preview=%r",
-                bioguide_id,
-                (str(data)[:1500] + "…") if len(str(data)) > 1500 else data,
-            )
-            empty = self._make_empty_response(
-                bioguide_id,
-                parse_warning="Congress.gov JSON was not an object; cannot parse votes.",
-            )
-            empty.result_hash = raw_hash
-            return empty
+    async def _fetch_house_vote_member_row(
+        self,
+        client: httpx.AsyncClient,
+        congress: int,
+        session: int,
+        roll_call_number: int,
+        bioguide_id: str,
+        api_key: str,
+    ) -> dict[str, Any] | None:
+        offset = 0
+        page_limit = 250
+        url = f"{self.BASE_URL}/house-vote/{congress}/{session}/{roll_call_number}/members"
 
-        votes, vote_path = _extract_vote_rows(data)
-        logger.warning(
-            "[CongressVotesAdapter DEBUG] bioguide=%s vote_path=%r vote_row_count=%s",
-            bioguide_id,
-            vote_path,
-            len(votes),
-        )
+        while True:
+            params: dict[str, str | int] = {
+                "api_key": api_key,
+                "format": "json",
+                "limit": page_limit,
+                "offset": offset,
+            }
+            resp = await client.get(url, params=params)
+            try:
+                data = resp.json()
+            except Exception:
+                return None
 
-        if not votes:
-            preview = json.dumps(data, default=str, indent=2)
-            if len(preview) > 4000:
-                preview = preview[:4000] + "\n…(truncated)"
-            logger.warning(
-                "[CongressVotesAdapter DEBUG] bioguide=%s no vote rows — raw JSON shape:\n%s",
-                bioguide_id,
-                preview,
-            )
-            empty = self._make_empty_response(
-                bioguide_id,
-                parse_warning=(
-                    "Congress.gov returned 200 OK but no vote rows were found in the response body."
-                ),
-            )
-            empty.result_hash = raw_hash
-            return empty
+            if resp.status_code >= 400:
+                return None
 
-        results: list[AdapterResult] = []
-        member_mismatch = False
-        for vote in votes[:50]:
-            if not isinstance(vote, dict):
-                continue
-            vr, bad = self._vote_to_result(vote, bioguide_id)
-            if bad:
-                member_mismatch = True
-            if vr:
-                results.append(vr)
+            env = data.get("houseRollCallVoteMemberVotes")
+            if not isinstance(env, dict):
+                return None
+            rows = env.get("results") or []
+            for row in rows:
+                if isinstance(row, dict) and _bioguide_matches_row(row, bioguide_id):
+                    return row
 
-        if not results:
-            empty = self._make_empty_response(
-                bioguide_id,
-                parse_warning=(
-                    "Congress.gov returned vote rows but none could be normalized into "
-                    "structured vote_record entries."
-                ),
-            )
-            empty.result_hash = raw_hash
-            return empty
-
-        pw = None
-        if member_mismatch:
-            pw = (
-                "At least one vote row listed other members/bioguides than the requested "
-                f"{bioguide_id}; spot-check raw votes before relying on timing."
-            )
-
-        return AdapterResponse(
-            source_name=self.source_name,
-            query=bioguide_id,
-            results=results,
-            found=True,
-            result_hash=raw_hash,
-            parse_warning=pw,
-        )
+            pag = env.get("pagination") or data.get("pagination") or {}
+            total = int(pag.get("count") or 0)
+            offset += len(rows)
+            if not rows or offset >= total:
+                return None
 
     def _vote_to_result(
         self, vote: dict[str, Any], bioguide_id: str
