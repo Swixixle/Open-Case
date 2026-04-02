@@ -22,7 +22,7 @@ def _debug_log_congress_json_shape(
 ) -> None:
     """Temporary diagnostics: response shape for Congress.gov member votes parsing."""
     if not isinstance(data, dict):
-        logger.info(
+        logger.warning(
             "[CongressVotesAdapter DEBUG] bioguide=%s endpoint=%s status=%s body_type=%s body_preview=%r",
             bioguide_id,
             endpoint_label,
@@ -33,7 +33,7 @@ def _debug_log_congress_json_shape(
         return
 
     keys = sorted(data.keys())
-    logger.info(
+    logger.warning(
         "[CongressVotesAdapter DEBUG] bioguide=%s endpoint=%s status=%s top_level_keys=%s",
         bioguide_id,
         endpoint_label,
@@ -58,7 +58,7 @@ def _debug_log_congress_json_shape(
                 break
 
     if found_list is None:
-        logger.info(
+        logger.warning(
             "[CongressVotesAdapter DEBUG] bioguide=%s no non-empty list at top level or one dict level down",
             bioguide_id,
         )
@@ -67,7 +67,7 @@ def _debug_log_congress_json_shape(
     list_path, lst = found_list
     first = lst[0]
     if isinstance(first, dict):
-        logger.info(
+        logger.warning(
             "[CongressVotesAdapter DEBUG] bioguide=%s first_list_path=%r list_len=%d first_item_keys=%s",
             bioguide_id,
             list_path,
@@ -75,7 +75,7 @@ def _debug_log_congress_json_shape(
             sorted(first.keys()),
         )
     else:
-        logger.info(
+        logger.warning(
             "[CongressVotesAdapter DEBUG] bioguide=%s first_list_path=%r list_len=%d first_item=%r",
             bioguide_id,
             list_path,
@@ -141,7 +141,7 @@ class CongressVotesAdapter(BaseAdapter):
             try:
                 data = resp.json()
             except Exception as e:
-                logger.info(
+                logger.warning(
                     "[CongressVotesAdapter DEBUG] bioguide=%s endpoint=%s status=%s json_parse_error=%s text_preview=%r",
                     bioguide_id,
                     endpoint_used,
