@@ -184,6 +184,7 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
                 "days_between": s.days_between,
                 "amount": s.amount,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
+                "is_featured": (s.weight or 0) >= 0.5,
             }
             for s in signals
             if not s.dismissed
@@ -290,7 +291,6 @@ def get_case_receipt_card(
     base_url = get_base_url()
     verify_href = f"{base_url}/api/v1/cases/{case_id}/report/view"
     card_url = html.escape(f"{base_url}/api/v1/cases/{case_id}/report/card")
-    og_image = html.escape(f"{base_url}/static/receipt-card-preview.png")
     subject = report.get("subject") or report.get("title") or "Open Case"
     title = html.escape(str(subject))
     og_title = html.escape(f"OPEN CASE: {subject}")
@@ -315,7 +315,6 @@ def get_case_receipt_card(
   <meta property="og:type" content="article" />
   <meta property="og:title" content="{og_title}" />
   <meta property="og:description" content="{og_desc}" />
-  <meta property="og:image" content="{og_image}" />
   <meta name="twitter:card" content="summary_large_image" />
   <title>Receipt — {title}</title>
   <style>

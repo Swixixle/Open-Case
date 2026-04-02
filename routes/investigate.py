@@ -398,6 +398,7 @@ async def run_investigation(
                 "exposure_state": s.exposure_state,
                 "proximity_summary": s.proximity_summary,
                 "repeat_count": s.repeat_count,
+                "is_featured": (s.weight or 0) >= 0.5,
             }
             for s in stored_signals
         ]
@@ -595,6 +596,7 @@ def get_signals(case_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, 
                 "repeat_count": s.repeat_count,
                 "signal_identity_hash": s.signal_identity_hash,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
+                "is_featured": (s.weight or 0) >= 0.5,
             }
             for s in signals
         ],

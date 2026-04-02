@@ -2,22 +2,24 @@
 Updated: 2026-04-01
 
 ## CURRENT STATE
-Phase 4 verification layer is in the codebase: **Todd Young test** emits **four-category diagnostics** (`scripts/todd_young_assertions.py`); **PATCH `/api/v1/signals/{id}/expose`** lives in **reporting** and returns **400** with **`UNCONFIRMED_SIGNAL`** or **`DISMISSED_SIGNAL`** unless the signal is **confirmed** and not dismissed. **`BASE_URL`** env drives **absolute OG URLs** on the receipt card; **`/static/receipt-card-preview.png`** is mounted. Reports include **`supporting_evidence`** inline on each signal; **`GET /api/v1/signals/{id}/history`** reads **`SignalAuditLog`**. **Investigate** accepts **`proximity_days`** (default 90) and optional **`fec_committee_id`** (Todd Young fixture uses **365** + **C00459255**). **`GET /api/v1/subjects/search`** searches hardcoded Indiana officials then Congress.gov.
+Phase 5 closure gate (code): **Category 3** diagnostics print per-entry `source_name` / `entry_type` / title; assertions use **`FINANCIAL_TYPES`** / **`DECISION_TYPES`** sets for forward-compatible type names. **Receipt card** no longer emits **`og:image`** (text-only OG preview). **`check_config_warnings()`** in **`main` lifespan** logs non-fatal warnings when **`BASE_URL`** is missing or localhost, and when **`CONGRESS_API_KEY`** is missing. Signal JSON/HTML include **`is_featured`** (`weight >= 0.5`); **report view** splits **notable** vs **all other** signals. **`/static`** mount removed (placeholder image deleted).
 
-Run **`python -m scripts.test_todd_young`** with **`CONGRESS_API_KEY`** (+ optional **`FEC_API_KEY`**) to close Gate 1; use Step 1B in Phase 4 instructions if any category fails.
+**Definition of done** is the **ten-box checklist** in `OPEN_CASE_PHASE5_INSTRUCTIONS.md` (manual), not code alone. **Box 1**: `python -m scripts.test_todd_young` exit 0 with Category 1–4 PASS — run locally and paste PASS output below when confirmed.
+
+Evidence: *(paste Todd Young Category 1–4 PASS output here after you run the test.)*
 
 ## NEXT ACTION
-Run the Todd Young CLI and, if needed, follow the **Category 1–4 failure tree** in **`OPEN_CASE_PHASE4_INSTRUCTIONS.md`**. Set **`BASE_URL`** in `.env` for deployment (e.g. `https://your-app.onrender.com`).
+Walk the **ten-box checklist** (Phase 5 Step 4). Then Phase 6 starts with **authentication** on write paths before any public deployment.
 
 ## BLOCKED BY
-Nothing in code — blocked only on **running** the live test and confirming all **ten checklist** boxes manually.
+Live verification: **CONGRESS_API_KEY** (+ network) to confirm the Todd Young gate; optional **FEC_API_KEY** beyond DEMO_KEY limits.
 
 ## PARKING LOT
-- Social layer / multi-user
-- BullMQ async queuing
+- BullMQ async queuing (after auth)
 - Indiana state legislature adapter
+- Photo Tap / physical ingest
 - Network graph analysis
-- Game layer UI / leaderboard display
-- Full authentication system
-- Contract proximity real-data validation (Phase 5)
-- Forward to Authority packet (Phase 5)
+- Social layer
+- Forward to Authority packet
+- Contract proximity real-data validation
+- Full authentication system (Phase 6 **start**)
