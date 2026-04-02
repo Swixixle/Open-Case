@@ -14,6 +14,6 @@ This repo is **OPEN CASE**: FastAPI + SQLAlchemy civic investigation tooling. Pu
 
 ## Docs for humans
 - **`README.md`**: setup, capabilities, troubleshooting.
-- **`CONTEXT.md`**: current phase and next actions (maintainer snapshot).
+- **`docs/internal/CONTEXT.md`**: current phase and next actions (maintainer snapshot).
 
 When unsure, prefer documenting a data source in an issue over guessing adapter behavior.
