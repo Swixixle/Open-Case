@@ -101,6 +101,11 @@ class Investigator(Base):
     entries_contributed: Mapped[int] = mapped_column(Integer, default=0)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     is_anchor: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Phase 6 — API key auth (SHA-256 of plaintext; plaintext never stored)
+    hashed_api_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    api_key_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class CaseContributor(Base):
