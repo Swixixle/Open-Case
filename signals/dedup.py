@@ -97,6 +97,9 @@ def upsert_signal(
     if existing is None:
         skip = frozenset({"id", "proximity_summary_override"})
         row = {k: v for k, v in signal_dict.items() if k not in skip}
+        for ck in ("confirmation_checks", "confirmation_basis"):
+            if ck in row and isinstance(row[ck], (dict, list)):
+                row[ck] = json.dumps(row[ck], separators=(",", ":"))
         row.setdefault("repeat_count", 1)
         eids = row.get("evidence_ids")
         if isinstance(eids, list):
@@ -217,4 +220,18 @@ def upsert_signal(
         existing.direction_verified = bool(signal_dict["direction_verified"])
     if "temporal_class" in signal_dict:
         existing.temporal_class = signal_dict["temporal_class"]
+    if signal_dict.get("relevance_score") is not None:
+        existing.relevance_score = float(signal_dict["relevance_score"])
+    if signal_dict.get("confirmation_checks") is not None:
+        cc = signal_dict["confirmation_checks"]
+        existing.confirmation_checks = (
+            json.dumps(cc, separators=(",", ":")) if isinstance(cc, dict) else str(cc)
+        )
+    if signal_dict.get("confirmation_basis") is not None:
+        cb = signal_dict["confirmation_basis"]
+        existing.confirmation_basis = (
+            json.dumps(cb, separators=(",", ":")) if isinstance(cb, list) else str(cb)
+        )
+    if "confirmed" in signal_dict:
+        existing.confirmed = bool(signal_dict["confirmed"])
     return existing

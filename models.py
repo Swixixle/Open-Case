@@ -86,6 +86,8 @@ class EvidenceEntry(Base):
     disambiguation_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     disambiguation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     adapter_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    jurisdictional_match: Mapped[bool] = mapped_column(Boolean, default=False)
+    matched_committees: Mapped[str] = mapped_column(Text, default="[]")
 
     case_file: Mapped["CaseFile"] = relationship("CaseFile", back_populates="evidence_entries")
 
@@ -204,6 +206,9 @@ class Signal(Base):
     parse_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     direction_verified: Mapped[bool] = mapped_column(Boolean, default=True)
     temporal_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    relevance_score: Mapped[float] = mapped_column(Float, default=0.0)
+    confirmation_checks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmation_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SignalAuditLog(Base):
@@ -253,3 +258,22 @@ class SubjectProfile(Base):
     office: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+
+class SenatorCommittee(Base):
+    """Senate.gov committee assignment rows (cached per senator)."""
+
+    __tablename__ = "senator_committees"
+    __table_args__ = (
+        UniqueConstraint(
+            "bioguide_id",
+            "committee_code",
+            name="uq_senator_committee_code",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bioguide_id: Mapped[str] = mapped_column(String(16), index=True)
+    committee_name: Mapped[str] = mapped_column(String(512))
+    committee_code: Mapped[str] = mapped_column(String(32))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

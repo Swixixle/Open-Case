@@ -154,11 +154,23 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
     gaps = [e for e in all_evidence if e.is_absence]
     timeline = [e for e in all_evidence if not e.is_absence]
 
+    display_recipient = case.subject_name
+    for s in signals:
+        if s.signal_type != "temporal_proximity":
+            continue
+        sbd = _sig_breakdown(s)
+        if sbd.get("kind") == "donor_cluster":
+            cl = (sbd.get("committee_label") or "").strip()
+            if cl:
+                display_recipient = cl
+                break
+
     return {
         "case_id": str(case_id),
         "case_number": str(case.id).replace("-", "").upper()[:8],
         "title": case.title,
         "subject": case.subject_name,
+        "display_recipient": display_recipient,
         "subject_type": case.subject_type,
         "jurisdiction": case.jurisdiction,
         "status": case.status,
@@ -187,6 +199,7 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
                 "amount": s.amount,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
                 "is_featured": (s.weight or 0) >= 0.5,
+                "relevance_score": float(getattr(s, "relevance_score", 0.0) or 0.0),
             }
             for s in signals
             if not s.dismissed
@@ -470,7 +483,13 @@ def investigation_report_view(
 
     gen_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     handle = html.escape(case.created_by or "unknown")
-    subject = html.escape(case.subject_name or "Subject")
+    header_recipient = case.subject_name or "Subject"
+    for _s, bd0 in clusters:
+        cl = (bd0.get("committee_label") or "").strip()
+        if cl:
+            header_recipient = cl
+            break
+    subject = html.escape(header_recipient)
     title = html.escape(case.title or "Investigation")
     sig_short = html.escape((case.signed_hash or "")[:48])
 

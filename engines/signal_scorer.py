@@ -14,6 +14,33 @@ from engines.temporal_proximity import (
 from signals.dedup import make_signal_identity_hash
 
 
+def compute_relevance_score(cluster: DonorCluster) -> float:
+    """Jurisdiction + sponsorship concentration for donor cluster signals."""
+    return float(cluster.relevance_score)
+
+
+def evaluate_confirmation_status(signal: dict) -> dict:
+    has_collision = bool(signal.get("has_collision", False))
+    direction_verified = bool(signal.get("direction_verified", True))
+    relevance = float(signal.get("relevance_score", 0.0) or 0.0)
+    checks = {
+        "identity_resolved": not has_collision,
+        "direction_verified": direction_verified,
+        "jurisdictional_match": relevance >= 0.5,
+        "sponsorship_present": relevance >= 0.9,
+    }
+    confirmed = (
+        checks["identity_resolved"]
+        and checks["direction_verified"]
+        and (checks["jurisdictional_match"] or checks["sponsorship_present"])
+    )
+    return {
+        "confirmed": confirmed,
+        "confirmation_checks": checks,
+        "confirmation_basis": [k for k, v in checks.items() if v],
+    }
+
+
 def build_signals_from_proximity(
     donor_clusters: list[DonorCluster],
     case_file_id: uuid.UUID,
@@ -49,6 +76,7 @@ def build_signals_from_proximity(
                 except ValueError:
                     continue
 
+        rel_score = float(cluster.relevance_score)
         breakdown = {
             "kind": "donor_cluster",
             "donor": cluster.donor_display,
@@ -67,9 +95,19 @@ def build_signals_from_proximity(
             "amount_multiplier": cluster.amount_multiplier,
             "committee_label": cluster.committee_label,
             "has_collision": cluster.has_collision,
+            "has_jurisdictional_match": cluster.has_jurisdictional_match,
+            "relevance_score": rel_score,
         }
 
         exposure_state = "unresolved" if cluster.has_collision else "internal"
+
+        conf_eval = evaluate_confirmation_status(
+            {
+                "has_collision": cluster.has_collision,
+                "direction_verified": True,
+                "relevance_score": rel_score,
+            }
+        )
 
         signals.append(
             {
@@ -95,6 +133,14 @@ def build_signals_from_proximity(
                 "direction_verified": True,
                 "temporal_class": cluster.temporal_class,
                 "proximity_summary_override": proximity_summary_manual,
+                "relevance_score": rel_score,
+                "confirmed": bool(conf_eval["confirmed"]),
+                "confirmation_checks": json.dumps(
+                    conf_eval["confirmation_checks"], separators=(",", ":")
+                ),
+                "confirmation_basis": json.dumps(
+                    conf_eval["confirmation_basis"], separators=(",", ":")
+                ),
             }
         )
     return signals

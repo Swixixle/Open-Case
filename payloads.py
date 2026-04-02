@@ -67,6 +67,11 @@ def evidence_semantic_dict(e: EvidenceEntry) -> dict[str, Any]:
         d["disambiguation_by"] = e.disambiguation_by
     if getattr(e, "disambiguation_at", None) and e.disambiguation_at:
         d["disambiguation_at"] = _dt_iso(e.disambiguation_at)
+    if getattr(e, "jurisdictional_match", None) is not None:
+        d["jurisdictional_match"] = bool(e.jurisdictional_match)
+    mc = getattr(e, "matched_committees", None)
+    if mc:
+        d["matched_committees"] = mc
     return d
 
 

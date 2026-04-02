@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import re
 import statistics
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
+
+from engines.relevance import compute_relevance_score
 
 
 @dataclass
@@ -22,6 +25,9 @@ class RawProximityPair:
     financial_entry_id: str
     decision_entry_id: str
     financial_flagged: bool
+    financial_jurisdictional_match: bool = False
+    subject_is_sponsor: bool = False
+    subject_is_cosponsor: bool = False
 
 
 @dataclass
@@ -50,6 +56,8 @@ class DonorCluster:
     proximity_score: float
     amount_multiplier: float
     has_collision: bool
+    has_jurisdictional_match: bool = False
+    relevance_score: float = 0.0
     exemplar_financial_date: str = ""
     exemplar_decision_date: str = ""
     supporting_pairs: list[dict[str, Any]] = field(default_factory=list)
@@ -98,6 +106,24 @@ def _exemplar_vote_label(decision_event: str) -> str:
     if m:
         return f"{bill} ({m.group(1)}th Congress)"
     return bill
+
+
+def _sponsor_flags_from_vote_entry(entry: Any) -> tuple[bool, bool]:
+    raw = getattr(entry, "raw_data_json", "") or "{}"
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return False, False
+    if not isinstance(data, dict):
+        return False, False
+    return bool(data.get("subject_is_sponsor")), bool(data.get("subject_is_cosponsor"))
+
+
+def _financial_jurisdictional_from_entry(entry: Any) -> bool:
+    v = getattr(entry, "jurisdictional_match", None)
+    if v is not None:
+        return bool(v)
+    return False
 
 
 def _dedupe_pairs_by_donor_and_vote(
@@ -204,6 +230,7 @@ def _collect_raw_pairs(
                 dd = getattr(d_entry, "date_of_event", None)
                 fd_s = fd.isoformat() if hasattr(fd, "isoformat") else str(fd or "")
                 dd_s = dd.isoformat() if hasattr(dd, "isoformat") else str(dd or "")
+                sp, csp = _sponsor_flags_from_vote_entry(d_entry)
                 pairs.append(
                     RawProximityPair(
                         actor_a=_actor_for(f_entry, "Unknown party"),
@@ -217,9 +244,25 @@ def _collect_raw_pairs(
                         financial_entry_id=fin_id,
                         decision_entry_id=dec_id,
                         financial_flagged=flagged,
+                        financial_jurisdictional_match=_financial_jurisdictional_from_entry(
+                            f_entry
+                        ),
+                        subject_is_sponsor=sp,
+                        subject_is_cosponsor=csp,
                     )
                 )
     return _dedupe_pairs_by_donor_and_vote(pairs)
+
+
+def _select_exemplar_pair(rel_pairs: list[RawProximityPair]) -> RawProximityPair:
+    def exemplar_score(p: RawProximityPair) -> float:
+        proximity = _proximity_score_from_abs_gap(abs(p.days_between))
+        relevance_bonus = (
+            0.3 if p.subject_is_sponsor else (0.15 if p.subject_is_cosponsor else 0.0)
+        )
+        return proximity + relevance_bonus
+
+    return max(rel_pairs, key=exemplar_score)
 
 
 def _cluster_from_pairs(
@@ -246,11 +289,12 @@ def _cluster_from_pairs(
     vote_count = len(dec_ids)
     pair_count = len(rel_pairs)
     has_collision = any(p.financial_flagged for p in rel_pairs)
+    has_jurisdictional_match = any(p.financial_jurisdictional_match for p in rel_pairs)
 
     gaps = [p.days_between for p in rel_pairs]
     median_gap = float(statistics.median(gaps)) if gaps else 0.0
 
-    exemplar = min(rel_pairs, key=lambda p: (abs(p.days_between), -p.amount))
+    exemplar = _select_exemplar_pair(rel_pairs)
     eg = exemplar.days_between
     abs_eg = abs(eg)
     exemplar_vote = _exemplar_vote_label(exemplar.decision_event)
@@ -268,7 +312,15 @@ def _cluster_from_pairs(
 
     prox = _proximity_score_from_abs_gap(abs_eg)
     mult = _amount_multiplier_from_total(total_amount)
-    final_weight = round(min(1.0, prox * mult), 4)
+    relevance_score = compute_relevance_score(
+        has_jurisdictional_match=has_jurisdictional_match,
+        subject_is_sponsor_any=any(p.subject_is_sponsor for p in rel_pairs),
+        subject_is_cosponsor_any=any(p.subject_is_cosponsor for p in rel_pairs),
+    )
+    final_weight = round(
+        min(1.0, prox * mult * (1.0 + relevance_score * 0.5)),
+        4,
+    )
 
     supporting = [
         {
@@ -278,6 +330,9 @@ def _cluster_from_pairs(
             "amount": p.amount,
             "financial_flagged": p.financial_flagged,
             "decision_event": p.decision_event,
+            "jurisdictional_match": p.financial_jurisdictional_match,
+            "subject_is_sponsor": p.subject_is_sponsor,
+            "subject_is_cosponsor": p.subject_is_cosponsor,
         }
         for p in rel_pairs
     ]
@@ -303,6 +358,8 @@ def _cluster_from_pairs(
         proximity_score=prox,
         amount_multiplier=mult,
         has_collision=has_collision,
+        has_jurisdictional_match=has_jurisdictional_match,
+        relevance_score=relevance_score,
         exemplar_financial_date=exemplar.financial_date,
         exemplar_decision_date=exemplar.decision_date,
         supporting_pairs=supporting,

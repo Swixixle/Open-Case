@@ -41,6 +41,11 @@ from models import (
 )
 from signals.dedup import upsert_signal
 from payloads import apply_case_file_signature, sign_evidence_entry
+from adapters.senate_committees import get_or_refresh_senator_committees
+from data.industry_jurisdiction_map import (
+    get_jurisdictions_for_donor,
+    jurisdiction_label_matches_committee,
+)
 from scoring import add_credibility
 
 router = APIRouter(prefix="/api/v1", tags=["investigate"])
@@ -59,6 +64,20 @@ def _signal_breakdown_local(s: Signal) -> dict[str, Any]:
 def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
     bd = _signal_breakdown_local(s)
     featured = (s.weight or 0) >= 0.5 and s.exposure_state != "unresolved"
+    conf_checks: dict[str, Any] = {}
+    if getattr(s, "confirmation_checks", None):
+        try:
+            conf_checks = json.loads(s.confirmation_checks)
+        except json.JSONDecodeError:
+            conf_checks = {}
+    conf_basis: list[Any] = []
+    if getattr(s, "confirmation_basis", None):
+        try:
+            raw_basis = json.loads(s.confirmation_basis)
+            conf_basis = raw_basis if isinstance(raw_basis, list) else []
+        except json.JSONDecodeError:
+            conf_basis = []
+    rel_sc = float(getattr(s, "relevance_score", 0.0) or bd.get("relevance_score") or 0.0)
     out: dict[str, Any] = {
         "id": str(s.id),
         "weight": s.weight,
@@ -76,6 +95,12 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
         "signal_identity_hash": s.signal_identity_hash,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "is_featured": featured,
+        "relevance_score": rel_sc,
+        "confirmation_checks": conf_checks,
+        "confirmation_basis": conf_basis,
+        "jurisdictional_match": bool(conf_checks.get("jurisdictional_match"))
+        if conf_checks
+        else bool(bd.get("has_jurisdictional_match")),
     }
     if bd.get("kind") == "donor_cluster":
         out.update(
@@ -246,6 +271,52 @@ def _ingest_parse_warning_note(
     created.append(entry)
 
 
+def _fec_committee_legal_name(created_entries: list[EvidenceEntry]) -> str | None:
+    for e in created_entries:
+        if e.entry_type != "financial_connection" or e.source_name != "FEC":
+            continue
+        try:
+            raw = json.loads(e.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        c = raw.get("committee")
+        if isinstance(c, dict) and c.get("name"):
+            return str(c["name"]).strip()
+    return None
+
+
+async def _enrich_fec_evidence_jurisdiction(
+    db: Session,
+    bioguide_id: str | None,
+    created_entries: list[EvidenceEntry],
+) -> None:
+    if not bioguide_id:
+        return
+    sen_rows = await get_or_refresh_senator_committees(db, bioguide_id.strip())
+    for entry in created_entries:
+        if entry.entry_type != "financial_connection" or entry.source_name != "FEC":
+            continue
+        try:
+            raw = json.loads(entry.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            raw = {}
+        donor = raw.get("contributor_name") or ""
+        org = raw.get("contributor_employer") or raw.get("contributor_organization") or ""
+        jurs = get_jurisdictions_for_donor(str(donor), str(org))
+        matched: list[str] = []
+        for j in jurs:
+            for sr in sen_rows:
+                if jurisdiction_label_matches_committee(
+                    j, sr.committee_name, sr.committee_code
+                ):
+                    if j not in matched:
+                        matched.append(j)
+        entry.jurisdictional_match = bool(matched)
+        entry.matched_committees = json.dumps(matched)
+        db.add(entry)
+        sign_evidence_entry(entry)
+
+
 def _ingest_adapter_results(
     db: Session,
     case_id: uuid.UUID,
@@ -411,6 +482,9 @@ async def run_investigation(
             cache_hits=cache_hits,
         )
 
+        bg_for_intel = request.bioguide_id or (prof.bioguide_id if prof else None)
+        await _enrich_fec_evidence_jurisdiction(db, bg_for_intel, created_entries)
+
         substantive = list(
             db.scalars(
                 select(EvidenceEntry).where(
@@ -420,7 +494,12 @@ async def run_investigation(
             ).all()
         )
 
-        committee_label = (case.title or "").strip() or case.subject_name
+        fec_committee = _fec_committee_legal_name(created_entries)
+        committee_label = (fec_committee or "").strip()
+        if not committee_label:
+            committee_label = (request.fec_committee_id or "").strip()
+        if not committee_label:
+            committee_label = (case.subject_name or "").strip()
         donor_clusters = detect_proximity(
             substantive,
             max_days=request.proximity_days,

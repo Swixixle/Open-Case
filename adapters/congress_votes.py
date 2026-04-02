@@ -288,12 +288,145 @@ def _xml_to_vote_dict(
         "voteQuestion": (root.findtext("vote_question_text") or "").strip(),
         "question": (root.findtext("question") or "").strip(),
         "bill": {"number": bill_label, "title": bill_title},
+        "document_type": (doc_type or "").strip(),
+        "document_number": (doc_num or "").strip(),
         "source_url": source_url,
         "memberVote": {
             "bioguideId": bioguide_id,
             "vote": position,
         },
+        "subject_is_sponsor": False,
+        "subject_is_cosponsor": False,
     }
+
+
+def _lis_document_to_api_bill(
+    document_type: str, document_number: str, bill_label: str, question: str
+) -> tuple[str, str] | None:
+    """Return (api_bill_type, number_str) for Congress.gov /v3/bill/... or None."""
+    blob = f"{bill_label} {question}".upper()
+    if re.search(r"\bS\.?\s*AMDT|\bH\.?\s*AMDT|\bAMDT\.\s*NO", blob):
+        return None
+    if re.search(r"\bPN\s*#?\s*\d+", blob) or "NOMINATION" in blob:
+        return None
+
+    dt_raw = (document_type or "").strip()
+    dt = dt_raw.upper().replace(" ", "")
+    num = (document_number or "").strip()
+    if not num.isdigit():
+        m_num = re.search(
+            r"(?i)\bS\.\s*J\.\s*R\.\s*(\d+)\b|\bH\.\s*J\.\s*R\.\s*(\d+)\b"
+            r"|\bS\.\s*(\d+)\b|\bH\.?\s*R\.\s*(\d+)\b",
+            bill_label or "",
+        )
+        if not m_num:
+            return None
+        groups = [g for g in m_num.groups() if g]
+        if not groups:
+            return None
+        num = groups[0]
+        raw = (m_num.group(0) or "").upper().replace(" ", "")
+        blu = (bill_label or "").upper().replace(" ", "")
+        if "H.J.R" in raw or "H.J.RES" in blu:
+            return "hjres", num
+        if "S.J.R" in raw or "S.J.RES" in blu:
+            return "sjres", num
+        if "H.R" in raw or raw.startswith("H."):
+            return "hr", num
+        return "s", num
+
+    if "H.J.RES" in dt or re.match(r"H\.?\s*J\.?\s*R\.?", dt_raw, re.I):
+        return "hjres", num
+    if "S.J.RES" in dt or re.match(r"S\.?\s*J\.?\s*R\.?", dt_raw, re.I):
+        return "sjres", num
+    if dt.startswith("H.R") or dt.startswith("H.R."):
+        return "hr", num
+    if dt.startswith("S.") or dt == "S":
+        return "s", num
+    return None
+
+
+def _bioguides_from_bill_endpoint(payload: Any) -> set[str]:
+    out: set[str] = set()
+    if not isinstance(payload, dict):
+        return out
+    raw = payload.get("sponsors")
+    if raw is None:
+        raw = payload.get("cosponsors")
+    if raw is None:
+        return out
+
+    items: list[Any] | None
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        inner = raw.get("sponsor") or raw.get("cosponsor")
+        if isinstance(inner, list):
+            items = inner
+        elif isinstance(inner, dict):
+            items = [inner]
+        else:
+            items = None
+    else:
+        items = None
+    if not items:
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        bid = it.get("bioguideId") or it.get("bioguide_id")
+        if bid:
+            out.add(str(bid).strip().upper())
+    return out
+
+
+async def _apply_cosponsorship_flags(
+    client: httpx.AsyncClient, vote: dict[str, Any], bioguide_id: str
+) -> None:
+    vote.setdefault("subject_is_sponsor", False)
+    vote.setdefault("subject_is_cosponsor", False)
+    key = os.getenv("CONGRESS_API_KEY")
+    if not key:
+        return
+
+    bg = bioguide_id.strip().upper()
+    qtext = f"{vote.get('voteQuestion') or ''} {vote.get('question') or ''}"
+    bill = vote.get("bill") or {}
+    bill_label = bill.get("number") or ""
+
+    try:
+        cong_i = int(str(vote.get("congress") or "0"))
+    except ValueError:
+        return
+    if cong_i <= 0:
+        return
+
+    parsed = _lis_document_to_api_bill(
+        str(vote.get("document_type") or ""),
+        str(vote.get("document_number") or ""),
+        str(bill_label),
+        qtext,
+    )
+    if not parsed:
+        return
+    btype, bnum = parsed
+    if not bnum.isdigit():
+        return
+
+    base = f"https://api.congress.gov/v3/bill/{cong_i}/{btype}/{bnum}"
+    params = {"api_key": key, "format": "json"}
+    try:
+        sp_resp = await client.get(f"{base}/sponsors", params=params, timeout=20.0)
+        cs_resp = await client.get(f"{base}/cosponsors", params=params, timeout=20.0)
+        sp_json = sp_resp.json() if sp_resp.status_code == 200 else {}
+        cs_json = cs_resp.json() if cs_resp.status_code == 200 else {}
+    except Exception:
+        return
+
+    sponsors = _bioguides_from_bill_endpoint(sp_json)
+    cosponsors = _bioguides_from_bill_endpoint(cs_json)
+    vote["subject_is_sponsor"] = bg in sponsors
+    vote["subject_is_cosponsor"] = bool(bg in cosponsors and bg not in sponsors)
 
 
 def _hash_raw(obj: Any) -> str:
@@ -392,6 +525,13 @@ class CongressVotesAdapter(BaseAdapter):
 
                 if len(collected) >= MAX_VOTE_RESULTS:
                     break
+
+            for vote in collected:
+                try:
+                    await _apply_cosponsorship_flags(client, vote, bioguide_id)
+                except Exception:
+                    vote["subject_is_sponsor"] = False
+                    vote["subject_is_cosponsor"] = False
 
         raw_hash = _hash_raw(
             {"bioguide": bioguide_id, "votes": collected, "congress": congress, "session": session}
