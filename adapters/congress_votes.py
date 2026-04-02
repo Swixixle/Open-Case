@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -11,6 +12,88 @@ import httpx
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _mask_url(url: str) -> str:
+    return re.sub(r"(api_key=)([^&]+)", r"\1***", url, flags=re.IGNORECASE)
+
+
+def _coerce_vote_list(raw: Any) -> list[Any]:
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        for inner_key in ("vote", "votes", "item", "items", "houseRollCallVote"):
+            inner = raw.get(inner_key)
+            if isinstance(inner, list):
+                return inner
+            if isinstance(inner, dict):
+                return [inner]
+    return []
+
+
+def _extract_vote_rows(data: dict[str, Any]) -> tuple[list[Any], str]:
+    """
+    Congress.gov v3 envelopes vary by endpoint. Try documented / observed keys,
+    then fall back to any vote-like top-level list.
+    """
+    tried: list[str] = []
+
+    named_paths: list[tuple[str, Any]] = [
+        ("votes", data.get("votes")),
+        ("memberVotes", data.get("memberVotes")),
+        ("results", data.get("results")),
+        ("houseRollCallVotes", data.get("houseRollCallVotes")),
+        ("houseRollCallVote", data.get("houseRollCallVote")),
+        ("member-votes", data.get("member-votes")),
+        ("senateRollCallVotes", data.get("senateRollCallVotes")),
+        ("rollCallVotes", data.get("rollCallVotes")),
+    ]
+    for path, raw in named_paths:
+        if raw is None:
+            continue
+        votes = _coerce_vote_list(raw)
+        tried.append(f"{path}→{len(votes)}")
+        if votes:
+            return votes, path
+
+    skip_keys = frozenset({"request", "pagination", "error", "errors"})
+    for k, v in data.items():
+        if k in skip_keys:
+            continue
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            sample = v[0]
+            if any(
+                key in sample
+                for key in (
+                    "voteDate",
+                    "startDate",
+                    "updateDate",
+                    "date",
+                    "bill",
+                    "legislation",
+                    "rollCallNumber",
+                    "voteCast",
+                    "memberVote",
+                    "result",
+                )
+            ):
+                return v, f"heuristic:{k}"
+
+    for k, v in data.items():
+        if k in skip_keys:
+            continue
+        if isinstance(v, dict):
+            for ik, iv in v.items():
+                votes = _coerce_vote_list(iv)
+                tried.append(f"{k}.{ik}→{len(votes)}")
+                if votes:
+                    return votes, f"{k}.{ik}"
+
+    logger.warning(
+        "[CongressVotesAdapter DEBUG] vote row extraction failed; tried: %s",
+        ", ".join(tried) if tried else "(no candidate keys)",
+    )
+    return [], "none"
 
 
 def _debug_log_congress_json_shape(
@@ -126,17 +209,25 @@ class CongressVotesAdapter(BaseAdapter):
             "offset": 0,
         }
 
+        votes_url = f"{self.BASE_URL}/member/{bioguide_id}/votes"
+        member_url = f"{self.BASE_URL}/member/{bioguide_id}"
         endpoint_used = "member/bioguide/votes"
         async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.get(
-                f"{self.BASE_URL}/member/{bioguide_id}/votes",
-                params=params,
+            resp = await client.get(votes_url, params=params)
+            logger.warning(
+                "[CongressVotesAdapter DEBUG] bioguide=%s GET votes status=%s url=%s",
+                bioguide_id,
+                resp.status_code,
+                _mask_url(str(resp.request.url)),
             )
             if resp.status_code == 404:
                 endpoint_used = "member/bioguide (fallback after votes 404)"
-                resp = await client.get(
-                    f"{self.BASE_URL}/member/{bioguide_id}",
-                    params=params,
+                resp = await client.get(member_url, params=params)
+                logger.warning(
+                    "[CongressVotesAdapter DEBUG] bioguide=%s GET member fallback status=%s url=%s",
+                    bioguide_id,
+                    resp.status_code,
+                    _mask_url(str(resp.request.url)),
                 )
             try:
                 data = resp.json()
@@ -172,18 +263,36 @@ class CongressVotesAdapter(BaseAdapter):
                 result_hash=raw_hash,
             )
 
-        votes = (
-            data.get("votes")
-            or data.get("memberVotes")
-            or data.get("results")
-            or []
+        if not isinstance(data, dict):
+            logger.warning(
+                "[CongressVotesAdapter DEBUG] bioguide=%s response not a dict; preview=%r",
+                bioguide_id,
+                (str(data)[:1500] + "…") if len(str(data)) > 1500 else data,
+            )
+            empty = self._make_empty_response(
+                bioguide_id,
+                parse_warning="Congress.gov JSON was not an object; cannot parse votes.",
+            )
+            empty.result_hash = raw_hash
+            return empty
+
+        votes, vote_path = _extract_vote_rows(data)
+        logger.warning(
+            "[CongressVotesAdapter DEBUG] bioguide=%s vote_path=%r vote_row_count=%s",
+            bioguide_id,
+            vote_path,
+            len(votes),
         )
 
-        if isinstance(data.get("votes"), dict) and "vote" in data["votes"]:
-            inner = data["votes"]["vote"]
-            votes = inner if isinstance(inner, list) else [inner]
-
         if not votes:
+            preview = json.dumps(data, default=str, indent=2)
+            if len(preview) > 4000:
+                preview = preview[:4000] + "\n…(truncated)"
+            logger.warning(
+                "[CongressVotesAdapter DEBUG] bioguide=%s no vote rows — raw JSON shape:\n%s",
+                bioguide_id,
+                preview,
+            )
             empty = self._make_empty_response(
                 bioguide_id,
                 parse_warning=(
@@ -240,6 +349,18 @@ class CongressVotesAdapter(BaseAdapter):
             bill = {}
         bill_number = bill.get("number") or bill.get("billNumber") or "Unknown bill"
         bill_title = bill.get("title") or bill.get("billTitle") or "Unknown"
+        lt = vote.get("legislationType") or vote.get("billType")
+        ln = vote.get("legislationNumber") or vote.get("billNumber")
+        if bill_number == "Unknown bill" and (lt or ln):
+            bill_number = f"{lt or ''} {ln or ''}".strip() or "Unknown bill"
+        if bill_title == "Unknown":
+            bill_title = (
+                vote.get("voteQuestion")
+                or vote.get("question")
+                or vote.get("voteDescription")
+                or "Unknown"
+            )
+
         vote_date = (
             vote.get("date")
             or vote.get("voteDate")
@@ -251,6 +372,10 @@ class CongressVotesAdapter(BaseAdapter):
         position = "Unknown"
         if isinstance(member_block, dict):
             position = member_block.get("vote") or member_block.get("voteCast") or "Unknown"
+        if position == "Unknown":
+            vc = vote.get("voteCast") or vote.get("vote") or vote.get("position")
+            if vc:
+                position = str(vc)
         congress = vote.get("congress", "")
         session = vote.get("session", vote.get("sessionNumber", ""))
 

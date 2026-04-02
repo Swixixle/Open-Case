@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import re
 
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter, apply_collision_rule
+
+logger = logging.getLogger(__name__)
+
+
+def _mask_url(url: str) -> str:
+    return re.sub(r"(api_key=)([^&]+)", r"\1***", url, flags=re.IGNORECASE)
 
 
 class FECAdapter(BaseAdapter):
@@ -15,12 +23,13 @@ class FECAdapter(BaseAdapter):
 
     async def search(self, query: str, query_type: str = "person") -> AdapterResponse:
         api_key = os.getenv("FEC_API_KEY", "DEMO_KEY")
+        key_source = "FEC_API_KEY env" if os.getenv("FEC_API_KEY") else "default DEMO_KEY"
         try:
             if query_type == "committee":
                 params: dict[str, str | int | bool] = {
                     "committee_id": query,
                     "sort_hide_null": True,
-                    "per_page": 20,
+                    "per_page": 100,
                     "api_key": api_key,
                 }
                 source_url = (
@@ -38,18 +47,48 @@ class FECAdapter(BaseAdapter):
                     f"?contributor_name={query.replace(' ', '+')}"
                 )
 
+            api_path = f"{self.BASE_URL}/schedules/schedule_a/"
             async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(
-                    f"{self.BASE_URL}/schedules/schedule_a/",
-                    params=params,
-                )
+                response = await client.get(api_path, params=params)
+
+            req_url = _mask_url(str(response.request.url))
+            logger.warning(
+                "[FECAdapter DEBUG] query_type=%s query=%r key_source=%s status=%s url=%s",
+                query_type,
+                query,
+                key_source,
+                response.status_code,
+                req_url,
+            )
+
+            try:
                 data = response.json()
+            except Exception as e:
+                text = (response.text[:800] + "…") if len(response.text) > 800 else response.text
+                logger.warning(
+                    "[FECAdapter DEBUG] JSON parse failed: %s body_preview=%r",
+                    e,
+                    text,
+                )
+                raise
 
             raw_hash = hashlib.sha256(
                 json.dumps(data, sort_keys=True).encode()
             ).hexdigest()
 
             items = data.get("results", [])
+            pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
+            api_msg = None
+            if isinstance(data, dict):
+                errs = data.get("errors")
+                if isinstance(errs, list) and errs:
+                    api_msg = errs[0] if isinstance(errs[0], str) else str(errs[0])
+            logger.warning(
+                "[FECAdapter DEBUG] results_count=%s pagination=%r api_errors_hint=%r",
+                len(items) if isinstance(items, list) else "n/a",
+                pagination,
+                api_msg,
+            )
             if not items:
                 empty = self._make_empty_response(query)
                 empty.result_hash = raw_hash
