@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from auth import require_api_key, require_matching_handle
 from database import get_db
 from models import CaseContributor, CaseFile, Investigator
 from payloads import apply_case_file_signature
@@ -57,7 +58,12 @@ def _ensure_investigator(db: Session, handle: str) -> Investigator:
 
 
 @router.post("")
-def create_case(body: CaseCreate, db: Session = Depends(get_db)):
+def create_case(
+    body: CaseCreate,
+    db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
+):
+    require_matching_handle(auth_inv, body.created_by)
     if body.subject_type not in SUBJECT_TYPES:
         raise HTTPException(400, detail=f"subject_type must be one of {sorted(SUBJECT_TYPES)}")
     if body.status not in STATUSES:
@@ -133,7 +139,9 @@ def update_case_status(
     case_id: uuid.UUID,
     request: StatusUpdateRequest,
     db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, str]:
+    require_matching_handle(auth_inv, request.investigator_handle)
     if request.status not in STATUSES:
         raise HTTPException(
             status_code=400,
@@ -159,7 +167,9 @@ def pickup_case(
     case_id: uuid.UUID,
     request: PickupRequest,
     db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, str]:
+    require_matching_handle(auth_inv, request.investigator_handle)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")

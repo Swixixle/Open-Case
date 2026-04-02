@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session, selectinload
 
+from auth import require_api_key, require_matching_handle
 from database import get_db
 from models import CaseFile, CaseSnapshot, Investigator
 from payloads import apply_case_file_signature, full_case_signing_payload
@@ -27,7 +28,9 @@ def attach_snapshot_routes(router: APIRouter) -> None:
         case_id: uuid.UUID,
         body: SnapshotCreate,
         db: Session = Depends(get_db),
+        auth_inv: Investigator = Depends(require_api_key),
     ):
+        require_matching_handle(auth_inv, body.taken_by)
         case = db.scalar(
             select(CaseFile)
             .options(selectinload(CaseFile.evidence_entries))

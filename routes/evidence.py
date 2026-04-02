@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from auth import require_api_key, require_matching_handle
 from database import get_db
 from models import CaseContributor, CaseFile, EvidenceEntry, Investigator
 from payloads import (
@@ -124,7 +125,9 @@ def attach_evidence_routes(router: APIRouter) -> None:
         case_id: uuid.UUID,
         body: EvidenceCreate,
         db: Session = Depends(get_db),
+        auth_inv: Investigator = Depends(require_api_key),
     ):
+        require_matching_handle(auth_inv, body.entered_by)
         if body.entry_type not in ENTRY_TYPES:
             raise HTTPException(400, detail=f"entry_type must be one of {sorted(ENTRY_TYPES)}")
         if body.confidence not in CONFIDENCE:

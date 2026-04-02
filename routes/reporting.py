@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import nulls_last, select
 from sqlalchemy.orm import Session
 
+from auth import require_api_key, require_matching_handle
 from database import get_db
 from models import (
     CaseContributor,
@@ -351,7 +352,9 @@ def expose_signal(
     signal_id: uuid.UUID,
     body: ExposeSignalRequest,
     db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, Any]:
+    require_matching_handle(auth_inv, body.investigator_handle)
     signal = db.scalar(select(Signal).where(Signal.id == signal_id))
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")

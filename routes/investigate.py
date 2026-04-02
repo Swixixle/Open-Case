@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from auth import require_api_key, require_matching_handle
 from adapters.base import BaseAdapter
 from adapters.cache import get_cached_response, response_from_cache_dict, store_cached_response
 from adapters.congress_votes import CongressVotesAdapter
@@ -314,7 +315,9 @@ async def run_investigation(
     case_id: uuid.UUID,
     request: InvestigateRequest,
     db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, Any]:
+    require_matching_handle(auth_inv, request.investigator_handle)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -608,7 +611,9 @@ def confirm_signal(
     signal_id: uuid.UUID,
     body: ConfirmSignalBody,
     db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, Any]:
+    require_matching_handle(auth_inv, body.investigator_handle)
     signal = db.scalar(select(Signal).where(Signal.id == signal_id))
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")
@@ -634,7 +639,9 @@ def dismiss_signal(
     signal_id: uuid.UUID,
     body: DismissSignalBody,
     db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, Any]:
+    require_matching_handle(auth_inv, body.investigator_handle)
     signal = db.scalar(select(Signal).where(Signal.id == signal_id))
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from adapters.cache import flush_adapter_cache
+from auth import require_api_key, require_matching_handle
 from database import get_db
 from models import EvidenceEntry, Investigator
 from payloads import sign_evidence_entry
@@ -28,7 +29,9 @@ def disambiguate_evidence(
     evidence_id: uuid.UUID,
     request: DisambiguateRequest,
     db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, str | bool]:
+    require_matching_handle(auth_inv, request.investigator_handle)
     entry = db.scalar(select(EvidenceEntry).where(EvidenceEntry.id == evidence_id))
     if not entry:
         raise HTTPException(status_code=404, detail="Evidence entry not found")
