@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import statistics
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
@@ -58,10 +59,15 @@ class DonorCluster:
     has_collision: bool
     has_jurisdictional_match: bool = False
     has_lda_filing: bool = False
+    has_regulatory_comment: bool = False
+    has_hearing_appearance: bool = False
+    regulatory_comment_confidence: str | None = None
+    hearing_match_confidence: str | None = None
     relevance_score: float = 0.0
     exemplar_financial_date: str = ""
     exemplar_decision_date: str = ""
     supporting_pairs: list[dict[str, Any]] = field(default_factory=list)
+    witness_evidence_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 FINANCIAL_ENTRY_TYPES = frozenset({"financial_connection", "disclosure"})
@@ -335,6 +341,8 @@ def _cluster_from_pairs(
         subject_is_sponsor_any=any(p.subject_is_sponsor for p in rel_pairs),
         subject_is_cosponsor_any=any(p.subject_is_cosponsor for p in rel_pairs),
         has_lda_filing=has_lda_filing,
+        has_regulatory_comment=False,
+        has_hearing_appearance=False,
     )
     final_weight = round(
         min(1.0, prox * mult * (1.0 + relevance_score * 0.5)),
@@ -379,10 +387,39 @@ def _cluster_from_pairs(
         has_collision=has_collision,
         has_jurisdictional_match=has_jurisdictional_match,
         has_lda_filing=has_lda_filing,
+        has_regulatory_comment=False,
+        has_hearing_appearance=False,
+        regulatory_comment_confidence=None,
+        hearing_match_confidence=None,
         relevance_score=relevance_score,
         exemplar_financial_date=exemplar.financial_date,
         exemplar_decision_date=exemplar.decision_date,
         supporting_pairs=supporting,
+    )
+
+
+def refresh_cluster_scoring(cluster: DonorCluster) -> None:
+    """Recompute relevance and final_weight after witness-room enrichment."""
+    cluster.relevance_score = compute_relevance_score(
+        has_jurisdictional_match=cluster.has_jurisdictional_match,
+        subject_is_sponsor_any=any(
+            bool(x.get("subject_is_sponsor")) for x in cluster.supporting_pairs
+        ),
+        subject_is_cosponsor_any=any(
+            bool(x.get("subject_is_cosponsor")) for x in cluster.supporting_pairs
+        ),
+        has_lda_filing=cluster.has_lda_filing,
+        has_regulatory_comment=cluster.has_regulatory_comment,
+        has_hearing_appearance=cluster.has_hearing_appearance,
+    )
+    cluster.final_weight = round(
+        min(
+            1.0,
+            cluster.proximity_score
+            * cluster.amount_multiplier
+            * (1.0 + cluster.relevance_score * 0.5),
+        ),
+        4,
     )
 
 

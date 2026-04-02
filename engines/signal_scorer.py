@@ -19,25 +19,38 @@ def compute_relevance_score(cluster: DonorCluster) -> float:
     return float(cluster.relevance_score)
 
 
-def evaluate_confirmation_status(signal: dict) -> dict:
-    has_collision = bool(signal.get("has_collision", False))
-    direction_verified = bool(signal.get("direction_verified", True))
-    relevance = float(signal.get("relevance_score", 0.0) or 0.0)
+def evaluate_confirmation_status(signal_data: dict) -> dict:
     checks = {
-        "identity_resolved": not has_collision,
-        "direction_verified": direction_verified,
-        "jurisdictional_match": relevance >= 0.5,
-        "sponsorship_present": relevance >= 0.9,
+        "identity_resolved": not signal_data.get("has_collision", False),
+        "direction_verified": signal_data.get("direction_verified", False),
+        "jurisdictional_match": float(signal_data.get("relevance_score", 0) or 0) >= 0.5,
+        "sponsorship_present": signal_data.get("subject_is_sponsor", False)
+        or signal_data.get("subject_is_cosponsor", False),
+        "lda_filing": signal_data.get("has_lda_filing", False),
+        "regulatory_comment": signal_data.get("has_regulatory_comment", False),
+        "hearing_appearance": signal_data.get("has_hearing_appearance", False),
     }
+
+    relevance_indicators = [
+        checks["jurisdictional_match"],
+        checks["sponsorship_present"],
+        checks["lda_filing"],
+        checks["regulatory_comment"],
+        checks["hearing_appearance"],
+    ]
+    relevance_count = sum(1 for x in relevance_indicators if x)
+
     confirmed = (
         checks["identity_resolved"]
         and checks["direction_verified"]
-        and (checks["jurisdictional_match"] or checks["sponsorship_present"])
+        and relevance_count >= 2
     )
+
     return {
         "confirmed": confirmed,
         "confirmation_checks": checks,
         "confirmation_basis": [k for k, v in checks.items() if v],
+        "relevance_indicator_count": relevance_count,
     }
 
 
@@ -75,6 +88,11 @@ def build_signals_from_proximity(
                     eid_set.append(uuid.UUID(sid))
                 except ValueError:
                     continue
+        for wid in cluster.witness_evidence_ids:
+            ws = str(wid)
+            if ws not in seen:
+                seen.add(ws)
+                eid_set.append(wid)
 
         rel_score = float(cluster.relevance_score)
         breakdown = {
@@ -97,6 +115,10 @@ def build_signals_from_proximity(
             "has_collision": cluster.has_collision,
             "has_jurisdictional_match": cluster.has_jurisdictional_match,
             "has_lda_filing": cluster.has_lda_filing,
+            "has_regulatory_comment": cluster.has_regulatory_comment,
+            "regulatory_comment_confidence": cluster.regulatory_comment_confidence,
+            "has_hearing_appearance": cluster.has_hearing_appearance,
+            "hearing_match_confidence": cluster.hearing_match_confidence,
             "has_sponsorship": any(
                 bool(x.get("subject_is_sponsor")) for x in cluster.supporting_pairs
             ),
@@ -105,13 +127,28 @@ def build_signals_from_proximity(
 
         exposure_state = "unresolved" if cluster.has_collision else "internal"
 
+        sponsor_any = any(
+            bool(x.get("subject_is_sponsor")) for x in cluster.supporting_pairs
+        )
+        cosponsor_any = any(
+            bool(x.get("subject_is_cosponsor")) for x in cluster.supporting_pairs
+        )
         conf_eval = evaluate_confirmation_status(
             {
                 "has_collision": cluster.has_collision,
                 "direction_verified": True,
                 "relevance_score": rel_score,
+                "subject_is_sponsor": sponsor_any,
+                "subject_is_cosponsor": cosponsor_any,
+                "has_lda_filing": cluster.has_lda_filing,
+                "has_regulatory_comment": cluster.has_regulatory_comment,
+                "has_hearing_appearance": cluster.has_hearing_appearance,
             }
         )
+        checks_payload = {
+            **conf_eval["confirmation_checks"],
+            "relevance_indicator_count": conf_eval["relevance_indicator_count"],
+        }
 
         signals.append(
             {
@@ -139,9 +176,7 @@ def build_signals_from_proximity(
                 "proximity_summary_override": proximity_summary_manual,
                 "relevance_score": rel_score,
                 "confirmed": bool(conf_eval["confirmed"]),
-                "confirmation_checks": json.dumps(
-                    conf_eval["confirmation_checks"], separators=(",", ":")
-                ),
+                "confirmation_checks": json.dumps(checks_payload, separators=(",", ":")),
                 "confirmation_basis": json.dumps(
                     conf_eval["confirmation_basis"], separators=(",", ":")
                 ),

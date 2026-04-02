@@ -124,6 +124,9 @@ def _signal_to_report_row(db: Session, s: Signal) -> dict[str, Any]:
         "exemplar_direction": str(bd.get("exemplar_direction") or ""),
         "has_jurisdictional_match": bool(bd.get("has_jurisdictional_match")),
         "has_lda_filing": bool(bd.get("has_lda_filing")),
+        "has_regulatory_comment": bool(bd.get("has_regulatory_comment")),
+        "regulatory_comment_confidence": bd.get("regulatory_comment_confidence"),
+        "has_hearing_appearance": bool(bd.get("has_hearing_appearance")),
         "has_sponsorship": bool(bd.get("has_sponsorship")),
         "cross_case_appearances": int(getattr(s, "cross_case_appearances", 0) or 0),
         "cross_case_officials": xco,
@@ -157,6 +160,12 @@ def _supporting_evidence_summaries(db: Session, signal: Signal) -> list[dict[str
         display_source = e.source_name
         if e.entry_type == "lobbying_filing":
             display_source = "Senate LDA Lobbying Filing"
+        elif e.entry_type == "regulatory_comment":
+            display_source = "Regulations.gov Comment"
+        elif e.entry_type == "hearing_witness":
+            display_source = "GovInfo — Hearing Witness"
+        elif e.entry_type == "hearing_absence":
+            display_source = "GovInfo — Hearing Search (no match)"
         ordered.append(
             {
                 "id": str(e.id),

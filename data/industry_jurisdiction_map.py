@@ -1,5 +1,52 @@
 from __future__ import annotations
 
+COMMITTEE_AGENCY_MAP: dict[str, list[str]] = {
+    "Senate Banking": ["CFPB", "SEC", "TREAS", "FDIC", "OCC", "NCUA", "HUD"],
+    "Senate Finance": ["IRS", "TREAS", "CMS", "SSA"],
+    "Senate Commerce": ["FTC", "FCC", "DOT", "NHTSA", "FAA", "FMC"],
+    "Senate Health": ["FDA", "CMS", "CDC", "NIH", "HHS"],
+    "Senate Energy": ["DOE", "FERC", "EPA", "NRC"],
+    "Senate Environment": ["EPA", "CEQ", "NOAA"],
+    "Senate Armed Services": ["DOD", "DARPA", "ARMY", "NAVY", "USAF"],
+    "Senate Agriculture": ["USDA", "FSIS", "AMS", "RMA"],
+    "Senate Judiciary": ["DOJ", "FBI", "ATF", "BOP"],
+    "Senate Foreign Relations": ["DOS", "USAID", "EXIM"],
+}
+
+
+def get_agencies_for_committees(committee_names: list[str]) -> list[str]:
+    agencies: set[str] = set()
+    for name in committee_names:
+        for key, vals in COMMITTEE_AGENCY_MAP.items():
+            if key.lower() in name.lower():
+                agencies.update(vals)
+    return list(agencies)
+
+
+COMMITTEE_CHRG_CODES: dict[str, str] = {
+    "Senate Banking": "SSBK",
+    "Senate Finance": "SSFI",
+    "Senate Commerce": "SSCM",
+    "Senate Health": "SSHR",
+    "Senate Energy": "SSEG",
+    "Senate Environment": "SSEV",
+    "Senate Armed Services": "SSAS",
+    "Senate Agriculture": "SSAF",
+    "Senate Judiciary": "SSJU",
+    "Senate Foreign Relations": "SSFR",
+    "Senate Intelligence": "SLIN",
+}
+
+
+def get_chrg_codes_for_committees(committee_names: list[str]) -> list[str]:
+    codes: list[str] = []
+    for name in committee_names:
+        for key, code in COMMITTEE_CHRG_CODES.items():
+            if key.lower() in name.lower():
+                codes.append(code)
+    return list(set(codes))
+
+
 INDUSTRY_JURISDICTION_MAP: dict[str, list[str]] = {
     "insurance": ["Senate Commerce", "Senate Finance", "Senate Banking"],
     "bank": ["Senate Banking", "Senate Finance"],

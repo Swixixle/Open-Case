@@ -67,6 +67,8 @@
           <div class="badge-row">
             {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
             {% if s.has_lda_filing %}<span class="badge">LDA Filing</span>{% endif %}
+            {% if s.has_regulatory_comment and s.regulatory_comment_confidence == 'confirmed' %}<span class="badge">Regulatory Comment</span>{% elif s.has_regulatory_comment %}<span class="badge">Regulatory Comment — probable</span>{% endif %}
+            {% if s.has_hearing_appearance %}<span class="badge">Testified at Hearing</span>{% endif %}
             {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
             {% if s.confirmed %}<span class="badge" style="border-color:var(--accent);">Confirmed</span>{% endif %}
           </div>

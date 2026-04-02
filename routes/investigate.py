@@ -16,7 +16,9 @@ from adapters.cache import get_cached_response, response_from_cache_dict, store_
 from adapters.congress_votes import CongressVotesAdapter
 from adapters.dedup import is_duplicate, make_evidence_hash
 from adapters.fec import FECAdapter
+from adapters.govinfo_hearings import current_congress_number, search_hearing_witnesses
 from adapters.lda import fetch_lda_filings
+from adapters.regulations import fetch_docket_comments
 from adapters.indiana_cf import IndianaCFAdapter
 from adapters.indy_gis import IndyGISAdapter
 from adapters.marion_assessor import MarionCountyAssessorAdapter
@@ -29,7 +31,11 @@ from engines.signal_scorer import (
     build_signals_from_contract_proximity,
     build_signals_from_proximity,
 )
-from engines.temporal_proximity import detect_proximity
+from engines.temporal_proximity import (
+    DonorCluster,
+    detect_proximity,
+    refresh_cluster_scoring,
+)
 from models import (
     CaseContributor,
     CaseFile,
@@ -46,9 +52,11 @@ from signals.dedup import upsert_signal
 from payloads import apply_case_file_signature, sign_evidence_entry
 from adapters.senate_committees import get_or_refresh_senator_committees
 from data.industry_jurisdiction_map import (
+    get_chrg_codes_for_committees,
     get_jurisdictions_for_donor,
     jurisdiction_label_matches_committee,
 )
+from core.credentials import CredentialRegistry
 from scoring import add_credibility
 
 router = APIRouter(prefix="/api/v1", tags=["investigate"])
@@ -56,6 +64,233 @@ router = APIRouter(prefix="/api/v1", tags=["investigate"])
 # Top donor-cluster signals in POST investigate body (resolved only; see signals_unresolved).
 INVESTIGATE_SIGNALS_RESPONSE_LIMIT = 10
 MAX_LDA_DONORS_PER_RUN = 25
+MAX_WITNESS_CLUSTERS_PER_RUN = 20
+
+
+def _connected_org_for_cluster(
+    db: Session, case_id: uuid.UUID, cluster: DonorCluster
+) -> str:
+    for row in cluster.supporting_pairs:
+        fid = row.get("financial_entry_id")
+        if not fid:
+            continue
+        try:
+            uid = uuid.UUID(str(fid))
+        except ValueError:
+            continue
+        e = db.get(EvidenceEntry, uid)
+        if not e or e.case_file_id != case_id:
+            continue
+        try:
+            raw = json.loads(e.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        org = str(raw.get("contributor_employer") or "").strip()
+        if org:
+            return org
+    return ""
+
+
+async def _ingest_regulations_and_hearings_for_clusters(
+    db: Session,
+    case_id: uuid.UUID,
+    donor_clusters: list[DonorCluster],
+    created_entries: list[EvidenceEntry],
+    investigator: str,
+    committee_names: list[str],
+    source_statuses: list[dict[str, Any]],
+) -> None:
+    reg_key = CredentialRegistry.get_credential("regulations")
+    gov_key = CredentialRegistry.get_credential("govinfo")
+    chrg_codes = get_chrg_codes_for_committees(committee_names)
+    congress = current_congress_number()
+
+    if not reg_key:
+        source_statuses.append(
+            {
+                "adapter": "regulations",
+                "display_name": "Regulations.gov",
+                "status": "credential_unavailable",
+                "detail": "REGULATIONS_GOV_API_KEY not set and no file credential",
+            }
+        )
+    if not gov_key:
+        source_statuses.append(
+            {
+                "adapter": "govinfo",
+                "display_name": "GovInfo",
+                "status": "credential_unavailable",
+                "detail": "GOVINFO_API_KEY not set and no file credential",
+            }
+        )
+
+    n_witness = 0
+    for cluster in donor_clusters:
+        if float(cluster.relevance_score) <= 0.3:
+            continue
+        if n_witness >= MAX_WITNESS_CLUSTERS_PER_RUN:
+            break
+        n_witness += 1
+        org = _connected_org_for_cluster(db, case_id, cluster)
+        donor = cluster.donor_display
+
+        if reg_key:
+            try:
+                matches = await fetch_docket_comments(
+                    donor, org, committee_names, reg_key
+                )
+            except Exception:
+                matches = []
+            if matches:
+                cluster.has_regulatory_comment = True
+                if any(m.get("match_confidence") == "confirmed" for m in matches):
+                    cluster.regulatory_comment_confidence = "confirmed"
+                else:
+                    cluster.regulatory_comment_confidence = "probable"
+                for m in matches[:8]:
+                    cid = str(m.get("comment_id") or "")
+                    if not cid:
+                        continue
+                    eh = make_evidence_hash(
+                        case_id,
+                        "Regulations.gov",
+                        cid,
+                        None,
+                        None,
+                        cluster.donor_key,
+                    )
+                    if is_duplicate(db, case_id, eh):
+                        continue
+                    body = json.dumps(m, sort_keys=True, default=str)
+                    entry = EvidenceEntry(
+                        case_file_id=case_id,
+                        entry_type="regulatory_comment",
+                        title=(
+                            f"Regulations.gov comment "
+                            f"({m.get('match_confidence')}): "
+                            f"{m.get('docket_title') or cid}"
+                        ),
+                        body=str(m.get("docket_title") or body)[:8000],
+                        source_url=f"https://www.regulations.gov/comment/{cid}",
+                        source_name="Regulations.gov",
+                        adapter_name="Regulations.gov",
+                        entered_by=investigator,
+                        confidence=str(m.get("match_confidence") or "probable"),
+                        raw_data_json=body,
+                        evidence_hash=eh,
+                    )
+                    db.add(entry)
+                    db.flush()
+                    sign_evidence_entry(entry)
+                    created_entries.append(entry)
+                    cluster.witness_evidence_ids.append(entry.id)
+
+        if gov_key and chrg_codes:
+            try:
+                gres = await search_hearing_witnesses(
+                    donor, org, chrg_codes, congress, gov_key
+                )
+            except Exception:
+                gres = {"hits": [], "searched": False, "matched": False}
+            if gres.get("searched"):
+                if gres.get("matched") and gres.get("hits"):
+                    hit = gres["hits"][0]
+                    cluster.has_hearing_appearance = True
+                    cluster.hearing_match_confidence = str(
+                        hit.get("match_confidence") or "probable"
+                    )
+                    hid = str(hit.get("package_id") or "")
+                    eh2 = make_evidence_hash(
+                        case_id,
+                        "GovInfo",
+                        hid,
+                        None,
+                        None,
+                        cluster.donor_key,
+                    )
+                    if not is_duplicate(db, case_id, eh2):
+                        raw_h = json.dumps(hit, sort_keys=True, default=str)
+                        hent = EvidenceEntry(
+                            case_file_id=case_id,
+                            entry_type="hearing_witness",
+                            title=f"Hearing witness match: {hit.get('hearing_title') or hid}",
+                            body=raw_h[:8000],
+                            source_url=str(hit.get("source_url") or ""),
+                            source_name="GovInfo (CHRG)",
+                            adapter_name="GovInfo",
+                            entered_by=investigator,
+                            confidence=str(hit.get("match_confidence") or "probable"),
+                            raw_data_json=raw_h,
+                            evidence_hash=eh2,
+                        )
+                        db.add(hent)
+                        db.flush()
+                        sign_evidence_entry(hent)
+                        created_entries.append(hent)
+                        cluster.witness_evidence_ids.append(hent.id)
+                else:
+                    abs_key = "|".join(
+                        [
+                            cluster.donor_key,
+                            ",".join(sorted(chrg_codes)),
+                            str(congress),
+                        ]
+                    )
+                    eh3 = make_evidence_hash(
+                        case_id,
+                        "GovInfo",
+                        f"hearing_absence|{abs_key}",
+                        None,
+                        None,
+                        cluster.donor_key,
+                    )
+                    if not is_duplicate(db, case_id, eh3):
+                        absence_payload = {
+                            "searched": True,
+                            "match": False,
+                            "donor_key": cluster.donor_key,
+                            "committee_codes": chrg_codes,
+                            "congress": congress,
+                        }
+                        aent = EvidenceEntry(
+                            case_file_id=case_id,
+                            entry_type="hearing_absence",
+                            title="GovInfo hearing search — no witness name match",
+                            body=json.dumps(absence_payload, sort_keys=True),
+                            source_url="https://api.govinfo.gov/",
+                            source_name="GovInfo (CHRG)",
+                            adapter_name="GovInfo",
+                            entered_by=investigator,
+                            confidence="absence",
+                            raw_data_json=json.dumps(absence_payload, sort_keys=True),
+                            evidence_hash=eh3,
+                        )
+                        db.add(aent)
+                        db.flush()
+                        sign_evidence_entry(aent)
+                        created_entries.append(aent)
+                        cluster.witness_evidence_ids.append(aent.id)
+
+        refresh_cluster_scoring(cluster)
+
+    if reg_key:
+        source_statuses.append(
+            {
+                "adapter": "regulations",
+                "display_name": "Regulations.gov",
+                "status": "clean",
+                "detail": None,
+            }
+        )
+    if gov_key:
+        source_statuses.append(
+            {
+                "adapter": "govinfo",
+                "display_name": "GovInfo",
+                "status": "clean",
+                "detail": None,
+            }
+        )
 
 
 def _adapter_registry_key(adapter: BaseAdapter) -> str:
@@ -343,6 +578,8 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
                 "exemplar_vote": bd.get("exemplar_vote"),
                 "exemplar_direction": bd.get("exemplar_direction"),
                 "has_lda_filing": bool(bd.get("has_lda_filing")),
+                "has_regulatory_comment": bool(bd.get("has_regulatory_comment")),
+                "has_hearing_appearance": bool(bd.get("has_hearing_appearance")),
             }
         )
     xco: list[str] = []
@@ -762,10 +999,24 @@ async def run_investigation(
             committee_label = (request.fec_committee_id or "").strip()
         if not committee_label:
             committee_label = (case.subject_name or "").strip()
+        committee_names_witness: list[str] = []
+        if bg_for_intel:
+            sen_for_witness = await get_or_refresh_senator_committees(db, bg_for_intel)
+            committee_names_witness = [r.committee_name for r in sen_for_witness]
+
         donor_clusters = detect_proximity(
             substantive,
             max_days=request.proximity_days,
             committee_label=committee_label,
+        )
+        await _ingest_regulations_and_hearings_for_clusters(
+            db,
+            case_id,
+            donor_clusters,
+            created_entries,
+            request.investigator_handle,
+            committee_names_witness,
+            source_statuses,
         )
         contract_prox = detect_contract_proximity(substantive)
         contract_anomalies = detect_contract_anomalies(substantive)
