@@ -12,6 +12,26 @@ from adapters.base import AdapterResponse, AdapterResult, BaseAdapter, apply_col
 
 logger = logging.getLogger(__name__)
 
+# Donor shapes that are very unlikely to be accidental multi-entity personal-name matches.
+_UNAMBIGUOUS_NAME_MARKERS = (
+    "PAC",
+    "INC",
+    "LLC",
+    "COMMITTEE",
+    "CORP",
+    "ASSOCIATION",
+    "FOUNDATION",
+    "FUND",
+)
+
+
+def _is_likely_unambiguous(donor_name: str) -> bool:
+    """True if the contributor string looks like a legal entity, not a vague personal name."""
+    if not donor_name or not str(donor_name).strip():
+        return False
+    upper = str(donor_name).upper()
+    return any(marker in upper for marker in _UNAMBIGUOUS_NAME_MARKERS)
+
 
 def _mask_url(url: str) -> str:
     return re.sub(r"(api_key=)([^&]+)", r"\1***", url, flags=re.IGNORECASE)
@@ -120,6 +140,15 @@ class FECAdapter(BaseAdapter):
                     n for n in unique_names if n != str(contributor_name).lower()
                 )[:20]
 
+                # Committee_id queries return many unrelated donors on one page; that is not
+                # per-row ambiguity. Corporate/PAC-style names are treated as unambiguous.
+                if query_type == "committee" or _is_likely_unambiguous(contributor_name):
+                    row_collision_count = 1
+                    row_collision_set: list[str] = []
+                else:
+                    row_collision_count = collision_count
+                    row_collision_set = other
+
                 ar = AdapterResult(
                     source_name=self.source_name,
                     source_url=source_url,
@@ -132,8 +161,8 @@ class FECAdapter(BaseAdapter):
                     date_of_event=str(date)[:10] if date else None,
                     amount=amt_f,
                     matched_name=str(contributor_name) or None,
-                    collision_count=collision_count,
-                    collision_set=other,
+                    collision_count=row_collision_count,
+                    collision_set=row_collision_set,
                     raw_data=dict(item),
                 )
                 apply_collision_rule(ar)
