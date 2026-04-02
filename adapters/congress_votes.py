@@ -2,12 +2,86 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from typing import Any
 
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
+
+logger = logging.getLogger(__name__)
+
+
+def _debug_log_congress_json_shape(
+    *,
+    bioguide_id: str,
+    status_code: int,
+    endpoint_label: str,
+    data: Any,
+) -> None:
+    """Temporary diagnostics: response shape for Congress.gov member votes parsing."""
+    if not isinstance(data, dict):
+        logger.info(
+            "[CongressVotesAdapter DEBUG] bioguide=%s endpoint=%s status=%s body_type=%s body_preview=%r",
+            bioguide_id,
+            endpoint_label,
+            status_code,
+            type(data).__name__,
+            (str(data)[:300] + "…") if len(str(data)) > 300 else str(data),
+        )
+        return
+
+    keys = sorted(data.keys())
+    logger.info(
+        "[CongressVotesAdapter DEBUG] bioguide=%s endpoint=%s status=%s top_level_keys=%s",
+        bioguide_id,
+        endpoint_label,
+        status_code,
+        keys,
+    )
+
+    found_list: tuple[str, list[Any]] | None = None
+    for name, val in data.items():
+        if isinstance(val, list) and len(val) > 0:
+            found_list = (name, val)
+            break
+
+    if found_list is None:
+        for name, val in data.items():
+            if isinstance(val, dict):
+                for inner_k, inner_v in val.items():
+                    if isinstance(inner_v, list) and len(inner_v) > 0:
+                        found_list = (f"{name}.{inner_k}", inner_v)
+                        break
+            if found_list is not None:
+                break
+
+    if found_list is None:
+        logger.info(
+            "[CongressVotesAdapter DEBUG] bioguide=%s no non-empty list at top level or one dict level down",
+            bioguide_id,
+        )
+        return
+
+    list_path, lst = found_list
+    first = lst[0]
+    if isinstance(first, dict):
+        logger.info(
+            "[CongressVotesAdapter DEBUG] bioguide=%s first_list_path=%r list_len=%d first_item_keys=%s",
+            bioguide_id,
+            list_path,
+            len(lst),
+            sorted(first.keys()),
+        )
+    else:
+        logger.info(
+            "[CongressVotesAdapter DEBUG] bioguide=%s first_list_path=%r list_len=%d first_item=%r",
+            bioguide_id,
+            list_path,
+            len(lst),
+            (str(first)[:400] + "…") if len(str(first)) > 400 else first,
+        )
 
 
 class CongressVotesAdapter(BaseAdapter):
@@ -52,17 +126,37 @@ class CongressVotesAdapter(BaseAdapter):
             "offset": 0,
         }
 
+        endpoint_used = "member/bioguide/votes"
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.get(
                 f"{self.BASE_URL}/member/{bioguide_id}/votes",
                 params=params,
             )
             if resp.status_code == 404:
+                endpoint_used = "member/bioguide (fallback after votes 404)"
                 resp = await client.get(
                     f"{self.BASE_URL}/member/{bioguide_id}",
                     params=params,
                 )
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception as e:
+                logger.info(
+                    "[CongressVotesAdapter DEBUG] bioguide=%s endpoint=%s status=%s json_parse_error=%s text_preview=%r",
+                    bioguide_id,
+                    endpoint_used,
+                    resp.status_code,
+                    e,
+                    (resp.text[:500] + "…") if len(resp.text) > 500 else resp.text,
+                )
+                raise
+
+            _debug_log_congress_json_shape(
+                bioguide_id=bioguide_id,
+                status_code=resp.status_code,
+                endpoint_label=endpoint_used,
+                data=data,
+            )
 
         raw_hash = hashlib.sha256(
             json.dumps(data, sort_keys=True, default=str).encode()
