@@ -1,6 +1,6 @@
 """
 Todd Young gate (Phase 4): structured four-category diagnostics (Step 1A).
-Requires CONGRESS_API_KEY (and network). Uses TestClient + DB assertions.
+Requires PROPUBLICA_API_KEY (and network) for vote records. Uses TestClient + DB assertions.
 
 On full PASS, writes PHASE5_CLOSURE.md (Phase 6 closure artifact; fill
 idempotency + checklist sections after follow-up runs).
@@ -80,7 +80,7 @@ def write_closure_artifact(
         "[ ] 7. Receipt card HTML renders, no og:image tag in source",
         "[ ] 8. GET /signals/{id}/history returns audit trail",
         "[ ] 9. GET /subjects/search?name=Todd+Young returns result",
-        "[ ] 10. Startup warning appears when CONGRESS_API_KEY is unset",
+        "[ ] 10. Startup warnings appear when PROPUBLICA_API_KEY or CONGRESS_API_KEY is unset",
         "",
         "## Phase 5 Status",
         "Status: CLOSED (pending manual checklist + idempotency fill-in)",
@@ -113,8 +113,8 @@ def _investigate_body() -> dict:
 
 
 def main() -> int:
-    if not os.getenv("CONGRESS_API_KEY"):
-        print("CONGRESS_API_KEY is required in the environment.", file=sys.stderr)
+    if not os.getenv("PROPUBLICA_API_KEY"):
+        print("PROPUBLICA_API_KEY is required in the environment.", file=sys.stderr)
         return 1
 
     from database import SessionLocal

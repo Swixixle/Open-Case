@@ -3,7 +3,7 @@ Idempotency test: N sequential investigate runs must not grow evidence/signal co
 
 Requires:
   - Running app (e.g. uvicorn main:app)
-  - CONGRESS_API_KEY + network (same as Todd Young)
+  - PROPUBLICA_API_KEY + network (vote records); optional CONGRESS_API_KEY for other adapters
   - Shared SQLite DB as the running process (default ./open_case.db)
 
 Usage:
@@ -106,8 +106,8 @@ def _counts(case_id: str) -> tuple[int, int]:
 
 
 def main() -> int:
-    if not os.getenv("CONGRESS_API_KEY"):
-        print("CONGRESS_API_KEY is required.", file=sys.stderr)
+    if not os.getenv("PROPUBLICA_API_KEY"):
+        print("PROPUBLICA_API_KEY is required.", file=sys.stderr)
         return 1
 
     with httpx.Client() as client:

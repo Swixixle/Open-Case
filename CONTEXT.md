@@ -4,7 +4,7 @@ Updated: 2026-04-01
 ## CURRENT STATE
 **Phase 6 (in progress):** **Write routes** require `Authorization: Bearer open_case_<hex>` minted at **`POST /api/v1/auth/keys?handle=...`**. Body handles (`created_by`, `investigator_handle`, etc.) must match the authenticated handle. **GET** (reports, signals list, subjects search, case read) stays **public**. Investigator row gains **`hashed_api_key`** / **`api_key_created_at`** (Alembic `c901d4e2f8ab`).
 
-**BASE_URL hardening:** If **`ENV=production`**, startup **exits** when **`BASE_URL`** is empty or contains `localhost`. Otherwise only **warns**. **`CONGRESS_API_KEY`** missing is always a warning.
+**BASE_URL hardening:** If **`ENV=production`**, startup **exits** when **`BASE_URL`** is empty or contains `localhost`. Otherwise only **warns**. **`PROPUBLICA_API_KEY`** and **`CONGRESS_API_KEY`** missing each produce a startup warning.
 
 **Closure automation:** On Todd Young **PASS**, **`scripts/test_todd_young`** writes **`PHASE5_CLOSURE.md`** (fill idempotency + checklist after **`python -m scripts.test_idempotency`** and manual boxes). Category 3 stderr groups evidence **by adapter/source** for FEC vs Congress triage.
 
@@ -20,7 +20,7 @@ Evidence: *(paste Todd Young Category 1–4 PASS output here after you run the t
 3. Manual ten-box + **ENV=production** smoke on BASE_URL.
 
 ## BLOCKED BY
-Live verification: **CONGRESS_API_KEY** (+ network); app + idempotency script must share the same **`open_case.db`** path.
+Live verification: **PROPUBLICA_API_KEY** (+ network) for votes; optional **CONGRESS_API_KEY** for Congress.gov member search. App + idempotency script must share the same **`open_case.db`** path.
 
 ## PARKING LOT
 - BullMQ async queuing (after auth)
