@@ -5,9 +5,9 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from auth import require_api_key, require_matching_handle
@@ -44,6 +44,9 @@ from payloads import apply_case_file_signature, sign_evidence_entry
 from scoring import add_credibility
 
 router = APIRouter(prefix="/api/v1", tags=["investigate"])
+
+# Response body cap for POST investigate (full count still in signals_detected).
+INVESTIGATE_SIGNALS_RESPONSE_LIMIT = 50
 
 
 class InvestigateRequest(BaseModel):
@@ -411,6 +414,8 @@ async def run_investigation(
             }
             for s in stored_signals
         ]
+        signals_detected_total = len(signal_payloads)
+        signal_payloads_response = signal_payloads[:INVESTIGATE_SIGNALS_RESPONSE_LIMIT]
 
         case_refresh = db.scalar(
             select(CaseFile)
@@ -437,9 +442,9 @@ async def run_investigation(
         "sources_checked": len(source_check_tracker),
         "cache_hits": cache_hits,
         "evidence_entries_created": len(created_entries),
-        "signals_detected": len(signal_payloads),
+        "signals_detected": signals_detected_total,
         "errors": errors,
-        "signals": signal_payloads,
+        "signals": signal_payloads_response,
         "collision_warnings": [
             {
                 "entry_id": str(e.id),
@@ -569,14 +574,27 @@ async def _run_investigation_adapters(
 
 
 @router.get("/cases/{case_id}/signals")
-def get_signals(case_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_signals(
+    case_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=500, description="Max signals to return (by weight desc)"),
+) -> dict[str, Any]:
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    total_ct = (
+        db.scalar(
+            select(func.count())
+            .select_from(Signal)
+            .where(Signal.case_file_id == case_id)
+        )
+        or 0
+    )
     signals = db.scalars(
         select(Signal)
         .where(Signal.case_file_id == case_id)
         .order_by(Signal.weight.desc())
+        .limit(limit)
     ).all()
 
     def _bd(s: Signal) -> dict[str, Any]:
@@ -587,7 +605,8 @@ def get_signals(case_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, 
 
     return {
         "case_id": str(case_id),
-        "signal_count": len(signals),
+        "signal_count": int(total_ct),
+        "limit": limit,
         "signals": [
             {
                 "id": str(s.id),
