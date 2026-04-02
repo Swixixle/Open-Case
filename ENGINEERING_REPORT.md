@@ -42,6 +42,11 @@ _(Paste full console output from `python -m scripts.test_todd_young` showing Cat
 | `is_featured` (`weight >= 0.5` in API/HTML) | Yes | **UNKNOWN** | Not a DB column; computed in responses |
 | `og:image` removed from receipt card | Yes | **Yes (visual)** | Template/CSS inspection; no social image tag |
 | Category 3 diagnostic logging | Yes | **Yes (code review)** | Set-based assertions; deterministic in review |
+| `/static` StaticFiles mount + bundled receipt PNG | **Removed** | **Yes (code)** | Phase 5: no lazy-loaded social image; card HTML only |
+| Per-handle API key on write routes | Yes | **UNKNOWN** | Mint at `POST /api/v1/auth/keys`; needs security review in prod |
+| `ENV=production` + invalid `BASE_URL` exits process | Yes | **UNKNOWN** | Manual smoke: start with `ENV=production` localhost |
+| `PHASE5_CLOSURE.md` on Todd Young PASS | Yes | **UNKNOWN** | Written only after full category PASS |
+| HTTP idempotency harness (`scripts/test_idempotency`) | Yes | **UNKNOWN** | Requires running server + shared DB |
 
 ### What "unverified" means here
 
@@ -103,6 +108,49 @@ records show. It does not reach conclusions.
 
 ---
 
+## PHASE 5 DELIVERY (THIS SNAPSHOT)
+
+What shipped in code for the Phase 5 closure gate (see also `CONTEXT.md` and,
+when available in your tree, `OPEN_CASE_PHASE5_INSTRUCTIONS.md` for the **manual
+ten-box** definition of done):
+
+1. **Todd Young Category 3 — forward-compatible types.** `scripts/todd_young_assertions.py`
+   defines `FINANCIAL_TYPES` and `DECISION_TYPES`. Category 3 requires at least one
+   evidence row linked to the top temporal-proximity signal whose `entry_type` falls
+   in each set. On failure, the script prints a **Category 3 Evidence Debug** block
+   (signal id, evidence ids, per-row `source_name` / `entry_type` / title snippet) so
+   the next engineer sees the mismatch without guessing. **Note:** Category 1’s SQL
+   count for “votes” still filters `entry_type == "vote_record"` only; Congress
+   adapters today emit `vote_record`. If you add `decision_event` / `congressional_vote`
+   to live data, ensure Category 1’s query stays aligned or the gate will disagree
+   with Category 3.
+
+2. **Receipt card — text OG only.** `GET /api/v1/cases/{id}/report/card` emits
+   `og:url`, `og:type`, `og:title`, `og:description`. **`og:image` is intentionally
+   absent** (no hot-linked or static preview asset). The old placeholder
+   `static/receipt-card-preview.png` and **`StaticFiles` mount were removed** from
+   `main.py`. Social crawlers get a text summary only. *(The template still sets
+   `twitter:card` to `summary_large_image` without an image — expect inconsistent
+   Twitter cards until that card type is revisited.)*
+
+3. **Startup configuration.** `check_config_warnings()` runs at the start of app
+   lifespan (before `init_db()`). **`ENV=production`:** missing or localhost
+   **`BASE_URL` causes `sys.exit(1)`**. Otherwise **`BASE_URL`** issues log a **warning** only.
+   Missing **`CONGRESS_API_KEY`** is always a **warning** (app still starts).
+
+4. **`is_featured` everywhere signals surface.** Threshold **`weight >= 0.5`**, hardcoded
+   in **`routes/investigate.py`** (investigate response + `GET .../signals`) and
+   **`routes/reporting.py`** (report JSON/HTML payload). **Not** a database column.
+
+5. **HTML report — notable vs other.** `templates/report.html` splits **“Notable signals
+   (weight ≥ 0.5)”** from a muted **“All other signals”** section using Jinja2
+   `selectattr('is_featured')` / `rejectattr('is_featured')`.
+
+6. **App wiring.** `main.py` mounts six routers: `auth`, `cases`, `investigate`,
+   `evidence_disambig`, `reporting`, `subjects` — no global static directory.
+
+---
+
 ## STACK
 
 | Component | Technology | Version |
@@ -115,8 +163,9 @@ records show. It does not reach conclusions.
 | Python | 3.11+ | required |
 | Deployment | Render | free/paid tier |
 | Async queuing | NOT BUILT | BullMQ/Redis planned Phase 6 |
-| Authentication | NOT BUILT | planned Phase 6 |
+| Write-path authentication | API key per handle | Phase 6: Bearer `open_case_*`, `POST /api/v1/auth/keys` |
 | Multi-user UI | NOT BUILT | planned Phase 7+ |
+| Global static assets (`/static`) | NOT MOUNTED | Receipt card is standalone HTML; Phase 5 removed preview PNG |
 
 ---
 
@@ -167,8 +216,10 @@ OPEN_CASE_PUBLIC_KEY=
 ### Startup behavior
 
 At startup (lifespan), `check_config_warnings()` runs before `init_db()`.
-It logs warnings (does not crash) for missing/localhost BASE_URL and
-missing CONGRESS_API_KEY. Then `init_db()` runs Alembic migrations automatically.
+If **`ENV=production`** and **`BASE_URL`** is empty or contains **`localhost`**, the
+process **exits**. In **development**, the same condition is a **warning** only.
+Missing **`CONGRESS_API_KEY`** is always a **warning**. Then `init_db()` runs
+Alembic migrations automatically.
 
 ---
 
@@ -230,11 +281,14 @@ GET    /api/v1/subjects/bioguide/{id} Look up roster row by bioguide_id
 `SubjectProfile` rows for a case are created/updated inside **`POST /api/v1/cases/{id}/investigate`**
 (when `subject_type == public_official`), not via a separate “subject” REST route.
 
-### Auth (PLANNED — NOT BUILT)
+### Auth (`/api/v1/auth`)
 
 ```
-POST   /auth/keys                     (Phase 6) Generate API key for handle
+POST   /api/v1/auth/keys?handle=... Mint API key (Bearer token); plaintext once
 ```
+
+Unauthenticated by design for first-key bootstrap. **Subsequent write calls** use
+`Authorization: Bearer open_case_<64 hex>`.
 
 ### Utility
 
@@ -422,9 +476,10 @@ Investigator handle and credibility score.
 | joined_at | datetime | |
 | is_anchor | bool | bootstrap reviewer status |
 
-**Note: `hashed_api_key` column does not yet exist.** Authentication is not
-built. The Investigator model exists for credibility scoring only. Any write
-endpoint can be called with any handle string right now.
+**Phase 6 — API keys:** `Investigator` includes **`hashed_api_key`** (SHA-256 hex of
+the plaintext key) and **`api_key_created_at`**. Plaintext keys are returned **once**
+from **`POST /api/v1/auth/keys`**. All **write** routes require **`Authorization: Bearer ...`**
+and the body’s investigator handle must **match** the authenticated handle.
 
 ---
 
@@ -711,9 +766,14 @@ cap: weight never exceeds 1.0
 
 This threshold is arbitrary and based on no real data. It was chosen as a
 reasonable starting point. If real investigations consistently produce signals
-where the featured/non-featured cutoff feels wrong, adjust in `routes/reporting.py`.
-The value 0.5 is not in a config file — it is hardcoded in two places:
-`routes/reporting.py` and `routes/investigate.py`.
+where the featured/non-featured cutoff feels wrong, change the comparisons in code.
+The value **0.5** is not in a config file — it is hardcoded in:
+
+- `routes/reporting.py` — each signal dict in `_collect_report_payload()` (JSON + HTML report)
+- `routes/investigate.py` — investigate response `signals` list and `GET /api/v1/cases/{id}/signals`
+
+The HTML report template (`templates/report.html`) does not recompute the threshold;
+it filters on the boolean `is_featured` from the report payload.
 
 ---
 
@@ -733,9 +793,14 @@ and network calls to three external APIs, response times routinely exceed
 15-30 seconds on a cold request. This will timeout in production under
 any real load. BullMQ async queuing is the fix (planned Phase 6).
 
-**No authentication.** Any write endpoint can be called with any investigator
-handle. There is no API key, no JWT, no session. The system cannot be
-deployed to a public URL without authentication. Phase 6's first task.
+**Write authentication (Phase 6).** POST/PATCH write paths require a valid **Bearer**
+API key; the handle in the JSON body must match the key holder. **GET remains public.**
+Public deployment still assumes you trust read access to cases/reports and rate-limit
+at the edge — same as pre-Phase-6 for read paths.
+
+**No `og:image` on the receipt card.** Phase 5 removed the image tag and static
+asset by design (text-only Open Graph). Crawlers that require an image for rich
+previews will show text-only or degraded previews.
 
 ### Data limits
 
@@ -829,7 +894,7 @@ curl -X POST http://localhost:8000/cases \
   -H "Content-Type: application/json" \
   -d '{"slug":"test-todd-young","title":"Test: Todd Young","subject_name":"Todd Young","subject_type":"public_official","jurisdiction":"Indiana","created_by":"test_handle","summary":"Smoke case for Todd Young gate"}'
 
-# 7. Walk the ten-box checklist from Phase 5 instructions
+# 7. Walk the ten-box checklist (see CONTEXT.md / Phase 5 instructions doc, manual)
 # Do not use the system in production until all ten boxes are confirmed
 ```
 
@@ -839,9 +904,10 @@ curl -X POST http://localhost:8000/cases \
 
 ```
 Open-Case/
-├── main.py                  # FastAPI app, lifespan, startup warnings, router mounts
+├── main.py                  # FastAPI app: lifespan, ENV-aware BASE_URL, 6 routers (no /static)
 ├── models.py                # All SQLAlchemy models
 ├── database.py              # SQLite engine, Alembic upgrade on startup
+├── auth.py                  # require_api_key, hash_key, generate_raw_key
 ├── signing.py               # Ed25519 keypair, JCS → SHA-256 → sign
 ├── scoring.py               # Credibility score increment logic
 │
@@ -866,6 +932,7 @@ Open-Case/
 │   └── dedup.py             # signal_identity_hash + upsert logic
 │
 ├── routes/
+│   ├── auth.py              # POST /api/v1/auth/keys
 │   ├── cases.py             # Case CRUD and status management
 │   ├── evidence.py          # Evidence management
 │   ├── evidence_disambig.py # Collision resolution
@@ -877,7 +944,8 @@ Open-Case/
 │   └── report.html          # Jinja2 police-report format
 │
 ├── scripts/
-│   ├── test_todd_young.py       # Main smoke test runner
+│   ├── test_todd_young.py       # Gate + writes PHASE5_CLOSURE.md on PASS
+│   ├── test_idempotency.py     # 3× investigate count stability (needs uvicorn)
 │   └── todd_young_assertions.py # Four-category assertions with diagnostics
 │
 ├── tests/
@@ -903,7 +971,7 @@ answer is **No**.
 | 2 | Signal dedup, atomic transaction, Todd Young test harness started | **No** |
 | 3 | Signal integrity fields, weight copy, HTML report | **No** |
 | 4 | Committee FEC mode, long-window fixture, confirm-before-expose, signing plumbing | **No** |
-| 5 | Category 3 diagnostics, receipt `og:image` removal, startup warnings | **No — test unrun** |
+| 5 | Cat3 debug + type sets, `og:image` removed + static mount dropped, `check_config_warnings`, `is_featured` + report HTML split | **No — test unrun** |
 
 **The core detection loop has never been confirmed to produce a signal on real data.**
 
