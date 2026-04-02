@@ -60,6 +60,7 @@ from data.industry_jurisdiction_map import (
     jurisdiction_label_matches_committee,
 )
 from core.credentials import CredentialRegistry
+from core.datetime_utils import coerce_utc
 from scoring import add_credibility
 
 router = APIRouter(prefix="/api/v1", tags=["investigate"])
@@ -685,7 +686,10 @@ class DismissSignalBody(BaseModel):
 def _parse_event_date(s: str | None) -> date | None:
     if not s:
         return None
-    return date.fromisoformat(str(s)[:10])
+    coerced = coerce_utc(str(s).strip())
+    if coerced is None:
+        return None
+    return coerced.date()
 
 
 def _ensure_investigator(db: Session, handle: str) -> None:

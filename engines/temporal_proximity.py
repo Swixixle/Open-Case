@@ -87,6 +87,11 @@ def new_temporal_pairing_stats() -> dict[str, Any]:
         "pairs_skipped_direction": 0,
         "pairs_skipped_other": 0,
         "sample_skips": [],
+        # TODO: remove after 8.5 verified (inventory counts)
+        "financial_entries_seen": 0,
+        "financial_entries_with_date": 0,
+        "decision_entries_seen": 0,
+        "decision_entries_with_date": 0,
     }
 
 
@@ -256,7 +261,16 @@ def _collect_raw_pairs(
         et = getattr(entry, "entry_type", "")
         if et not in FINANCIAL_ENTRY_TYPES and et not in DECISION_ENTRY_TYPES:
             continue
+        if et in FINANCIAL_ENTRY_TYPES:
+            pairing_stats["financial_entries_seen"] += 1
+        elif et in DECISION_ENTRY_TYPES:
+            pairing_stats["decision_entries_seen"] += 1
         dt = _entry_event_dt(entry)
+        if dt is not None:
+            if et in FINANCIAL_ENTRY_TYPES:
+                pairing_stats["financial_entries_with_date"] += 1
+            elif et in DECISION_ENTRY_TYPES:
+                pairing_stats["decision_entries_with_date"] += 1
         if not dt:
             pairing_stats["pairs_skipped_other"] += 1
             raw_ev = getattr(entry, "date_of_event", None)

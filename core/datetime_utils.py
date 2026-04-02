@@ -20,7 +20,9 @@ def coerce_utc(dt: datetime | date | str | None) -> Optional[datetime]:
         return None
 
     if isinstance(dt, str):
-        s = dt.rstrip("Z")
+        s = dt.rstrip("Z").strip()
+        if not s:
+            return None
         try:
             parsed = datetime.fromisoformat(s)
             return coerce_utc(parsed)
@@ -29,7 +31,15 @@ def coerce_utc(dt: datetime | date | str | None) -> Optional[datetime]:
                 d = date.fromisoformat(s)
                 return coerce_utc(d)
             except ValueError:
-                return None
+                pass
+        # OpenFEC sometimes returns US-style receipt dates (see Phase 8.5 audit).
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y"):
+            try:
+                parsed = datetime.strptime(s, fmt)
+                return parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        return None
 
     # datetime check MUST come before date check — datetime is a subclass of date
     if isinstance(dt, datetime):

@@ -135,7 +135,12 @@ class FECAdapter(BaseAdapter):
                     if isinstance(committee, dict)
                     else "Unknown committee"
                 )
-                date = item.get("contribution_receipt_date") or ""
+                raw_date = item.get("contribution_receipt_date")
+                date = (
+                    str(raw_date).strip()
+                    if raw_date is not None and str(raw_date).strip()
+                    else ""
+                )
                 contributor_name = item.get("contributor_name") or ""
                 try:
                     amt_f = float(amount)
@@ -164,7 +169,7 @@ class FECAdapter(BaseAdapter):
                         f"{contributor_name} donated ${amt_f:,.0f} "
                         f"to {recipient} on {date}."
                     ),
-                    date_of_event=str(date)[:10] if date else None,
+                    date_of_event=date if date else None,
                     amount=amt_f,
                     matched_name=str(contributor_name) or None,
                     collision_count=row_collision_count,
