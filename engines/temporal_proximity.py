@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
-from dataclasses import dataclass
+import statistics
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
 
 
 @dataclass
-class ProximitySignal:
+class RawProximityPair:
+    """One donation × one vote pairing (internal only)."""
+
     actor_a: str
     actor_b: str
     financial_event: str
@@ -19,84 +21,62 @@ class ProximitySignal:
     amount: float
     financial_entry_id: str
     decision_entry_id: str
-    weight: float
+    financial_flagged: bool
 
-    def to_description(self) -> str:
-        direction = "before" if self.days_between > 0 else "after"
-        days = abs(self.days_between)
-        return (
-            f"${self.amount:,.0f} financial connection involving {self.actor_a} "
-            f"occurred {days} days {direction} a decision event involving {self.actor_b}. "
-            f"Financial: {self.financial_event}. "
-            f"Decision: {self.decision_event}."
-        )
 
-    def to_breakdown(self) -> dict[str, Any]:
-        abs_days = abs(self.days_between)
-        proximity_label = (
-            "very high"
-            if abs_days <= 14
-            else "high"
-            if abs_days <= 30
-            else "medium"
-            if abs_days <= 90
-            else "lower"
-        )
-        amt = self.amount or 0.0
-        amount_label = (
-            "large"
-            if amt >= 250000
-            else "medium"
-            if amt >= 50000
-            else "small"
-            if amt >= 10000
-            else "minor"
-        )
-        proximity_score = (
-            1.0 if abs_days <= 30 else 0.6 if abs_days <= 90 else 0.3
-        )
-        return {
-            "days_between": self.days_between,
-            "proximity_score": round(proximity_score, 2),
-            "proximity_label": proximity_label,
-            "amount": self.amount,
-            "amount_label": amount_label,
-            "base_weight": round(self.weight, 3),
-            "final_weight": round(self.weight, 3),
-            "components": [
-                f"{abs_days}-day proximity ({proximity_label})",
-                f"{amount_label} amount tier",
-            ],
-        }
+@dataclass
+class DonorCluster:
+    """
+    One signal per donor–official relationship: aggregated pairings with an exemplar vote.
+    """
 
-    def to_explanation(self) -> str:
-        direction = "before" if self.days_between >= 0 else "after"
-        days = abs(self.days_between)
-        amount_str = f"${self.amount:,.0f}" if self.amount else "an unspecified amount"
-        prox = "high" if days <= 30 else "medium" if days <= 90 else "lower"
-        return (
-            f"Financial connection of {amount_str} occurred {days} days {direction} "
-            f"a decision event. Proximity weight is {prox} based on {days}-day gap."
-        )
+    donor_key: str
+    donor_display: str
+    official_key: str
+    official_display: str
+    total_amount: float
+    donation_count: int
+    vote_count: int
+    pair_count: int
+    min_gap_days: int
+    median_gap_days: float
+    exemplar_vote: str
+    exemplar_gap: int
+    exemplar_direction: str
+    exemplar_position: str
+    temporal_class: str
+    committee_label: str
+    final_weight: float
+    proximity_score: float
+    amount_multiplier: float
+    has_collision: bool
+    exemplar_financial_date: str = ""
+    exemplar_decision_date: str = ""
+    supporting_pairs: list[dict[str, Any]] = field(default_factory=list)
 
 
 FINANCIAL_ENTRY_TYPES = frozenset({"financial_connection", "disclosure"})
 DECISION_ENTRY_TYPES = frozenset({"vote_record", "timeline_event"})
 
-# Normalize decision events to one bill/nomination id per roll (e.g. S. 5, H.R. 7147, PN 697).
 _DECISION_BILL_RE = re.compile(
     r"(?i)\b("
-    r"PN\s*#?\s*\d+|"  # nominations
+    r"PN\s*#?\s*\d+|"
     r"H\.?\s*J\.?\s*R\.?\s*E\.?\s*S\.?\s*\d+|"
     r"S\.?\s*J\.?\s*R\.?\s*E\.?\s*S\.?\s*\d+|"
     r"H\.?\s*R\.?\s*\d+|"
     r"S\.?\s*\d+"
     r")\b"
 )
+_VOTE_POSITION_RE = re.compile(r"Vote:\s*(\S+)", re.I)
+_CONGRESS_IN_TITLE_RE = re.compile(r"\((\d+)(?:st|nd|rd|th)\s*Congress\)", re.I)
 
 
 def _financial_entity_key(actor_a: str) -> str:
     return (actor_a or "").strip().lower()
+
+
+def _official_entity_key(actor_b: str) -> str:
+    return (actor_b or "").strip().lower()
 
 
 def _decision_vote_key(decision_event: str) -> str:
@@ -107,16 +87,60 @@ def _decision_vote_key(decision_event: str) -> str:
     return text.strip().lower()[:240]
 
 
-def _dedupe_signals_by_donor_and_vote(
-    signals: list[ProximitySignal],
-) -> list[ProximitySignal]:
-    """One signal per (donor / financial entity, vote/bill); keep highest weight."""
-    best: dict[tuple[str, str], ProximitySignal] = {}
-    for s in signals:
-        key = (_financial_entity_key(s.actor_a), _decision_vote_key(s.decision_event))
-        if key not in best or s.weight > best[key].weight:
-            best[key] = s
+def _vote_position_from_title(title: str) -> str:
+    m = _VOTE_POSITION_RE.search(title or "")
+    return m.group(1) if m else "—"
+
+
+def _exemplar_vote_label(decision_event: str) -> str:
+    bill = _decision_vote_key(decision_event)
+    m = _CONGRESS_IN_TITLE_RE.search(decision_event or "")
+    if m:
+        return f"{bill} ({m.group(1)}th Congress)"
+    return bill
+
+
+def _dedupe_pairs_by_donor_and_vote(
+    pairs: list[RawProximityPair],
+) -> list[RawProximityPair]:
+    best: dict[tuple[str, str], RawProximityPair] = {}
+    for p in pairs:
+        key = (_financial_entity_key(p.actor_a), _decision_vote_key(p.decision_event))
+        cur = best.get(key)
+        if cur is None or abs(p.days_between) < abs(cur.days_between):
+            best[key] = p
+        elif cur is not None and abs(p.days_between) == abs(cur.days_between):
+            if p.amount > cur.amount:
+                best[key] = p
     return list(best.values())
+
+
+def _proximity_score_from_abs_gap(abs_days: int) -> float:
+    if abs_days <= 7:
+        return 1.00
+    if abs_days <= 14:
+        return 0.85
+    if abs_days <= 30:
+        return 0.70
+    if abs_days <= 60:
+        return 0.50
+    if abs_days <= 90:
+        return 0.35
+    if abs_days <= 180:
+        return 0.20
+    return 0.10
+
+
+def _amount_multiplier_from_total(total_amount: float) -> float:
+    if total_amount >= 50000:
+        return 1.0
+    if total_amount >= 10000:
+        return 0.85
+    if total_amount >= 2500:
+        return 0.70
+    if total_amount >= 500:
+        return 0.55
+    return 0.40
 
 
 def _entry_event_dt(entry: Any) -> datetime | None:
@@ -143,21 +167,10 @@ def _actor_for(entry: Any, fallback: str) -> str:
     return fallback
 
 
-def _cooling_factor_for_event_age(latest_event: datetime, reference: datetime | None = None) -> float:
-    ref = reference or datetime.now(timezone.utc)
-    age_days = max(0, (ref - latest_event).days)
-    # Recent events keep full weight; multi-year-old pairs taper without vanishing.
-    if age_days <= 365:
-        return 1.0
-    if age_days <= 365 * 3:
-        return max(0.65, 1.0 - (age_days - 365) / (365 * 8))
-    return max(0.35, 0.65 - (age_days - 365 * 3) / (365 * 15))
-
-
-def detect_proximity(
+def _collect_raw_pairs(
     evidence_entries: list[Any],
-    max_days: int = 90,
-) -> list[ProximitySignal]:
+    max_days: int,
+) -> list[RawProximityPair]:
     financial_events: list[tuple[datetime, Any]] = []
     decision_events: list[tuple[datetime, Any]] = []
 
@@ -174,79 +187,220 @@ def detect_proximity(
     if not financial_events or not decision_events:
         return []
 
-    signals: list[ProximitySignal] = []
+    pairs: list[RawProximityPair] = []
     for f_date, f_entry in financial_events:
         amt = getattr(f_entry, "amount", None) or 0.0
         try:
             amt = float(amt)
         except (TypeError, ValueError):
             amt = 0.0
+        flagged = bool(getattr(f_entry, "flagged_for_review", False))
         for d_date, d_entry in decision_events:
             days_diff = (d_date - f_date).days
             if -30 <= days_diff <= max_days:
-                weight = _calculate_weight(days_diff, amt)
-                latest = max(f_date, d_date)
-                weight *= _cooling_factor_for_event_age(latest)
-                weight = round(min(1.0, weight), 3)
-                if weight > 0.1:
-                    fin_id = str(getattr(f_entry, "id", ""))
-                    dec_id = str(getattr(d_entry, "id", ""))
-                    fd = getattr(f_entry, "date_of_event", None)
-                    dd = getattr(d_entry, "date_of_event", None)
-                    fd_s = fd.isoformat() if hasattr(fd, "isoformat") else str(fd or "")
-                    dd_s = dd.isoformat() if hasattr(dd, "isoformat") else str(dd or "")
-                    signals.append(
-                        ProximitySignal(
-                            actor_a=_actor_for(f_entry, "Unknown party"),
-                            actor_b=_actor_for(d_entry, "Unknown official"),
-                            financial_event=str(getattr(f_entry, "title", "")),
-                            decision_event=str(getattr(d_entry, "title", "")),
-                            financial_date=fd_s,
-                            decision_date=dd_s,
-                            days_between=days_diff,
-                            amount=amt,
-                            financial_entry_id=fin_id,
-                            decision_entry_id=dec_id,
-                            weight=weight,
-                        )
+                fin_id = str(getattr(f_entry, "id", ""))
+                dec_id = str(getattr(d_entry, "id", ""))
+                fd = getattr(f_entry, "date_of_event", None)
+                dd = getattr(d_entry, "date_of_event", None)
+                fd_s = fd.isoformat() if hasattr(fd, "isoformat") else str(fd or "")
+                dd_s = dd.isoformat() if hasattr(dd, "isoformat") else str(dd or "")
+                pairs.append(
+                    RawProximityPair(
+                        actor_a=_actor_for(f_entry, "Unknown party"),
+                        actor_b=_actor_for(d_entry, "Unknown official"),
+                        financial_event=str(getattr(f_entry, "title", "")),
+                        decision_event=str(getattr(d_entry, "title", "")),
+                        financial_date=fd_s,
+                        decision_date=dd_s,
+                        days_between=days_diff,
+                        amount=amt,
+                        financial_entry_id=fin_id,
+                        decision_entry_id=dec_id,
+                        financial_flagged=flagged,
                     )
-
-    signals = _dedupe_signals_by_donor_and_vote(signals)
-    signals = _apply_repeat_multiplier(signals)
-    signals.sort(key=lambda s: s.weight, reverse=True)
-    return signals
+                )
+    return _dedupe_pairs_by_donor_and_vote(pairs)
 
 
-def _calculate_weight(days_between: int, amount: float) -> float:
-    if days_between <= 30:
-        proximity_score = 1.0
-    elif days_between <= 90:
-        proximity_score = 0.6
+def _cluster_from_pairs(
+    rel_pairs: list[RawProximityPair],
+    committee_label: str,
+) -> DonorCluster | None:
+    if not rel_pairs:
+        return None
+
+    donor_key = _financial_entity_key(rel_pairs[0].actor_a)
+    official_key = _official_entity_key(rel_pairs[0].actor_b)
+    donor_display = rel_pairs[0].actor_a.strip() or donor_key
+    official_display = rel_pairs[0].actor_b.strip() or official_key
+
+    fin_amounts: dict[str, float] = {}
+    dec_ids: set[str] = set()
+    for p in rel_pairs:
+        if p.financial_entry_id not in fin_amounts:
+            fin_amounts[p.financial_entry_id] = float(p.amount)
+        dec_ids.add(p.decision_entry_id)
+
+    total_amount = float(sum(fin_amounts.values()))
+    donation_count = len(fin_amounts)
+    vote_count = len(dec_ids)
+    pair_count = len(rel_pairs)
+    has_collision = any(p.financial_flagged for p in rel_pairs)
+
+    gaps = [p.days_between for p in rel_pairs]
+    median_gap = float(statistics.median(gaps)) if gaps else 0.0
+
+    exemplar = min(rel_pairs, key=lambda p: (abs(p.days_between), -p.amount))
+    eg = exemplar.days_between
+    abs_eg = abs(eg)
+    exemplar_vote = _exemplar_vote_label(exemplar.decision_event)
+    exemplar_position = _vote_position_from_title(exemplar.decision_event)
+
+    if eg > 0:
+        exemplar_direction = "before"
+        temporal_class = "anticipatory"
+    elif eg < 0:
+        exemplar_direction = "after"
+        temporal_class = "retrospective"
     else:
-        proximity_score = 0.3
+        exemplar_direction = "same_day"
+        temporal_class = "anticipatory"
 
-    if amount <= 0:
-        amount_score = 0.1
-    elif amount < 10000:
-        amount_score = 0.2
-    elif amount < 50000:
-        amount_score = 0.4
-    elif amount < 250000:
-        amount_score = 0.6
-    elif amount < 1000000:
-        amount_score = 0.8
+    prox = _proximity_score_from_abs_gap(abs_eg)
+    mult = _amount_multiplier_from_total(total_amount)
+    final_weight = round(min(1.0, prox * mult), 4)
+
+    supporting = [
+        {
+            "financial_entry_id": p.financial_entry_id,
+            "decision_entry_id": p.decision_entry_id,
+            "days_between": p.days_between,
+            "amount": p.amount,
+            "financial_flagged": p.financial_flagged,
+            "decision_event": p.decision_event,
+        }
+        for p in rel_pairs
+    ]
+
+    return DonorCluster(
+        donor_key=donor_key,
+        donor_display=donor_display,
+        official_key=official_key,
+        official_display=official_display,
+        total_amount=total_amount,
+        donation_count=donation_count,
+        vote_count=vote_count,
+        pair_count=pair_count,
+        min_gap_days=abs_eg,
+        median_gap_days=median_gap,
+        exemplar_vote=exemplar_vote,
+        exemplar_gap=eg,
+        exemplar_direction=exemplar_direction,
+        exemplar_position=exemplar_position,
+        temporal_class=temporal_class,
+        committee_label=committee_label or "the recipient committee",
+        final_weight=final_weight,
+        proximity_score=prox,
+        amount_multiplier=mult,
+        has_collision=has_collision,
+        exemplar_financial_date=exemplar.financial_date,
+        exemplar_decision_date=exemplar.decision_date,
+        supporting_pairs=supporting,
+    )
+
+
+def build_cluster_copy_text(cluster: DonorCluster) -> tuple[str, str]:
+    """Long description and proximity_summary; mandatory before/after language."""
+    donor = cluster.donor_display
+    official = cluster.official_display
+    committee = cluster.committee_label
+    total = cluster.total_amount
+    pos = cluster.exemplar_position
+    bill = cluster.exemplar_vote
+    d = cluster.exemplar_gap
+    absd = abs(d)
+    amt_s = f"{total:,.2f}"
+
+    if d > 0:
+        line1 = (
+            f"{donor} donated ${amt_s} to {committee} {absd} days before "
+            f"{official} voted {pos} on {bill}."
+        )
+        summary = f"Donation occurred {absd} days before the vote"
+    elif d < 0:
+        line1 = (
+            f"{donor} donated ${amt_s} to {committee} {absd} days after "
+            f"{official} voted {pos} on {bill}."
+        )
+        summary = f"Donation occurred {absd} days after the vote"
     else:
-        amount_score = 1.0
+        line1 = (
+            f"{donor} donated ${amt_s} to {committee} on the same calendar day "
+            f"{official} voted {pos} on {bill}."
+        )
+        summary = "Donation occurred the same day as the vote"
 
-    return round(proximity_score * 0.6 + amount_score * 0.4, 3)
+    tail = (
+        f" The tightest timing among {cluster.pair_count} pairings in this window "
+        f"involves {cluster.vote_count} distinct votes (median gap "
+        f"{cluster.median_gap_days:.1f} days)."
+    )
+    description = line1 + tail
+    return description, summary
 
 
-def _apply_repeat_multiplier(signals: list[ProximitySignal]) -> list[ProximitySignal]:
-    actor_counts = Counter(s.actor_a for s in signals)
-    for signal in signals:
-        count = actor_counts[signal.actor_a]
-        if count >= 3:
-            signal.weight = min(1.0, signal.weight * 1.5)
-        elif count == 2:
-            signal.weight = min(1.0, signal.weight * 1.25)
-    return signals
+def verify_cluster_direction_text(
+    cluster: DonorCluster, description: str, proximity_summary: str
+) -> bool:
+    """True if narrative matches days_between sign (non-negotiable)."""
+    d = cluster.exemplar_gap
+    desc_l = description.lower()
+    sum_l = proximity_summary.lower()
+    if d > 0:
+        if "before" not in desc_l:
+            return False
+        if "after" in sum_l and "before" not in sum_l:
+            return False
+        return "before" in sum_l
+    if d < 0:
+        if "after" not in desc_l:
+            return False
+        return "after" in sum_l
+    return "same" in sum_l or "same day" in sum_l
+
+
+def assert_cluster_direction_verified(
+    cluster: DonorCluster, description: str, proximity_summary: str
+) -> None:
+    if not verify_cluster_direction_text(cluster, description, proximity_summary):
+        raise ValueError(
+            f"direction_verified failed for cluster donor={cluster.donor_key!r} "
+            f"exemplar_gap={cluster.exemplar_gap}: text does not match timing math."
+        )
+
+
+def detect_proximity(
+    evidence_entries: list[Any],
+    max_days: int = 90,
+    committee_label: str = "",
+) -> list[DonorCluster]:
+    """
+    Evidence → raw pairings → donor–official clusters → one row per relationship.
+    """
+    raw = _collect_raw_pairs(evidence_entries, max_days)
+    if not raw:
+        return []
+
+    by_rel: dict[tuple[str, str], list[RawProximityPair]] = {}
+    for p in raw:
+        key = (_financial_entity_key(p.actor_a), _official_entity_key(p.actor_b))
+        by_rel.setdefault(key, []).append(p)
+
+    clusters: list[DonorCluster] = []
+    for rel_pairs in by_rel.values():
+        c = _cluster_from_pairs(rel_pairs, committee_label)
+        if c is not None and c.final_weight > 0.01:
+            clusters.append(c)
+
+    clusters.sort(key=lambda x: x.final_weight, reverse=True)
+    return clusters

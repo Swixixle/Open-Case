@@ -202,6 +202,8 @@ class Signal(Base):
     repeat_count: Mapped[int] = mapped_column(Integer, default=1)
     proximity_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     parse_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    direction_verified: Mapped[bool] = mapped_column(Boolean, default=True)
+    temporal_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class SignalAuditLog(Base):

@@ -6,45 +6,95 @@ from typing import Any
 
 from engines.contract_anomaly import ContractAnomaly
 from engines.contract_proximity import ContractProximitySignal
-from engines.temporal_proximity import ProximitySignal
+from engines.temporal_proximity import (
+    DonorCluster,
+    assert_cluster_direction_verified,
+    build_cluster_copy_text,
+)
 from signals.dedup import make_signal_identity_hash
 
 
 def build_signals_from_proximity(
-    proximity_signals: list[ProximitySignal],
+    donor_clusters: list[DonorCluster],
     case_file_id: uuid.UUID,
 ) -> list[dict[str, Any]]:
+    """One persisted signal per donor–official cluster."""
     signals: list[dict[str, Any]] = []
     case_s = str(case_file_id)
-    for ps in proximity_signals:
-        breakdown = ps.to_breakdown()
-        fin_uid = uuid.UUID(ps.financial_entry_id)
-        dec_uid = uuid.UUID(ps.decision_entry_id)
+    for cluster in donor_clusters:
+        description, proximity_summary_manual = build_cluster_copy_text(cluster)
+        assert_cluster_direction_verified(cluster, description, proximity_summary_manual)
+
         identity = make_signal_identity_hash(
             case_s,
             "temporal_proximity",
-            fin_uid,
-            ps.actor_a,
-            ps.decision_entry_id,
+            None,
+            cluster.donor_key,
+            f"cluster|{cluster.official_key}",
         )
+
+        eid_set: list[uuid.UUID] = []
+        seen: set[str] = set()
+        for row in cluster.supporting_pairs:
+            for key in ("financial_entry_id", "decision_entry_id"):
+                raw_id = row.get(key)
+                if not raw_id:
+                    continue
+                sid = str(raw_id)
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                try:
+                    eid_set.append(uuid.UUID(sid))
+                except ValueError:
+                    continue
+
+        breakdown = {
+            "kind": "donor_cluster",
+            "donor": cluster.donor_display,
+            "official": cluster.official_display,
+            "total_amount": cluster.total_amount,
+            "donation_count": cluster.donation_count,
+            "vote_count": cluster.vote_count,
+            "pair_count": cluster.pair_count,
+            "min_gap_days": cluster.min_gap_days,
+            "median_gap_days": round(cluster.median_gap_days, 2),
+            "exemplar_vote": cluster.exemplar_vote,
+            "exemplar_gap": cluster.exemplar_gap,
+            "exemplar_direction": cluster.exemplar_direction,
+            "exemplar_position": cluster.exemplar_position,
+            "proximity_score": cluster.proximity_score,
+            "amount_multiplier": cluster.amount_multiplier,
+            "committee_label": cluster.committee_label,
+            "has_collision": cluster.has_collision,
+        }
+
+        exposure_state = "unresolved" if cluster.has_collision else "internal"
+
         signals.append(
             {
                 "case_file_id": case_file_id,
                 "signal_identity_hash": identity,
                 "signal_type": "temporal_proximity",
-                "weight": min(1.0, float(ps.weight)),
-                "description": ps.to_description(),
-                "weight_breakdown": json.dumps(breakdown, separators=(",", ":")),
-                "weight_explanation": ps.to_explanation(),
-                "exposure_state": "internal",
+                "weight": min(1.0, float(cluster.final_weight)),
+                "description": description,
+                "weight_breakdown": json.dumps(breakdown, separators=(",", ":"), default=str),
+                "weight_explanation": (
+                    f"Clustered donor signal: proximity tier from {cluster.min_gap_days}d "
+                    f"tightest gap × amount tier on ${cluster.total_amount:,.0f} total."
+                ),
+                "exposure_state": exposure_state,
                 "routing_log": "[]",
-                "evidence_ids": [fin_uid, dec_uid],
-                "actor_a": ps.actor_a,
-                "actor_b": ps.actor_b,
-                "event_date_a": ps.financial_date,
-                "event_date_b": ps.decision_date,
-                "days_between": ps.days_between,
-                "amount": ps.amount,
+                "evidence_ids": eid_set,
+                "actor_a": cluster.donor_display,
+                "actor_b": cluster.official_display,
+                "event_date_a": cluster.exemplar_financial_date,
+                "event_date_b": cluster.exemplar_decision_date,
+                "days_between": cluster.exemplar_gap,
+                "amount": cluster.total_amount,
+                "direction_verified": True,
+                "temporal_class": cluster.temporal_class,
+                "proximity_summary_override": proximity_summary_manual,
             }
         )
     return signals
@@ -85,6 +135,8 @@ def build_signals_from_contract_proximity(
                 "event_date_b": cp.contract_date,
                 "days_between": cp.days_between,
                 "amount": cp.donation_amount,
+                "direction_verified": True,
+                "temporal_class": None,
             }
         )
     return signals
@@ -125,6 +177,8 @@ def build_signals_from_anomalies(
                 "event_date_b": None,
                 "days_between": None,
                 "amount": ca.amount,
+                "direction_verified": True,
+                "temporal_class": None,
             }
         )
     return signals

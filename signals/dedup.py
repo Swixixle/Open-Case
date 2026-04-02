@@ -56,11 +56,11 @@ def _build_proximity_summary(sig: Signal) -> str | None:
         days = sig.days_between
         if days is None:
             return "Timing correlates with related official action; exact gap unavailable."
-        if days == 0:
-            return "Occurred same day as related official action."
-        if days == 1:
-            return "Occurred next day after related official action."
-        return f"Occurred {days} days after related official action."
+        if days > 0:
+            return f"Donation occurred {days} days before the vote"
+        if days < 0:
+            return f"Donation occurred {abs(days)} days after the vote"
+        return "Donation occurred the same day as the vote"
     if sig.signal_type == "contract_proximity":
         days = sig.days_between
         if days is None:
@@ -95,15 +95,19 @@ def upsert_signal(
     new_weight = float(signal_dict.get("weight", 0.0))
 
     if existing is None:
-        row: dict[str, Any] = {k: v for k, v in signal_dict.items() if k != "id"}
+        skip = frozenset({"id", "proximity_summary_override"})
+        row = {k: v for k, v in signal_dict.items() if k not in skip}
         row.setdefault("repeat_count", 1)
         eids = row.get("evidence_ids")
         if isinstance(eids, list):
             row["evidence_ids"] = json.dumps([str(x) for x in eids], separators=(",", ":"))
         elif eids is None:
             row["evidence_ids"] = "[]"
+        ps_override = signal_dict.get("proximity_summary_override")
         sig = Signal(**row)
-        sig.proximity_summary = _build_proximity_summary(sig)
+        sig.proximity_summary = (
+            ps_override if ps_override else _build_proximity_summary(sig)
+        )
         db.add(sig)
         db.flush()
         db.add(
@@ -157,6 +161,12 @@ def upsert_signal(
             existing.actor_a = signal_dict["actor_a"]
         if signal_dict.get("actor_b") is not None:
             existing.actor_b = signal_dict["actor_b"]
+        if signal_dict.get("exposure_state") is not None:
+            existing.exposure_state = signal_dict["exposure_state"]
+        if signal_dict.get("direction_verified") is not None:
+            existing.direction_verified = bool(signal_dict["direction_verified"])
+        if "temporal_class" in signal_dict:
+            existing.temporal_class = signal_dict["temporal_class"]
         db.add(
             SignalAuditLog(
                 signal_id=existing.id,
@@ -196,5 +206,15 @@ def upsert_signal(
         if oa is None or float(na) > float(oa):
             existing.amount = float(na)
 
-    existing.proximity_summary = _build_proximity_summary(existing)
+    ps_override = signal_dict.get("proximity_summary_override")
+    if ps_override:
+        existing.proximity_summary = ps_override
+    else:
+        existing.proximity_summary = _build_proximity_summary(existing)
+    if signal_dict.get("exposure_state") is not None:
+        existing.exposure_state = signal_dict["exposure_state"]
+    if signal_dict.get("direction_verified") is not None:
+        existing.direction_verified = bool(signal_dict["direction_verified"])
+    if "temporal_class" in signal_dict:
+        existing.temporal_class = signal_dict["temporal_class"]
     return existing

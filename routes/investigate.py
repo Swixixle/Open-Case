@@ -45,8 +45,59 @@ from scoring import add_credibility
 
 router = APIRouter(prefix="/api/v1", tags=["investigate"])
 
-# Response body cap for POST investigate (full count still in signals_detected).
-INVESTIGATE_SIGNALS_RESPONSE_LIMIT = 50
+# Top donor-cluster signals in POST investigate body (resolved only; see signals_unresolved).
+INVESTIGATE_SIGNALS_RESPONSE_LIMIT = 10
+
+
+def _signal_breakdown_local(s: Signal) -> dict[str, Any]:
+    try:
+        return json.loads(s.weight_breakdown or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
+    bd = _signal_breakdown_local(s)
+    featured = (s.weight or 0) >= 0.5 and s.exposure_state != "unresolved"
+    out: dict[str, Any] = {
+        "id": str(s.id),
+        "weight": s.weight,
+        "weight_explanation": s.weight_explanation,
+        "weight_breakdown": bd,
+        "description": s.description,
+        "days_between": s.days_between,
+        "amount": s.amount,
+        "confirmed": s.confirmed,
+        "dismissed": s.dismissed,
+        "exposure_state": s.exposure_state,
+        "proximity_summary": s.proximity_summary,
+        "repeat_count": s.repeat_count,
+        "direction_verified": bool(getattr(s, "direction_verified", True)),
+        "signal_identity_hash": s.signal_identity_hash,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "is_featured": featured,
+    }
+    if bd.get("kind") == "donor_cluster":
+        out.update(
+            {
+                "type": "donor_cluster",
+                "signal_type": s.temporal_class,
+                "donor": bd.get("donor"),
+                "official": bd.get("official"),
+                "total_amount": bd.get("total_amount"),
+                "donation_count": bd.get("donation_count"),
+                "vote_count": bd.get("vote_count"),
+                "pair_count": bd.get("pair_count"),
+                "min_gap_days": bd.get("min_gap_days"),
+                "median_gap_days": bd.get("median_gap_days"),
+                "exemplar_vote": bd.get("exemplar_vote"),
+                "exemplar_direction": bd.get("exemplar_direction"),
+            }
+        )
+    else:
+        out["type"] = s.signal_type
+        out["signal_type"] = s.signal_type
+    return out
 
 
 class InvestigateRequest(BaseModel):
@@ -317,6 +368,10 @@ def _ingest_adapter_results(
 async def run_investigation(
     case_id: uuid.UUID,
     request: InvestigateRequest,
+    include_unresolved: bool = Query(
+        False,
+        description="If true, include signals_unresolved_detail for quarantined clusters.",
+    ),
     db: Session = Depends(get_db),
     auth_inv: Investigator = Depends(require_api_key),
 ) -> dict[str, Any]:
@@ -329,7 +384,7 @@ async def run_investigation(
     errors: list[str] = []
     source_check_tracker: list[str] = []
     cache_hits: list[str] = []
-    signal_payloads: list[dict[str, Any]] = []
+    unresolved_payload: list[dict[str, Any]] | None = None
 
     try:
         _ensure_investigator(db, request.investigator_handle)
@@ -365,17 +420,24 @@ async def run_investigation(
             ).all()
         )
 
-        proximity_signals = detect_proximity(
-            substantive, max_days=request.proximity_days
+        committee_label = (case.title or "").strip() or case.subject_name
+        donor_clusters = detect_proximity(
+            substantive,
+            max_days=request.proximity_days,
+            committee_label=committee_label,
         )
         contract_prox = detect_contract_proximity(substantive)
         contract_anomalies = detect_contract_anomalies(substantive)
 
         all_signal_dicts = (
-            build_signals_from_proximity(proximity_signals, case_id)
+            build_signals_from_proximity(donor_clusters, case_id)
             + build_signals_from_contract_proximity(contract_prox, case_id)
             + build_signals_from_anomalies(contract_anomalies, case_id)
         )
+
+        for sig_dict in all_signal_dicts:
+            if not sig_dict.get("direction_verified", True):
+                raise ValueError("Signal failed direction_verified gate — not persisting.")
 
         stored_by_id: dict[uuid.UUID, Signal] = {}
         for sig_dict in all_signal_dicts:
@@ -386,36 +448,29 @@ async def run_investigation(
             )
             stored_by_id[s.id] = s
         stored_signals = sorted(
-            stored_by_id.values(), key=lambda s: s.weight, reverse=True
+            stored_by_id.values(), key=lambda s: s.weight or 0.0, reverse=True
         )
 
-        def _bd(s: Signal) -> dict[str, Any]:
-            try:
-                return json.loads(s.weight_breakdown or "{}")
-            except json.JSONDecodeError:
-                return {}
-
-        signal_payloads = [
-            {
-                "id": str(s.id),
-                "type": s.signal_type,
-                "weight": s.weight,
-                "weight_explanation": s.weight_explanation,
-                "weight_breakdown": _bd(s),
-                "description": s.description,
-                "days_between": s.days_between,
-                "amount": s.amount,
-                "confirmed": s.confirmed,
-                "dismissed": s.dismissed,
-                "exposure_state": s.exposure_state,
-                "proximity_summary": s.proximity_summary,
-                "repeat_count": s.repeat_count,
-                "is_featured": (s.weight or 0) >= 0.5,
-            }
-            for s in stored_signals
+        resolved_signals = [
+            s for s in stored_signals if s.exposure_state != "unresolved"
         ]
-        signals_detected_total = len(signal_payloads)
-        signal_payloads_response = signal_payloads[:INVESTIGATE_SIGNALS_RESPONSE_LIMIT]
+        unresolved_signals = [
+            s for s in stored_signals if s.exposure_state == "unresolved"
+        ]
+        signals_detected_total = len(resolved_signals)
+        signals_unresolved_total = len(unresolved_signals)
+
+        signal_payloads_response = [
+            _signal_to_response_dict(s)
+            for s in resolved_signals[:INVESTIGATE_SIGNALS_RESPONSE_LIMIT]
+        ]
+        if include_unresolved and unresolved_signals:
+            unresolved_payload = [
+                _signal_to_response_dict(s)
+                for s in sorted(
+                    unresolved_signals, key=lambda x: x.weight or 0.0, reverse=True
+                )[:25]
+            ]
 
         case_refresh = db.scalar(
             select(CaseFile)
@@ -443,8 +498,14 @@ async def run_investigation(
         "cache_hits": cache_hits,
         "evidence_entries_created": len(created_entries),
         "signals_detected": signals_detected_total,
+        "signals_unresolved": signals_unresolved_total,
         "errors": errors,
         "signals": signal_payloads_response,
+        **(
+            {"signals_unresolved_detail": unresolved_payload}
+            if unresolved_payload is not None
+            else {}
+        ),
         "collision_warnings": [
             {
                 "entry_id": str(e.id),
@@ -578,6 +639,10 @@ def get_signals(
     case_id: uuid.UUID,
     db: Session = Depends(get_db),
     limit: int = Query(50, ge=1, le=500, description="Max signals to return (by weight desc)"),
+    include_unresolved: bool = Query(
+        False,
+        description="If false (default), quarantined (unresolved) clusters are omitted from the list.",
+    ),
 ) -> dict[str, Any]:
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
@@ -590,44 +655,44 @@ def get_signals(
         )
         or 0
     )
-    signals = db.scalars(
-        select(Signal)
-        .where(Signal.case_file_id == case_id)
-        .order_by(Signal.weight.desc())
-        .limit(limit)
-    ).all()
+    unresolved_ct = (
+        db.scalar(
+            select(func.count())
+            .select_from(Signal)
+            .where(
+                Signal.case_file_id == case_id,
+                Signal.exposure_state == "unresolved",
+            )
+        )
+        or 0
+    )
+    resolved_ct = int(total_ct) - int(unresolved_ct)
 
-    def _bd(s: Signal) -> dict[str, Any]:
-        try:
-            return json.loads(s.weight_breakdown or "{}")
-        except json.JSONDecodeError:
-            return {}
+    base_filter = Signal.case_file_id == case_id
+    if not include_unresolved:
+        stmt = (
+            select(Signal)
+            .where(base_filter, Signal.exposure_state != "unresolved")
+            .order_by(Signal.weight.desc())
+            .limit(limit)
+        )
+    else:
+        stmt = (
+            select(Signal)
+            .where(base_filter)
+            .order_by(Signal.weight.desc())
+            .limit(limit)
+        )
+    signals = db.scalars(stmt).all()
 
     return {
         "case_id": str(case_id),
         "signal_count": int(total_ct),
+        "signals_resolved_count": resolved_ct,
+        "signals_unresolved_count": int(unresolved_ct),
         "limit": limit,
-        "signals": [
-            {
-                "id": str(s.id),
-                "type": s.signal_type,
-                "weight": s.weight,
-                "description": s.description,
-                "weight_explanation": s.weight_explanation,
-                "weight_breakdown": _bd(s),
-                "days_between": s.days_between,
-                "amount": s.amount,
-                "confirmed": s.confirmed,
-                "dismissed": s.dismissed,
-                "exposure_state": s.exposure_state,
-                "proximity_summary": s.proximity_summary,
-                "repeat_count": s.repeat_count,
-                "signal_identity_hash": s.signal_identity_hash,
-                "created_at": s.created_at.isoformat() if s.created_at else None,
-                "is_featured": (s.weight or 0) >= 0.5,
-            }
-            for s in signals
-        ],
+        "include_unresolved": include_unresolved,
+        "signals": [_signal_to_response_dict(s) for s in signals],
     }
 
 
