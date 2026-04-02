@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -110,6 +111,22 @@ def _vote_xml_url(congress: int, session: int, roll: int) -> str:
     return f"{SENATE_XML_BASE}/{d}/vote_{congress}_{session}_{roll:05d}.xml"
 
 
+async def _http_get_senate_roll(client: httpx.AsyncClient, url: str) -> httpx.Response:
+    """
+    One retry on transport failure only (timeouts, connection errors).
+    HTTP 4xx/5xx are returned to the caller; do not retry those here.
+    """
+    for attempt in range(2):
+        try:
+            return await client.get(url, timeout=15.0)
+        except httpx.RequestError:
+            if attempt == 0:
+                await asyncio.sleep(2.0)
+            else:
+                raise
+    raise RuntimeError("_http_get_senate_roll: unreachable")
+
+
 def _is_roll_call_xml(body: str) -> bool:
     t = body.lstrip()[:120]
     return t.startswith("<?xml") or t.startswith("<roll_call_vote")
@@ -122,10 +139,7 @@ async def _binary_search_max_roll(
 
     async def exists(n: int) -> bool:
         url = _vote_xml_url(congress, session, n)
-        try:
-            r = await client.get(url)
-        except httpx.HTTPError:
-            return False
+        r = await _http_get_senate_roll(client, url)
         if r.status_code != 200:
             return False
         return _is_roll_call_xml(r.text)
@@ -445,18 +459,9 @@ class CongressVotesAdapter(BaseAdapter):
         query: str,
         query_type: str = "bioguide_id",
     ) -> AdapterResponse:
-        try:
-            if query_type == "bioguide_id":
-                return await self._fetch_senate_votes_by_bioguide(query)
-            return await self._resolve_and_fetch(query)
-        except Exception as e:
-            return AdapterResponse(
-                source_name=self.source_name,
-                query=query,
-                results=[],
-                found=False,
-                error=str(e),
-            )
+        if query_type == "bioguide_id":
+            return await self._fetch_senate_votes_by_bioguide(query)
+        return await self._resolve_and_fetch(query)
 
     async def _fetch_senate_votes_by_bioguide(
         self, bioguide_id: str
@@ -502,11 +507,7 @@ class CongressVotesAdapter(BaseAdapter):
                     if misses >= MAX_ROLLS_SCAN:
                         break
                     url = _vote_xml_url(c, s, roll)
-                    try:
-                        resp = await client.get(url)
-                    except httpx.HTTPError:
-                        misses += 1
-                        continue
+                    resp = await _http_get_senate_roll(client, url)
                     if resp.status_code != 200 or not _is_roll_call_xml(resp.text):
                         misses += 1
                         continue
@@ -544,17 +545,23 @@ class CongressVotesAdapter(BaseAdapter):
 
         if not collected:
             pw_parts = [
-                "No Senate LIS votes matched this bioguide. "
+                "0 Senate LIS votes matched this bioguide (fetch and parse succeeded). "
                 "Senate XML identifies members by `lis_member_id` and name/state — "
                 "set CONGRESS_API_KEY for reliable matching, or add an entry to "
                 "LIS_MEMBER_ID_BY_BIOGUIDE.",
                 "House roll calls are not read by this adapter.",
             ]
-            empty = self._make_empty_response(bioguide_id, parse_warning=" ".join(pw_parts))
-            empty.result_hash = raw_hash
-            empty.found = False
-            empty.credential_mode = cred_mode
-            return empty
+            return AdapterResponse(
+                source_name=self.source_name,
+                query=bioguide_id,
+                results=[],
+                found=True,
+                error=None,
+                result_hash=raw_hash,
+                parse_warning=" ".join(pw_parts),
+                credential_mode=cred_mode,
+                empty_success=True,
+            )
 
         results: list[AdapterResult] = []
         for vote in collected[:MAX_VOTE_RESULTS]:

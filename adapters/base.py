@@ -42,6 +42,10 @@ class AdapterResponse:
     parse_warning: str | None = None
     # Credential pipeline: ok | fallback | credential_unavailable | skipped
     credential_mode: str | None = None
+    # Fetch completed without transport error but zero actionable rows (honest empty).
+    empty_success: bool = False
+    # When error is set: network | processing (for source_statuses truthfulness)
+    error_kind: str | None = None
 
 
 class BaseAdapter:

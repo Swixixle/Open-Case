@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
@@ -26,7 +27,7 @@ from adapters.marion_assessor import MarionCountyAssessorAdapter
 from adapters.usa_spending import USASpendingAdapter
 from database import get_db
 from engines.contract_anomaly import detect_contract_anomalies
-from engines.contract_proximity import detect_contract_proximity
+from engines.contract_proximity import detect_contract_proximity, new_contract_pairing_stats
 from engines.signal_scorer import (
     build_signals_from_anomalies,
     build_signals_from_contract_proximity,
@@ -35,6 +36,7 @@ from engines.signal_scorer import (
 from engines.temporal_proximity import (
     DonorCluster,
     detect_proximity,
+    new_temporal_pairing_stats,
     refresh_cluster_scoring,
 )
 from models import (
@@ -66,6 +68,33 @@ router = APIRouter(prefix="/api/v1", tags=["investigate"])
 INVESTIGATE_SIGNALS_RESPONSE_LIMIT = 10
 MAX_LDA_DONORS_PER_RUN = 25
 MAX_WITNESS_CLUSTERS_PER_RUN = 20
+
+
+def _temporal_core_required_adapters(case: CaseFile) -> list[str]:
+    """FEC plus Congress when the subject is a public official (Senate vote path)."""
+    req = ["fec"]
+    if case.subject_type == "public_official":
+        req.append("congress")
+    return req
+
+
+def _failed_required_core_adapters(
+    case: CaseFile, source_statuses: list[dict[str, Any]]
+) -> list[str]:
+    required = _temporal_core_required_adapters(case)
+    by_key = {s["adapter"]: s["status"] for s in source_statuses}
+    return [
+        name
+        for name in required
+        if by_key.get(name) in ("network_failure", "processing_failure")
+    ]
+
+
+def _required_sources_ready_and_missing(
+    case: CaseFile, source_statuses: list[dict[str, Any]]
+) -> tuple[bool, list[str]]:
+    missing = _failed_required_core_adapters(case, source_statuses)
+    return (len(missing) == 0, missing)
 
 
 def _connected_org_for_cluster(
@@ -323,6 +352,30 @@ def _append_source_status(
                 "display_name": response.source_name,
                 "status": "cached",
                 "detail": None,
+            }
+        )
+        return
+    if response.empty_success:
+        bucket.append(
+            {
+                "adapter": registry_key,
+                "display_name": response.source_name,
+                "status": "clean",
+                "detail": response.parse_warning
+                or response.error
+                or "0 records returned",
+            }
+        )
+        return
+    if response.error:
+        kind = (response.error_kind or "processing").lower()
+        st = "network_failure" if kind == "network" else "processing_failure"
+        bucket.append(
+            {
+                "adapter": registry_key,
+                "display_name": response.source_name,
+                "status": st,
+                "detail": response.error,
             }
         )
         return
@@ -913,7 +966,7 @@ def _ingest_adapter_results(
         )
 
 
-@router.post("/cases/{case_id}/investigate")
+@router.post("/cases/{case_id}/investigate", response_model=None)
 async def run_investigation(
     case_id: uuid.UUID,
     request: InvestigateRequest,
@@ -923,7 +976,7 @@ async def run_investigation(
     ),
     db: Session = Depends(get_db),
     auth_inv: Investigator = Depends(require_api_key),
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     require_matching_handle(auth_inv, request.investigator_handle)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
@@ -981,6 +1034,41 @@ async def run_investigation(
             cache_hits=cache_hits,
             source_statuses=source_statuses,
         )
+
+        failed_required = _failed_required_core_adapters(case, source_statuses)
+        if failed_required:
+            db.rollback()
+            detail_msg = (
+                f"Required adapters failed: {failed_required}. "
+                "Evidence not promoted. Prior case state preserved."
+            )
+            rs_ready, rs_missing = _required_sources_ready_and_missing(
+                case, source_statuses
+            )
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": detail_msg,
+                    "case_id": str(case_id),
+                    "subject_searched": request.subject_name,
+                    "address_searched": request.address,
+                    "sources_checked": len(source_check_tracker),
+                    "cache_hits": cache_hits,
+                    "evidence_entries_created": 0,
+                    "signals_detected": 0,
+                    "signals_unresolved": 0,
+                    "errors": errors,
+                    "signals": [],
+                    "collision_warnings": [],
+                    "source_statuses": source_statuses,
+                    "pairing_diagnostics": {
+                        "temporal": new_temporal_pairing_stats(),
+                        "contract": new_contract_pairing_stats(),
+                    },
+                    "required_sources_ready": rs_ready,
+                    "required_sources_missing": rs_missing,
+                },
+            )
 
         bg_for_intel = request.bioguide_id or (prof.bioguide_id if prof else None)
         await _ingest_lda_for_unique_donors(
@@ -1142,6 +1230,10 @@ async def run_investigation(
             detail=f"Investigation run failed: {e!s}. Prior signals preserved.",
         ) from e
 
+    required_sources_ready, required_sources_missing = (
+        _required_sources_ready_and_missing(case, source_statuses)
+    )
+
     return {
         "case_id": str(case_id),
         "subject_searched": request.subject_name,
@@ -1156,6 +1248,8 @@ async def run_investigation(
             "temporal": temporal_pairing_stats,
             "contract": contract_pairing_stats,
         },
+        "required_sources_ready": required_sources_ready,
+        "required_sources_missing": required_sources_missing,
         "errors": errors,
         "signals": signal_payloads_response,
         **(
