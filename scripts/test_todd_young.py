@@ -123,9 +123,16 @@ def main() -> int:
     from scripts.todd_young_assertions import run_assertions
 
     client = TestClient(app)
+    key_r = client.post("/api/v1/auth/keys", params={"handle": "gate-runner"})
+    if key_r.status_code != 200:
+        print("Auth key mint failed:", key_r.status_code, key_r.text, file=sys.stderr)
+        return 1
+    auth_headers = {"Authorization": f"Bearer {key_r.json()['api_key']}"}
+
     slug = f"todd-young-gate-{uuid.uuid4().hex[:10]}"
     create = client.post(
         "/cases",
+        headers=auth_headers,
         json={
             "slug": slug,
             "title": "Todd Young Phase 4 gate",
@@ -148,6 +155,7 @@ def main() -> int:
 
     inv = client.post(
         f"/api/v1/cases/{case_id}/investigate",
+        headers=auth_headers,
         json=_investigate_body(),
     )
     if inv.status_code != 200:
