@@ -82,6 +82,8 @@ def response_from_cache_dict(d: dict[str, Any]) -> AdapterResponse:
         result_hash=d.get("result_hash") or "",
         parse_warning=d.get("parse_warning"),
         credential_mode=d.get("credential_mode"),
+        empty_success=bool(d.get("empty_success", False)),
+        error_kind=d.get("error_kind"),
     )
 
 
@@ -106,6 +108,8 @@ def store_cached_response(
             "result_hash": response.result_hash,
             "parse_warning": response.parse_warning,
             "credential_mode": response.credential_mode,
+            "empty_success": response.empty_success,
+            "error_kind": response.error_kind,
             "results": [
                 {
                     "source_name": r.source_name,

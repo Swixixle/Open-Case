@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
+from typing import Any
 
 import httpx
 
@@ -13,6 +15,56 @@ from core.credentials import CredentialRegistry, CredentialUnavailable
 logger = logging.getLogger(__name__)
 
 _CANDIDATE_SEARCH_PATH = "/candidates/search/"
+
+_FEC_CREDENTIAL_ERROR_CODES = frozenset(
+    {"API_KEY_INVALID", "API_KEY_MISSING", "FORBIDDEN"}
+)
+
+
+def _fec_key_source_label() -> str:
+    """How the active FEC API key was sourced (never logs the key)."""
+    if os.environ.get("FEC_API_KEY", "").strip():
+        return "env"
+    if CredentialRegistry._file_secret("fec"):
+        return "file"
+    return "fallback_demo"
+
+
+# Public alias for callers that need the label in user-facing messages (e.g. investigate).
+fec_credential_source_label = _fec_key_source_label
+
+
+def _fec_schedule_a_query_label(query: str, query_type: str) -> str:
+    if query_type == "committee":
+        return f"committee_id={query}"
+    return f"contributor_name={query}"
+
+
+def _fec_interpret_body_api_error(data: Any) -> tuple[str, str] | None:
+    """
+    OpenFEC error object: {"error": {"code": "...", "message": "..."}}
+    Without this, data.get("results", []) → [] looks like an honest empty run.
+    """
+    if not isinstance(data, dict) or "error" not in data:
+        return None
+    err = data["error"]
+    if isinstance(err, dict):
+        code = str(err.get("code", "UNKNOWN"))
+        msg = str(err.get("message", err))
+    else:
+        code = "UNKNOWN"
+        msg = str(err)
+    codes_upper = {c.upper() for c in _FEC_CREDENTIAL_ERROR_CODES}
+    if code.upper() in codes_upper:
+        return (
+            "credential",
+            f"FEC API credential rejected: {code} — {msg}",
+        )
+    return ("processing", f"FEC API error: {code} — {msg}")
+
+
+def _mask_url(url: str) -> str:
+    return re.sub(r"(api_key=)([^&]+)", r"\1***", url, flags=re.IGNORECASE)
 
 
 async def resolve_principal_committee_id_for_official(
@@ -41,6 +93,7 @@ async def resolve_principal_committee_id_for_official(
     if len(j) == 2 and j.isalpha():
         state_filter = j
 
+    cred_src = _fec_key_source_label()
     api = f"{FECAdapter.BASE_URL}{_CANDIDATE_SEARCH_PATH}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         for office in ("S", "H"):
@@ -55,11 +108,31 @@ async def resolve_principal_committee_id_for_official(
                 r = await client.get(api, params=params)
             except httpx.HTTPError:
                 continue
-            if r.status_code != 200:
+            if r.status_code == 429:
+                logger.warning(
+                    "FEC candidates/search rate limited (%s) for %r",
+                    cred_src,
+                    search_name,
+                )
+                continue
+            if r.status_code == 403:
+                logger.warning(
+                    "FEC candidates/search HTTP 403 (credential_mode=%s)", cred_src
+                )
+                continue
+            if r.status_code >= 400:
                 continue
             try:
                 data = r.json()
             except Exception:
+                continue
+            api_err = _fec_interpret_body_api_error(data)
+            if api_err:
+                logger.warning(
+                    "FEC candidates/search API error: %s (credential_mode=%s)",
+                    api_err[1],
+                    cred_src,
+                )
                 continue
             for cand in data.get("results") or []:
                 if not isinstance(cand, dict):
@@ -83,6 +156,7 @@ async def resolve_principal_committee_id_for_official(
                         return str(pc["committee_id"]).strip().upper()
     return None
 
+
 # Donor shapes that are very unlikely to be accidental multi-entity personal-name matches.
 _UNAMBIGUOUS_NAME_MARKERS = (
     "PAC",
@@ -104,22 +178,46 @@ def _is_likely_unambiguous(donor_name: str) -> bool:
     return any(marker in upper for marker in _UNAMBIGUOUS_NAME_MARKERS)
 
 
-def _mask_url(url: str) -> str:
-    return re.sub(r"(api_key=)([^&]+)", r"\1***", url, flags=re.IGNORECASE)
-
-
 class FECAdapter(BaseAdapter):
     source_name = "FEC"
     BASE_URL = "https://api.open.fec.gov/v1"
 
+    def _fec_schedule_failure(
+        self,
+        query: str,
+        query_type: str,
+        error: str,
+        error_kind: str,
+        cred_src: str,
+    ) -> AdapterResponse:
+        qctx = _fec_schedule_a_query_label(query, query_type)
+        return AdapterResponse(
+            source_name=self.source_name,
+            query=query,
+            results=[],
+            found=False,
+            error=f"{error} | credential_mode={cred_src} | {qctx}",
+            error_kind=error_kind,
+            credential_mode=cred_src,
+        )
+
+    def _fec_detail_line(
+        self, cred_src: str, query: str, query_type: str, n_items: int
+    ) -> str:
+        qctx = _fec_schedule_a_query_label(query, query_type)
+        if n_items == 0:
+            tail = "0 receipts returned"
+        else:
+            tail = f"{n_items} schedule_a receipts"
+        return f"credential_mode={cred_src} | {qctx} | {tail}"
+
     async def search(self, query: str, query_type: str = "person") -> AdapterResponse:
-        key_from_env = bool(CredentialRegistry.get_adapter_status("fec")["key_present"])
+        cred_src = _fec_key_source_label()
         try:
             api_key = CredentialRegistry.get_credential("fec") or "DEMO_KEY"
         except CredentialUnavailable:
             api_key = "DEMO_KEY"
-        cred_mode = "ok" if key_from_env else "fallback"
-        key_source = "FEC_API_KEY env" if key_from_env else "registry_fallback"
+        key_source = f"FEC key from {cred_src}"
         try:
             if query_type == "committee":
                 params: dict[str, str | int | bool] = {
@@ -157,10 +255,39 @@ class FECAdapter(BaseAdapter):
                 req_url,
             )
 
+            if response.status_code == 429:
+                return self._fec_schedule_failure(
+                    query,
+                    query_type,
+                    "FEC API rate limit exceeded",
+                    "rate_limited",
+                    cred_src,
+                )
+            if response.status_code == 403:
+                return self._fec_schedule_failure(
+                    query,
+                    query_type,
+                    "FEC API authentication failed (HTTP 403) — check FEC_API_KEY",
+                    "credential",
+                    cred_src,
+                )
+
             try:
                 data = response.json()
             except Exception as e:
-                text = (response.text[:800] + "…") if len(response.text) > 800 else response.text
+                if response.status_code >= 400:
+                    return self._fec_schedule_failure(
+                        query,
+                        query_type,
+                        f"FEC API HTTP {response.status_code} (invalid JSON body: {e!s})",
+                        "processing",
+                        cred_src,
+                    )
+                text = (
+                    (response.text[:800] + "…")
+                    if len(response.text) > 800
+                    else response.text
+                )
                 logger.warning(
                     "[FECAdapter DEBUG] JSON parse failed: %s body_preview=%r",
                     e,
@@ -168,14 +295,36 @@ class FECAdapter(BaseAdapter):
                 )
                 raise
 
+            if response.status_code >= 400:
+                api_err = _fec_interpret_body_api_error(data)
+                if api_err:
+                    ek, msg = api_err
+                    return self._fec_schedule_failure(
+                        query, query_type, msg, ek, cred_src
+                    )
+                return self._fec_schedule_failure(
+                    query,
+                    query_type,
+                    f"FEC API HTTP {response.status_code}",
+                    "processing",
+                    cred_src,
+                )
+
+            api_err = _fec_interpret_body_api_error(data)
+            if api_err:
+                ek, msg = api_err
+                return self._fec_schedule_failure(query, query_type, msg, ek, cred_src)
+
             raw_hash = hashlib.sha256(
                 json.dumps(data, sort_keys=True).encode()
             ).hexdigest()
 
-            items = data.get("results", [])
+            items = data.get("results") or []
+            if not isinstance(items, list):
+                items = []
             logger.debug(
                 "FEC raw schedule_a count: %s",
-                len(items) if isinstance(items, list) else 0,
+                len(items),
             )
             pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
             api_msg = None
@@ -185,14 +334,16 @@ class FECAdapter(BaseAdapter):
                     api_msg = errs[0] if isinstance(errs[0], str) else str(errs[0])
             logger.warning(
                 "[FECAdapter DEBUG] results_count=%s pagination=%r api_errors_hint=%r",
-                len(items) if isinstance(items, list) else "n/a",
+                len(items),
                 pagination,
                 api_msg,
             )
             if not items:
-                empty = self._make_empty_response(query)
+                detail = self._fec_detail_line(cred_src, query, query_type, 0)
+                empty = self._make_empty_response(query, parse_warning=detail)
                 empty.result_hash = raw_hash
-                empty.credential_mode = cred_mode
+                empty.credential_mode = cred_src
+                empty.parse_warning = detail
                 return empty
 
             unique_names = {
@@ -226,8 +377,6 @@ class FECAdapter(BaseAdapter):
                     n for n in unique_names if n != str(contributor_name).lower()
                 )[:20]
 
-                # Committee_id queries return many unrelated donors on one page; that is not
-                # per-row ambiguity. Corporate/PAC-style names are treated as unambiguous.
                 if query_type == "committee" or _is_likely_unambiguous(contributor_name):
                     row_collision_count = 1
                     row_collision_set: list[str] = []
@@ -254,21 +403,27 @@ class FECAdapter(BaseAdapter):
                 apply_collision_rule(ar)
                 results.append(ar)
 
+            success_detail = self._fec_detail_line(
+                cred_src, query, query_type, len(items)
+            )
             return AdapterResponse(
                 source_name=self.source_name,
                 query=query,
                 results=results,
                 found=True,
                 result_hash=raw_hash,
-                credential_mode=cred_mode,
+                credential_mode=cred_src,
+                parse_warning=success_detail,
             )
 
         except Exception as e:
+            qctx = _fec_schedule_a_query_label(query, query_type)
             return AdapterResponse(
                 source_name=self.source_name,
                 query=query,
                 results=[],
                 found=False,
-                error=str(e),
-                credential_mode=cred_mode,
+                error=f"{e!s} | credential_mode={cred_src} | {qctx}",
+                error_kind="processing",
+                credential_mode=cred_src,
             )

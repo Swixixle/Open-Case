@@ -17,7 +17,11 @@ from adapters.base import AdapterResponse, BaseAdapter
 from adapters.cache import get_cached_response, response_from_cache_dict, store_cached_response
 from adapters.congress_votes import CongressVotesAdapter
 from adapters.dedup import is_duplicate, make_evidence_hash
-from adapters.fec import FECAdapter, resolve_principal_committee_id_for_official
+from adapters.fec import (
+    FECAdapter,
+    fec_credential_source_label,
+    resolve_principal_committee_id_for_official,
+)
 from adapters.govinfo_hearings import current_congress_number, search_hearing_witnesses
 from adapters.lda import fetch_lda_filings
 from adapters.regulations import fetch_docket_comments
@@ -84,11 +88,13 @@ def _failed_required_core_adapters(
 ) -> list[str]:
     required = _temporal_core_required_adapters(case)
     by_key = {s["adapter"]: s["status"] for s in source_statuses}
-    return [
-        name
-        for name in required
-        if by_key.get(name) in ("network_failure", "processing_failure")
-    ]
+    failed_statuses = (
+        "network_failure",
+        "processing_failure",
+        "credential_failure",
+        "rate_limited",
+    )
+    return [name for name in required if by_key.get(name) in failed_statuses]
 
 
 def _required_sources_ready_and_missing(
@@ -375,10 +381,43 @@ def _append_source_status(
     response: AdapterResponse,
     from_cache: bool,
 ) -> None:
+    _status_map = {
+        "network": "network_failure",
+        "processing": "processing_failure",
+        "credential": "credential_failure",
+        "rate_limited": "rate_limited",
+    }
     if from_cache:
+        if response.error:
+            kind = (response.error_kind or "processing").lower()
+            st = _status_map.get(kind, "processing_failure")
+            bucket.append(
+                {
+                    "adapter": registry_key,
+                    "display_name": response.source_name,
+                    "status": st,
+                    "detail": f"{response.error} (cached response)",
+                }
+            )
+            return
+        if response.empty_success:
+            bucket.append(
+                {
+                    "adapter": registry_key,
+                    "display_name": response.source_name,
+                    "status": "clean",
+                    "detail": (
+                        (response.parse_warning or response.error or "0 records returned")
+                        + " (cached response)"
+                    ),
+                }
+            )
+            return
         dc = None
         if registry_key in ("fec", "congress"):
-            dc = f"{len(response.results)} row(s) (cached response)"
+            dc = response.parse_warning or (
+                f"{len(response.results)} row(s) (cached response)"
+            )
         bucket.append(
             {
                 "adapter": registry_key,
@@ -402,7 +441,7 @@ def _append_source_status(
         return
     if response.error:
         kind = (response.error_kind or "processing").lower()
-        st = "network_failure" if kind == "network" else "processing_failure"
+        st = _status_map.get(kind, "processing_failure")
         bucket.append(
             {
                 "adapter": registry_key,
@@ -423,7 +462,9 @@ def _append_source_status(
         st = "clean"
     detail_out = response.error
     if detail_out is None and registry_key in ("fec", "congress"):
-        detail_out = f"{len(response.results)} result row(s) returned"
+        detail_out = response.parse_warning or (
+            f"{len(response.results)} result row(s) returned"
+        )
     bucket.append(
         {
             "adapter": registry_key,
@@ -1478,6 +1519,10 @@ async def _run_investigation_adapters(
         if resolved_committee:
             await run_cached(FECAdapter(), resolved_committee, "committee")
         else:
+            errors.append(
+                f"credential_mode={fec_credential_source_label()} | committee resolution "
+                f"failed for {request.subject_name!r} — set fec_committee_id explicitly"
+            )
             await run_cached(FECAdapter(), request.subject_name, "person")
     else:
         await run_cached(FECAdapter(), request.subject_name, "person")

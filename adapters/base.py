@@ -44,7 +44,7 @@ class AdapterResponse:
     credential_mode: str | None = None
     # Fetch completed without transport error but zero actionable rows (honest empty).
     empty_success: bool = False
-    # When error is set: network | processing (for source_statuses truthfulness)
+    # When error is set: network | processing | credential | rate_limited (source_statuses)
     error_kind: str | None = None
 
 
