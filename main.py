@@ -28,8 +28,7 @@ logger = logging.getLogger(__name__)
 def check_config_warnings() -> None:
     """
     BASE_URL: hard fail in production if missing or localhost; warn in development.
-    CONGRESS_API_KEY: non-fatal warning when missing (Congress.gov member search / name resolution).
-    PROPUBLICA_API_KEY: non-fatal warning when missing (member vote records).
+    CONGRESS_API_KEY: non-fatal warning when missing (Congress.gov member search / better vote matching).
     """
     env = os.getenv("ENV", "development").lower()
     base_url = os.getenv("BASE_URL", "")
@@ -50,18 +49,10 @@ def check_config_warnings() -> None:
             "Set BASE_URL=https://your-domain.com before public deployment."
         )
 
-    if not os.getenv("PROPUBLICA_API_KEY"):
-        logger.warning(
-            "PROPUBLICA_API_KEY is not set. "
-            "ProPublica member vote records will not be fetched. "
-            "Get a free key at "
-            "https://www.propublica.org/datastore/api/propublica-congress-api"
-        )
-
     if not os.getenv("CONGRESS_API_KEY"):
         logger.warning(
             "CONGRESS_API_KEY is not set. "
-            "Congress.gov member search (e.g. subject name lookup) will not work. "
+            "Congress.gov member search and name-based vote matching will be limited. "
             "Get a free key at https://api.data.gov/signup/"
         )
 
