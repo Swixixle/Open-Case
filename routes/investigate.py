@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from auth import require_api_key, require_matching_handle
@@ -334,6 +334,12 @@ async def run_investigation(
         prof: SubjectProfile | None = None
         if case.subject_type == "public_official":
             prof = _sync_subject_profile(db, case, request, request.investigator_handle)
+
+        # Reinvestigation: replace evidence so adapter fixes (e.g. matched_name) apply;
+        # drop existing proximity signals tied to stale entry ids.
+        db.execute(delete(Signal).where(Signal.case_file_id == case_id))
+        db.execute(delete(EvidenceEntry).where(EvidenceEntry.case_file_id == case_id))
+        db.flush()
 
         await _run_investigation_adapters(
             case=case,

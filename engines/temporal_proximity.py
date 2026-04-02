@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -81,6 +82,41 @@ class ProximitySignal:
 
 FINANCIAL_ENTRY_TYPES = frozenset({"financial_connection", "disclosure"})
 DECISION_ENTRY_TYPES = frozenset({"vote_record", "timeline_event"})
+
+# Normalize decision events to one bill/nomination id per roll (e.g. S. 5, H.R. 7147, PN 697).
+_DECISION_BILL_RE = re.compile(
+    r"(?i)\b("
+    r"PN\s*#?\s*\d+|"  # nominations
+    r"H\.?\s*J\.?\s*R\.?\s*E\.?\s*S\.?\s*\d+|"
+    r"S\.?\s*J\.?\s*R\.?\s*E\.?\s*S\.?\s*\d+|"
+    r"H\.?\s*R\.?\s*\d+|"
+    r"S\.?\s*\d+"
+    r")\b"
+)
+
+
+def _financial_entity_key(actor_a: str) -> str:
+    return (actor_a or "").strip().lower()
+
+
+def _decision_vote_key(decision_event: str) -> str:
+    text = decision_event or ""
+    m = _DECISION_BILL_RE.search(text)
+    if m:
+        return re.sub(r"\s+", " ", m.group(1)).strip().upper()
+    return text.strip().lower()[:240]
+
+
+def _dedupe_signals_by_donor_and_vote(
+    signals: list[ProximitySignal],
+) -> list[ProximitySignal]:
+    """One signal per (donor / financial entity, vote/bill); keep highest weight."""
+    best: dict[tuple[str, str], ProximitySignal] = {}
+    for s in signals:
+        key = (_financial_entity_key(s.actor_a), _decision_vote_key(s.decision_event))
+        if key not in best or s.weight > best[key].weight:
+            best[key] = s
+    return list(best.values())
 
 
 def _entry_event_dt(entry: Any) -> datetime | None:
@@ -175,6 +211,7 @@ def detect_proximity(
                         )
                     )
 
+    signals = _dedupe_signals_by_donor_and_vote(signals)
     signals = _apply_repeat_multiplier(signals)
     signals.sort(key=lambda s: s.weight, reverse=True)
     return signals
