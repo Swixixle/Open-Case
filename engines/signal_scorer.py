@@ -14,6 +14,18 @@ from engines.temporal_proximity import (
 from signals.dedup import make_signal_identity_hash
 
 
+def evidence_tier_from_checks(conf_checks: dict[str, Any] | None) -> str:
+    """Journalist-facing tier from enrichment indicator count (not the internal confirmed flag)."""
+    count = 0
+    if conf_checks and isinstance(conf_checks, dict):
+        count = int(conf_checks.get("relevance_indicator_count") or 0)
+    if count >= 2:
+        return "Multi-source"
+    if count == 1:
+        return "Corroborated"
+    return "Documented"
+
+
 def compute_relevance_score(cluster: DonorCluster) -> float:
     """Jurisdiction + sponsorship concentration for donor cluster signals."""
     return float(cluster.relevance_score)

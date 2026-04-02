@@ -36,6 +36,7 @@ from engines.signal_scorer import (
     build_signals_from_anomalies,
     build_signals_from_contract_proximity,
     build_signals_from_proximity,
+    evidence_tier_from_checks,
 )
 from engines.temporal_proximity import (
     DonorCluster,
@@ -772,7 +773,30 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
     official_api = out.get("official")
     if official_api is not None and str(official_api).strip():
         out["official_name"] = str(official_api).strip()
+    out["evidence_tier"] = evidence_tier_from_checks(conf_checks if conf_checks else None)
     return out
+
+
+def _temporal_classify_signal(s: Signal) -> tuple[int, int]:
+    """Counts (anticipatory, retrospective) for resolved temporal_proximity signals."""
+    if s.exposure_state == "unresolved" or s.signal_type != "temporal_proximity":
+        return (0, 0)
+    tc = (s.temporal_class or "").strip().lower()
+    if tc == "anticipatory":
+        return (1, 0)
+    if tc == "retrospective":
+        return (0, 1)
+    return (1, 0) if (s.days_between is not None and s.days_between >= 0) else (0, 1)
+
+
+def temporal_signal_counts(resolved_signals: list[Signal]) -> tuple[int, int]:
+    """Public helper for tests / callers: tallies anticipatory vs retrospective temporal signals."""
+    anti = retro = 0
+    for s in resolved_signals:
+        a, r = _temporal_classify_signal(s)
+        anti += a
+        retro += r
+    return anti, retro
 
 
 class InvestigateRequest(BaseModel):
@@ -1369,6 +1393,8 @@ async def run_investigation(
         _required_sources_ready_and_missing(case, source_statuses)
     )
 
+    anticipatory_n, retrospective_n = temporal_signal_counts(resolved_signals)
+
     ok_body: dict[str, Any] = {
         "case_id": str(case_id),
         "subject_searched": request.subject_name,
@@ -1378,6 +1404,8 @@ async def run_investigation(
         "evidence_entries_created": len(created_entries),
         "signals_detected": signals_detected_total,
         "signals_unresolved": signals_unresolved_total,
+        "anticipatory_signals": anticipatory_n,
+        "retrospective_signals": retrospective_n,
         "required_sources_ready": required_sources_ready,
         "required_sources_missing": required_sources_missing,
         "errors": errors,

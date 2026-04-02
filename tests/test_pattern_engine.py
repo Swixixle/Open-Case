@@ -366,6 +366,7 @@ def test_full_case_payload_includes_pattern_alerts_array(test_engine) -> None:
     packed = json.loads(c.signed_hash)
     assert "content_hash" in packed
     assert isinstance(packed.get("payload"), dict)
-    assert packed["payload"].get("schema_version") == "open-case-full-2"
+    assert packed["payload"].get("schema_version") == "open-case-full-3"
     assert packed["payload"].get("pattern_alerts") == []
+    assert "methodology_note" in packed["payload"]
     db.close()

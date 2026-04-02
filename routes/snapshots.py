@@ -12,7 +12,7 @@ from auth import require_api_key, require_matching_handle
 from database import get_db
 from models import CaseFile, CaseSnapshot, Investigator
 from engines.pattern_engine import pattern_alerts_for_signing, run_pattern_engine
-from payloads import apply_case_file_signature, full_case_signing_payload
+from payloads import apply_case_file_signature, seal_case_bundle
 from signing import pack_signed_hash, sign_payload, verify_signed_hash_string
 from routes.evidence import case_detail_response
 from scoring import add_credibility
@@ -53,7 +53,7 @@ def attach_snapshot_routes(router: APIRouter) -> None:
 
         entries = list(case.evidence_entries)
         pal = pattern_alerts_for_signing(run_pattern_engine(db))
-        payload = full_case_signing_payload(case, entries, pal)
+        payload = seal_case_bundle(case, entries, pal)
         payload["snapshot"] = {
             "snapshot_number": next_num,
             "taken_at": datetime.now(timezone.utc).isoformat(),

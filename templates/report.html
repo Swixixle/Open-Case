@@ -35,6 +35,13 @@
     .src-name { font-weight: 600; }
     details.lead-evidence { margin-top: 0.6rem; font-size: 0.85rem; }
     details.lead-evidence summary { cursor: pointer; color: #1a5276; user-select: none; }
+    details.methods-box { margin: 1rem 0; border: 1px solid var(--rule); padding: 0.5rem 0.75rem; background: rgba(255,255,255,0.85); }
+    details.methods-box summary { cursor: pointer; font-weight: 600; color: var(--accent); letter-spacing: 0.04em; }
+    .methods-body { font-size: 0.88rem; line-height: 1.5; margin-top: 0.75rem; white-space: pre-wrap; }
+    .src-pill { font-size: 0.72rem; font-family: system-ui, sans-serif; display: inline-block; margin: 0.15rem 0.35rem 0 0; }
+    .src-pill a { color: #1a5276; }
+    .reporters-box { border: 1px solid var(--rule); padding: 1rem 1.1rem; background: rgba(255,255,255,0.75); font-size: 0.9rem; }
+    .temporal-note { font-size: 0.82rem; font-style: italic; color: var(--muted); margin: 0.5rem 0 1rem; }
   </style>
 </head>
 <body>
@@ -54,29 +61,35 @@
     </section>
     <section>
       <h2>Top leads</h2>
-      <p class="footnote">Up to five donors worth follow-up: <strong>confirmed</strong> or <strong>relevance score ≥ 0.5</strong>.</p>
+      <p class="footnote">Up to five proximity leads (anticipatory first), selected when <strong>relevance score ≥ 0.5</strong> or internal multi-indicator gate. <strong>Evidence tier</strong> reflects public-record enrichment (not proof of influence).</p>
+      <p class="footnote">Multi-source signals have two or more independent public-record indicators beyond donation + vote. Enrichment channels include Regulations.gov and GovInfo when credentials are configured for this deployment.</p>
       {% if report.top_leads %}
-        {% for s in report.top_leads %}
+        <h3 class="section-title">Pre-vote signals (anticipatory)</h3>
+        {% for s in report.top_leads_anticipatory %}
         <article class="lead-card">
           {% if s.is_donor_cluster %}
           <h3><span class="lead-donor">{{ s.donor_display }}</span> — <span class="lead-amount">${{ "{:,.0f}".format(s.total_amount) }}</span> <span style="font-weight:400;font-size:0.95rem;color:var(--muted);">in window</span></h3>
-          <p class="footnote" style="margin-top:0.25rem;">
-            Tightest gap: <strong>{{ s.min_gap_days if s.min_gap_days is not none else "—" }}</strong> days
-            {% if s.exemplar_direction %} · {{ s.exemplar_direction }}{% endif %}
-            {% if s.exemplar_vote %} · Vote: <strong>{{ s.exemplar_vote }}</strong>{% endif %}
-          </p>
+          <p class="footnote" style="margin-top:0.25rem;">{{ s.chronology_line }} {% if s.exemplar_vote %}· <strong>{{ s.exemplar_vote }}</strong>{% endif %}</p>
           {% else %}
           <h3>{{ s.description }}</h3>
           <p class="footnote">Type: {{ s.type }} · Weight: {{ "%.2f"|format(s.weight) }}</p>
           {% endif %}
+          <p class="footnote">Evidence tier: <strong>{{ s.evidence_tier }}</strong></p>
           <div class="badge-row">
+            <span class="badge" style="border-color:var(--accent);">{{ s.evidence_tier }}</span>
             {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
             {% if s.has_lda_filing or (s.breakdown and s.breakdown.get('has_lda_filing')) %}<span class="badge">LDA Filing</span>{% endif %}
             {% if s.has_regulatory_comment and s.regulatory_comment_confidence == 'confirmed' %}<span class="badge">Regulatory Comment</span>{% elif s.has_regulatory_comment %}<span class="badge">Regulatory Comment — probable</span>{% endif %}
             {% if s.has_hearing_appearance %}<span class="badge">Testified at Hearing</span>{% endif %}
             {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
-            {% if s.confirmed %}<span class="badge" style="border-color:var(--accent);">Confirmed</span>{% endif %}
           </div>
+          <p class="footnote src-pill">Sources:
+            {% if s.source_links.fec_href %}<span class="src-pill"><a href="{{ s.source_links.fec_href }}" target="_blank" rel="noopener">FEC receipts ↗</a></span>{% endif %}
+            {% if s.source_links.vote_href %}<span class="src-pill"><a href="{{ s.source_links.vote_href }}" target="_blank" rel="noopener">Senate roll call ↗</a></span>{% endif %}
+            {% if s.source_links.lda_href %}<span class="src-pill"><a href="{{ s.source_links.lda_href }}" target="_blank" rel="noopener">LDA API ↗</a></span>{% endif %}
+            {% if s.source_links.regulations_note %}<span class="src-pill">{{ s.source_links.regulations_note }}</span>{% endif %}
+            {% if s.source_links.govinfo_note %}<span class="src-pill">{{ s.source_links.govinfo_note }}</span>{% endif %}
+          </p>
           {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
           <p class="cross-case-flag">This donor has appeared in proximity signals for {{ s.cross_case_appearances }} other official{{ "s" if s.cross_case_appearances != 1 else "" }} in this system.</p>
           {% if s.cross_case_officials and s.cross_case_officials|length > 0 %}
@@ -103,7 +116,7 @@
             </div>
           </details>
           {% endif %}
-          {% if s.confirmed and s.repeat_count and s.repeat_count > 1 %}
+          {% if s.repeat_count and s.repeat_count > 1 %}
           <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);">
             Signal reinforced {{ s.repeat_count }} times as evidence accumulated.
             <a href="/api/v1/signals/{{ s.id }}/history" style="color:#1a5276;">View history →</a>
@@ -116,37 +129,150 @@
           {% endif %}
         </article>
         {% endfor %}
+        <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
+
+        <h3 class="section-title">Post-vote signals (retrospective)</h3>
+        {% for s in report.top_leads_retrospective %}
+        <article class="lead-card">
+          {% if s.is_donor_cluster %}
+          <h3><span class="lead-donor">{{ s.donor_display }}</span> — <span class="lead-amount">${{ "{:,.0f}".format(s.total_amount) }}</span> <span style="font-weight:400;font-size:0.95rem;color:var(--muted);">in window</span></h3>
+          <p class="footnote" style="margin-top:0.25rem;">{{ s.chronology_line }} {% if s.exemplar_vote %}· <strong>{{ s.exemplar_vote }}</strong>{% endif %}</p>
+          {% else %}
+          <h3>{{ s.description }}</h3>
+          <p class="footnote">Type: {{ s.type }} · Weight: {{ "%.2f"|format(s.weight) }}</p>
+          {% endif %}
+          <p class="footnote">Evidence tier: <strong>{{ s.evidence_tier }}</strong></p>
+          <div class="badge-row">
+            <span class="badge" style="border-color:var(--accent);">{{ s.evidence_tier }}</span>
+            {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
+            {% if s.has_lda_filing or (s.breakdown and s.breakdown.get('has_lda_filing')) %}<span class="badge">LDA Filing</span>{% endif %}
+            {% if s.has_regulatory_comment and s.regulatory_comment_confidence == 'confirmed' %}<span class="badge">Regulatory Comment</span>{% elif s.has_regulatory_comment %}<span class="badge">Regulatory Comment — probable</span>{% endif %}
+            {% if s.has_hearing_appearance %}<span class="badge">Testified at Hearing</span>{% endif %}
+            {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
+          </div>
+          <p class="footnote src-pill">Sources:
+            {% if s.source_links.fec_href %}<span class="src-pill"><a href="{{ s.source_links.fec_href }}" target="_blank" rel="noopener">FEC receipts ↗</a></span>{% endif %}
+            {% if s.source_links.vote_href %}<span class="src-pill"><a href="{{ s.source_links.vote_href }}" target="_blank" rel="noopener">Senate roll call ↗</a></span>{% endif %}
+            {% if s.source_links.lda_href %}<span class="src-pill"><a href="{{ s.source_links.lda_href }}" target="_blank" rel="noopener">LDA API ↗</a></span>{% endif %}
+            {% if s.source_links.regulations_note %}<span class="src-pill">{{ s.source_links.regulations_note }}</span>{% endif %}
+            {% if s.source_links.govinfo_note %}<span class="src-pill">{{ s.source_links.govinfo_note }}</span>{% endif %}
+          </p>
+          {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
+          <p class="cross-case-flag">This donor has appeared in proximity signals for {{ s.cross_case_appearances }} other official{{ "s" if s.cross_case_appearances != 1 else "" }} in this system.</p>
+          {% if s.cross_case_officials and s.cross_case_officials|length > 0 %}
+          <p class="footnote">Also flagged near: {{ s.cross_case_officials | join(", ") }}</p>
+          {% endif %}
+          {% endif %}
+          {% if s.weight_delta is not none %}
+          <p class="weight-delta">{% if s.weight_delta > 0 %}↑ Weight increased by {{ "%.2f"|format(s.weight_delta) }} since last run{% elif s.weight_delta < 0 %}↓ Weight decreased by {{ "%.2f"|format(-s.weight_delta) }} since last run{% else %}Weight unchanged since last run{% endif %}</p>
+          {% endif %}
+          {% if s.new_top_signal %}<p class="footnote" style="color:var(--accent);font-weight:600;">New top signal — rose into the lead tier since the last run.</p>{% endif %}
+          {% if s.first_appearance %}<p class="footnote">First appearance in this case’s investigation history.</p>{% endif %}
+          {% if s.explanation %}<p>{{ s.explanation }}</p>{% endif %}
+          {% if s.supporting_evidence %}
+          <details class="lead-evidence">
+            <summary>Supporting evidence ({{ s.supporting_evidence|length }})</summary>
+            <div style="margin-top:0.5rem;border-top:1px solid #c9c3b8;padding-top:0.5rem;">
+              {% for ev in s.supporting_evidence %}
+              <div style="font-size:0.8rem;padding:0.25rem 0;border-bottom:1px solid #e0dcd4;">
+                <span style="color:var(--muted);">{{ (ev.date_of_event or '')[:10] if ev.date_of_event else 'Undated' }}</span>
+                {% if ev.source_url %} · <a href="{{ ev.source_url }}" target="_blank" rel="noopener" style="color:#1a5276;">{{ ev.source_name }}</a>{% else %} · {{ ev.source_name }}{% endif %}
+                · {{ (ev.title or '')[:160] }}{% if ev.amount %} · <span style="color:#8b4513;">${{ "{:,.0f}".format(ev.amount) }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+          </details>
+          {% endif %}
+          {% if s.repeat_count and s.repeat_count > 1 %}
+          <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--muted);">
+            Signal reinforced {{ s.repeat_count }} times as evidence accumulated.
+            <a href="/api/v1/signals/{{ s.id }}/history" style="color:#1a5276;">View history →</a>
+          </div>
+          {% endif %}
+          {% if s.parse_warning %}
+          <div style="margin-top:0.5rem;padding:0.45rem;background:#fbeaea;border:1px solid #8b2332;font-size:0.75rem;color:#6b1c1c;">
+            Source warning: {{ s.parse_warning[:300] }}
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+        <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
       {% else %}
         <p class="footnote">No signals meet the lead threshold yet. Run investigate again after adding evidence, or review all signals below.</p>
       {% endif %}
     </section>
     <section class="signals-muted">
       <h2>All signals</h2>
-      <p class="footnote">Full ranked list for investigators who want to dig deeper.</p>
+      <p class="footnote">Full list split by timing (anticipatory first within each block). Sort is by model weight.</p>
       {% if report.signals %}
-        {% for s in report.signals %}
+        <h3 class="section-title">Pre-vote signals (anticipatory)</h3>
+        {% for s in report.signals_anticipatory %}
         <div class="signal-compact">
           <strong>{{ s.donor_display if s.is_donor_cluster else s.description }}</strong>
-          <span class="footnote"> · w={{ "%.2f"|format(s.weight) }} · rel={{ "%.2f"|format(s.relevance_score) }}{% if s.confirmed %} · confirmed{% endif %}</span>
+          <span class="footnote"> · tier {{ s.evidence_tier }} · w={{ "%.2f"|format(s.weight) }} · rel={{ "%.2f"|format(s.relevance_score) }}</span>
           {% if s.is_donor_cluster %}
-          <div class="footnote">${{ "{:,.0f}".format(s.total_amount) }} · gap {{ s.min_gap_days if s.min_gap_days is not none else "—" }}d {% if s.exemplar_vote %}· {{ s.exemplar_vote }}{% endif %}</div>
+          <div class="footnote">{{ s.chronology_line }} · ${{ "{:,.0f}".format(s.total_amount) }}{% if s.exemplar_vote %} · {{ s.exemplar_vote }}{% endif %}</div>
           <div class="badge-row" style="margin-top:0.35rem;">
+            <span class="badge">{{ s.evidence_tier }}</span>
             {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
             {% if s.has_lda_filing or (s.breakdown and s.breakdown.get('has_lda_filing')) %}<span class="badge">LDA Filing</span>{% endif %}
             {% if s.has_regulatory_comment and s.regulatory_comment_confidence == 'confirmed' %}<span class="badge">Regulatory Comment</span>{% elif s.has_regulatory_comment %}<span class="badge">Regulatory Comment — probable</span>{% endif %}
             {% if s.has_hearing_appearance %}<span class="badge">Testified at Hearing</span>{% endif %}
             {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
-            {% if s.confirmed %}<span class="badge" style="border-color:var(--accent);">Confirmed</span>{% endif %}
           </div>
+          <p class="footnote src-pill">Sources:
+            {% if s.source_links.fec_href %}<span class="src-pill"><a href="{{ s.source_links.fec_href }}" target="_blank" rel="noopener">FEC ↗</a></span>{% endif %}
+            {% if s.source_links.vote_href %}<span class="src-pill"><a href="{{ s.source_links.vote_href }}" target="_blank" rel="noopener">Vote ↗</a></span>{% endif %}
+            {% if s.source_links.lda_href %}<span class="src-pill"><a href="{{ s.source_links.lda_href }}" target="_blank" rel="noopener">LDA ↗</a></span>{% endif %}
+            {% if s.source_links.regulations_note %}<span class="src-pill">{{ s.source_links.regulations_note }}</span>{% endif %}
+            {% if s.source_links.govinfo_note %}<span class="src-pill">{{ s.source_links.govinfo_note }}</span>{% endif %}
+          </p>
           {% endif %}
           {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
           <div class="footnote" style="color:#8b4513;">Cross-case: {{ s.cross_case_appearances }} other official(s)</div>
           {% endif %}
         </div>
         {% endfor %}
+        <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
+
+        <h3 class="section-title">Post-vote signals (retrospective)</h3>
+        {% for s in report.signals_retrospective %}
+        <div class="signal-compact">
+          <strong>{{ s.donor_display if s.is_donor_cluster else s.description }}</strong>
+          <span class="footnote"> · tier {{ s.evidence_tier }} · w={{ "%.2f"|format(s.weight) }} · rel={{ "%.2f"|format(s.relevance_score) }}</span>
+          {% if s.is_donor_cluster %}
+          <div class="footnote">{{ s.chronology_line }} · ${{ "{:,.0f}".format(s.total_amount) }}{% if s.exemplar_vote %} · {{ s.exemplar_vote }}{% endif %}</div>
+          <div class="badge-row" style="margin-top:0.35rem;">
+            <span class="badge">{{ s.evidence_tier }}</span>
+            {% if s.has_jurisdictional_match %}<span class="badge">Jurisdictional Match</span>{% endif %}
+            {% if s.has_lda_filing or (s.breakdown and s.breakdown.get('has_lda_filing')) %}<span class="badge">LDA Filing</span>{% endif %}
+            {% if s.has_regulatory_comment and s.regulatory_comment_confidence == 'confirmed' %}<span class="badge">Regulatory Comment</span>{% elif s.has_regulatory_comment %}<span class="badge">Regulatory Comment — probable</span>{% endif %}
+            {% if s.has_hearing_appearance %}<span class="badge">Testified at Hearing</span>{% endif %}
+            {% if s.has_sponsorship %}<span class="badge">Sponsorship</span>{% endif %}
+          </div>
+          <p class="footnote src-pill">Sources:
+            {% if s.source_links.fec_href %}<span class="src-pill"><a href="{{ s.source_links.fec_href }}" target="_blank" rel="noopener">FEC ↗</a></span>{% endif %}
+            {% if s.source_links.vote_href %}<span class="src-pill"><a href="{{ s.source_links.vote_href }}" target="_blank" rel="noopener">Vote ↗</a></span>{% endif %}
+            {% if s.source_links.lda_href %}<span class="src-pill"><a href="{{ s.source_links.lda_href }}" target="_blank" rel="noopener">LDA ↗</a></span>{% endif %}
+            {% if s.source_links.regulations_note %}<span class="src-pill">{{ s.source_links.regulations_note }}</span>{% endif %}
+            {% if s.source_links.govinfo_note %}<span class="src-pill">{{ s.source_links.govinfo_note }}</span>{% endif %}
+          </p>
+          {% endif %}
+          {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
+          <div class="footnote" style="color:#8b4513;">Cross-case: {{ s.cross_case_appearances }} other official(s)</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+        <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
       {% else %}
         <p class="footnote">No active signals.</p>
       {% endif %}
+    </section>
+    <section>
+      <details class="methods-box">
+        <summary>How this works</summary>
+        <div class="methods-body">{{ report.methodology_note }}</div>
+      </details>
     </section>
     <section>
       <h2>Evidence timeline</h2>
@@ -224,10 +350,24 @@
         <p class="footnote" style="margin:0.75rem 0 0;">No cryptographic seal stored for this case yet (signing keys may still be bootstrapping on first deploy).</p>
         {% else %}
         <p class="footnote" style="margin:0.75rem 0 0;">
-          <strong>Verification</strong> — This receipt is cryptographically signed. The seal covers the canonical bundle (case fields, evidence entries, and <code>pattern_alerts</code> when using <code>open-case-full-2</code>) from the last signing run. Any change to signed content would invalidate the digest.
+          <strong>Verification</strong> — This receipt is cryptographically signed. The seal covers the canonical bundle (case fields, evidence entries, <code>pattern_alerts</code>, and the methodology note when using <code>open-case-full-3</code>) from the last signing run. Any change to signed content would invalidate the digest.
         </p>
         {% endif %}
       </div>
+    </section>
+    <section class="reporters-box">
+      <h2>For reporters</h2>
+      <p><strong>Using this report</strong></p>
+      <p>This report is a lead-generation tool. It identifies public-record connections for further reporting. Suggested next steps:</p>
+      <ol>
+        <li>Pick 1–3 signals from the top leads section</li>
+        <li>Pull the original FEC filing using the source link above</li>
+        <li>Pull the Senate vote record from Senate.gov</li>
+        <li>If an LDA filing is shown: search lda.senate.gov for the registrant's active filings</li>
+        <li>Request comment from the official's office</li>
+      </ol>
+      <p>This report does not constitute evidence of wrongdoing. All findings are drawn from public government records. The methodology is documented above.</p>
+      <p class="footnote" style="margin-top:0.75rem;"><strong>Request for comment:</strong> Not sent</p>
     </section>
   </main>
 </body>

@@ -4,6 +4,7 @@ import html
 import json
 import os
 import uuid
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from sqlalchemy.orm import Session
 from auth import require_api_key, require_matching_handle
 from database import get_db
 from engines.pattern_engine import pattern_alerts_for_case, run_pattern_engine
+from engines.signal_scorer import evidence_tier_from_checks
 from models import (
     CaseContributor,
     CaseFile,
@@ -28,6 +30,7 @@ from models import (
     SignalAuditLog,
     SourceCheckLog,
 )
+from payloads import METHODOLOGY_NOTE_TEXT
 
 router = APIRouter(prefix="/api/v1", tags=["reporting"])
 
@@ -88,6 +91,129 @@ def _parse_cross_case_officials(signal: Signal) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(x) for x in parsed]
+
+
+def _confirmation_checks_dict(s: Signal) -> dict[str, Any]:
+    try:
+        c = json.loads(s.confirmation_checks or "{}")
+        return c if isinstance(c, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _report_row_is_anticipatory(s: Signal, bd: dict[str, Any]) -> bool:
+    tc = (s.temporal_class or "").strip().lower()
+    if tc == "anticipatory":
+        return True
+    if tc == "retrospective":
+        return False
+    if (bd.get("exemplar_direction") or "").strip().lower() == "after":
+        return False
+    if (bd.get("exemplar_direction") or "").strip().lower() == "before":
+        return True
+    return (s.days_between is not None and s.days_between >= 0)
+
+
+def _chronology_sentence(s: Signal, bd: dict[str, Any], official: str) -> str:
+    gap_v = bd.get("min_gap_days")
+    if gap_v is None:
+        gap = abs(int(s.days_between or 0))
+    else:
+        try:
+            gap = abs(int(gap_v))
+        except (TypeError, ValueError):
+            gap = abs(int(s.days_between or 0))
+    pos = str(bd.get("exemplar_position") or "a recorded vote").strip()
+    exdir = str(bd.get("exemplar_direction") or "").strip().lower()
+    off = official or "the official"
+    if exdir == "same_day":
+        return f"Same calendar day as {off} cast vote ({pos})."
+    if _report_row_is_anticipatory(s, bd):
+        return f"{gap} days before {off} voted {pos}."
+    return f"{gap} days after {off} voted {pos}."
+
+
+
+def _fec_committee_id_from_raw(raw: dict[str, Any]) -> str | None:
+    c = raw.get("committee")
+    if isinstance(c, dict):
+        cid = c.get("committee_id")
+        if cid:
+            return str(cid).strip().upper()
+    return None
+
+
+def _enrichment_channel_notes(lines: list[dict[str, Any]]) -> dict[str, str | None]:
+    out: dict[str, str | None] = {"regulations": None, "govinfo": None}
+    for row in lines:
+        name = (row.get("display_name") or "").lower()
+        line = (row.get("line") or "").lower()
+        if "regulations.gov" in name or "regulations" in name:
+            if "credential" in line or "not configured" in line:
+                out["regulations"] = "Not checked — Regulations.gov unavailable."
+        if "govinfo" in name:
+            if "credential" in line or "not configured" in line:
+                out["govinfo"] = "Not checked — GovInfo unavailable."
+    return out
+
+
+def _external_source_links_for_signal(
+    db: Session,
+    s: Signal,
+    donor_display: str,
+    source_lines: list[dict[str, Any]],
+    bd: dict[str, Any],
+) -> dict[str, Any]:
+    notes = _enrichment_channel_notes(source_lines)
+    if bd.get("has_regulatory_comment"):
+        notes["regulations"] = None
+    if bd.get("has_hearing_appearance"):
+        notes["govinfo"] = None
+
+    fec_cid: str | None = None
+    vote_url: str | None = None
+    for eid in _parse_signal_evidence_ids(s):
+        try:
+            uid = uuid.UUID(str(eid))
+        except ValueError:
+            continue
+        ent = db.get(EvidenceEntry, uid)
+        if not ent or ent.case_file_id != s.case_file_id:
+            continue
+        if ent.entry_type == "financial_connection" and (
+            (ent.source_name or "").upper() == "FEC"
+        ):
+            try:
+                raw = json.loads(ent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                raw = {}
+            if isinstance(raw, dict):
+                fec_cid = fec_cid or _fec_committee_id_from_raw(raw)
+        if ent.entry_type == "vote_record" and ent.source_url:
+            u = ent.source_url.strip()
+            if "senate.gov" in u and "roll_call" in u:
+                vote_url = vote_url or u
+
+    donor_enc = urllib.parse.quote((donor_display or "").strip() or "donor")
+    fec_href: str | None = None
+    if (donor_display or "").strip():
+        if fec_cid:
+            fec_href = f"https://www.fec.gov/data/receipts/?committee_id={fec_cid}&contributor_name={donor_enc}"
+        else:
+            fec_href = f"https://www.fec.gov/data/receipts/?contributor_name={donor_enc}"
+
+    has_lda = bool(bd.get("has_lda_filing"))
+    lda_href: str | None = None
+    if has_lda and (donor_display or "").strip():
+        lda_href = f"https://lda.senate.gov/api/v1/filings/?registrant_name={donor_enc}"
+
+    return {
+        "fec_href": fec_href,
+        "vote_href": vote_url,
+        "lda_href": lda_href,
+        "regulations_note": notes["regulations"],
+        "govinfo_note": notes["govinfo"],
+    }
 
 
 def _receipt_crypto_block(case: CaseFile) -> dict[str, Any]:
@@ -177,13 +303,20 @@ def _source_status_lines(case: CaseFile) -> list[dict[str, Any]]:
     return out
 
 
-def _signal_to_report_row(db: Session, s: Signal) -> dict[str, Any]:
+def _signal_to_report_row(
+    db: Session, s: Signal, source_lines: list[dict[str, Any]]
+) -> dict[str, Any]:
     bd = _sig_breakdown(s)
     rel = float(getattr(s, "relevance_score", 0.0) or bd.get("relevance_score") or 0.0)
     wd = getattr(s, "weight_delta", None)
     xco = _parse_cross_case_officials(s)
     donor_label = str(bd.get("donor") or s.actor_a or "").strip()
     official_label = str(bd.get("official") or s.actor_b or "").strip()
+    conf_checks = _confirmation_checks_dict(s)
+    evidence_tier = evidence_tier_from_checks(conf_checks)
+    is_anti = _report_row_is_anticipatory(s, bd)
+    chron = _chronology_sentence(s, bd, official_label) if bd.get("kind") == "donor_cluster" else (s.description or "")
+    links = _external_source_links_for_signal(db, s, donor_label, source_lines, bd)
     return {
         "id": str(s.id),
         "entity_name": donor_label or "Unknown donor",
@@ -225,6 +358,11 @@ def _signal_to_report_row(db: Session, s: Signal) -> dict[str, Any]:
         "weight_delta": float(wd) if wd is not None else None,
         "new_top_signal": bool(getattr(s, "new_top_signal", False)),
         "first_appearance": bool(getattr(s, "first_appearance", False)),
+        "evidence_tier": evidence_tier,
+        "is_anticipatory": is_anti,
+        "chronology_line": chron,
+        "source_links": links,
+        "temporal_class": (s.temporal_class or "").strip(),
     }
 
 
@@ -326,14 +464,26 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
                 display_recipient = cl
                 break
 
+    source_lines = _source_status_lines(case)
     signal_rows_active = [
-        _signal_to_report_row(db, s) for s in signals if not s.dismissed
+        _signal_to_report_row(db, s, source_lines) for s in signals if not s.dismissed
     ]
-    top_leads = [
+    qualified_leads = [
         r
         for r in signal_rows_active
         if r["confirmed"] or r["relevance_score"] >= 0.5
-    ][:5]
+    ]
+    qualified_leads.sort(
+        key=lambda r: (-int(r["is_anticipatory"]), -float(r["weight"] or 0))
+    )
+    top_leads = qualified_leads[:5]
+    top_leads_anticipatory = [r for r in top_leads if r["is_anticipatory"]]
+    top_leads_retrospective = [r for r in top_leads if not r["is_anticipatory"]]
+
+    signals_anticipatory = [r for r in signal_rows_active if r["is_anticipatory"]]
+    signals_retrospective = [r for r in signal_rows_active if not r["is_anticipatory"]]
+    signals_anticipatory.sort(key=lambda r: -float(r["weight"] or 0))
+    signals_retrospective.sort(key=lambda r: -float(r["weight"] or 0))
 
     return {
         "case_id": str(case_id),
@@ -350,6 +500,11 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
         "summary": case.summary,
         "signals": signal_rows_active,
         "top_leads": top_leads,
+        "top_leads_anticipatory": top_leads_anticipatory,
+        "top_leads_retrospective": top_leads_retrospective,
+        "signals_anticipatory": signals_anticipatory,
+        "signals_retrospective": signals_retrospective,
+        "methodology_note": METHODOLOGY_NOTE_TEXT,
         "dismissed_signals": [
             {
                 "id": str(s.id),
