@@ -1012,7 +1012,7 @@ async def run_investigation(
             sen_for_witness = await get_or_refresh_senator_committees(db, bg_for_intel)
             committee_names_witness = [r.committee_name for r in sen_for_witness]
 
-        donor_clusters = detect_proximity(
+        donor_clusters, temporal_pairing_stats = detect_proximity(
             substantive,
             max_days=request.proximity_days,
             committee_label=committee_label,
@@ -1026,7 +1026,7 @@ async def run_investigation(
             committee_names_witness,
             source_statuses,
         )
-        contract_prox = detect_contract_proximity(substantive)
+        contract_prox, contract_pairing_stats = detect_contract_proximity(substantive)
         contract_anomalies = detect_contract_anomalies(substantive)
 
         all_signal_dicts = (
@@ -1151,6 +1151,11 @@ async def run_investigation(
         "evidence_entries_created": len(created_entries),
         "signals_detected": signals_detected_total,
         "signals_unresolved": signals_unresolved_total,
+        # TODO: remove after 8.3 verified
+        "pairing_diagnostics": {
+            "temporal": temporal_pairing_stats,
+            "contract": contract_pairing_stats,
+        },
         "errors": errors,
         "signals": signal_payloads_response,
         **(

@@ -11,6 +11,39 @@ from core.datetime_utils import coerce_utc
 logger = logging.getLogger(__name__)
 
 
+def new_contract_pairing_stats() -> dict[str, Any]:
+    return {
+        "candidate_pairs_examined": 0,
+        "pairs_emitted": 0,
+        "pairs_skipped_missing_datetime": 0,
+        "pairs_skipped_window": 0,
+        "pairs_skipped_direction": 0,
+        "pairs_skipped_other": 0,
+        "sample_skips": [],
+    }
+
+
+def _append_contract_sample_skip(
+    stats: dict[str, Any],
+    skip_reason: str,
+    raw_donation_val: Any,
+    raw_contract_val: Any,
+) -> None:
+    """Uses same keys as temporal pairing_diagnostics (donation / vote = contract leg)."""
+    samples: list[dict[str, str]] = stats["sample_skips"]
+    if len(samples) >= 5:
+        return
+    samples.append(
+        {
+            "skip_reason": skip_reason,
+            "donation_raw": repr(raw_donation_val),
+            "donation_type": type(raw_donation_val).__name__,
+            "vote_raw": repr(raw_contract_val),
+            "vote_type": type(raw_contract_val).__name__,
+        }
+    )
+
+
 @dataclass
 class ContractProximitySignal:
     donor_label: str
@@ -97,7 +130,10 @@ def _contract_weight(days_between: int, amount: float) -> float:
     return round(min(0.55, prox * 0.65 + amt * 0.35), 3)
 
 
-def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProximitySignal]:
+def detect_contract_proximity(
+    evidence_entries: list[Any],
+) -> tuple[list[ContractProximitySignal], dict[str, Any]]:
+    pairing_stats = new_contract_pairing_stats()
     donations = [
         e
         for e in evidence_entries
@@ -110,8 +146,24 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
         if getattr(e, "entry_type", "") == "financial_connection"
         and getattr(e, "source_name", "") == "USASpending"
     ]
+    if not donations:
+        pairing_stats["pairs_skipped_other"] += 1
+        _append_contract_sample_skip(
+            pairing_stats,
+            "no_fec_donation_entries",
+            0,
+            len(contracts),
+        )
+    if not contracts:
+        pairing_stats["pairs_skipped_other"] += 1
+        _append_contract_sample_skip(
+            pairing_stats,
+            "no_usaspending_contract_entries",
+            len(donations),
+            0,
+        )
     if not donations or not contracts:
-        return []
+        return [], pairing_stats
 
     _skip_log_count = 0
     _MAX_SKIP_LOGS = 10
@@ -120,6 +172,13 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
     for d_ent in donations:
         d_dt = _entry_event_dt(d_ent)
         if not d_dt:
+            pairing_stats["pairs_skipped_other"] += 1
+            _append_contract_sample_skip(
+                pairing_stats,
+                "donation_entry_no_datetime",
+                getattr(d_ent, "date_of_event", None),
+                None,
+            )
             continue
         try:
             d_amt = float(getattr(d_ent, "amount", None) or 0.0)
@@ -128,12 +187,27 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
         for c_ent in contracts:
             c_dt = _entry_event_dt(c_ent)
             if not c_dt:
+                pairing_stats["pairs_skipped_other"] += 1
+                _append_contract_sample_skip(
+                    pairing_stats,
+                    "contract_entry_no_datetime",
+                    getattr(d_ent, "date_of_event", None),
+                    getattr(c_ent, "date_of_event", None),
+                )
                 continue
+            pairing_stats["candidate_pairs_examined"] += 1
             d_utc = coerce_utc(d_dt)
             c_utc = coerce_utc(c_dt)
+            raw_donation = getattr(d_ent, "date_of_event", None)
+            raw_contract = getattr(c_ent, "date_of_event", None)
             if d_utc is None or c_utc is None:
-                raw_donation = getattr(d_ent, "date_of_event", None)
-                raw_contract = getattr(c_ent, "date_of_event", None)
+                pairing_stats["pairs_skipped_missing_datetime"] += 1
+                _append_contract_sample_skip(
+                    pairing_stats,
+                    "missing_datetime",
+                    raw_donation,
+                    raw_contract,
+                )
                 if _skip_log_count < _MAX_SKIP_LOGS:
                     logger.warning(
                         "CONTRACT PROXIMITY SKIP | "
@@ -143,15 +217,39 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
                     _skip_log_count += 1
                 continue
             days_diff = (c_utc - d_utc).days
-            if not (-45 <= days_diff <= 270):
+            if days_diff < -45:
+                pairing_stats["pairs_skipped_direction"] += 1
+                _append_contract_sample_skip(
+                    pairing_stats,
+                    "outside_direction_grace",
+                    raw_donation,
+                    raw_contract,
+                )
+                continue
+            if days_diff > 270:
+                pairing_stats["pairs_skipped_window"] += 1
+                _append_contract_sample_skip(
+                    pairing_stats,
+                    "outside_contract_window",
+                    raw_donation,
+                    raw_contract,
+                )
                 continue
             w = _contract_weight(days_diff, d_amt)
             if w < 0.12:
+                pairing_stats["pairs_skipped_other"] += 1
+                _append_contract_sample_skip(
+                    pairing_stats,
+                    "contract_weight_below_floor",
+                    raw_donation,
+                    raw_contract,
+                )
                 continue
             dd = getattr(d_ent, "date_of_event", None)
             cd = getattr(c_ent, "date_of_event", None)
             dd_s = dd.isoformat() if hasattr(dd, "isoformat") else str(dd or "")
             cd_s = cd.isoformat() if hasattr(cd, "isoformat") else str(cd or "")
+            pairing_stats["pairs_emitted"] += 1
             out.append(
                 ContractProximitySignal(
                     donor_label=_label(d_ent, "Contributor"),
@@ -168,4 +266,4 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
                 )
             )
     out.sort(key=lambda s: s.weight, reverse=True)
-    return out
+    return out, pairing_stats

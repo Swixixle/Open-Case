@@ -38,7 +38,9 @@ def test_detect_proximity_builds_cluster_and_direction_verified() -> None:
         matched_name="Senator Smith",
         id=vid,
     )
-    clusters = detect_proximity([fin, vote], max_days=90, committee_label="Friends of Smith")
+    clusters, _stats = detect_proximity(
+        [fin, vote], max_days=90, committee_label="Friends of Smith"
+    )
     assert len(clusters) == 1
     c = clusters[0]
     assert c.exemplar_gap > 0
@@ -68,7 +70,9 @@ def test_donation_after_vote_is_retrospective() -> None:
         matched_name="Senator Smith",
         id=vid,
     )
-    clusters = detect_proximity([fin, vote], max_days=90, committee_label="Committee")
+    clusters, _stats = detect_proximity(
+        [fin, vote], max_days=90, committee_label="Committee"
+    )
     assert len(clusters) == 1
     c = clusters[0]
     assert c.exemplar_gap < 0
@@ -96,7 +100,9 @@ def test_all_built_signals_have_direction_verified_true() -> None:
         matched_name="Senator Jones",
         id=vid,
     )
-    clusters = detect_proximity([fin, vote], max_days=90, committee_label="Campaign")
+    clusters, _stats = detect_proximity(
+        [fin, vote], max_days=90, committee_label="Campaign"
+    )
     sigs = build_signals_from_proximity(clusters, uuid.uuid4())
     assert len(sigs) == 1
     assert sigs[0]["direction_verified"] is True

@@ -80,7 +80,7 @@ def test_empty_run_does_not_destroy_prior_signals(client, seeded_case_with_signa
         _run_investigation_adapters=AsyncMock(return_value=None),
         _ingest_lda_for_unique_donors=AsyncMock(return_value=None),
         _enrich_fec_evidence_jurisdiction=AsyncMock(return_value=None),
-        detect_proximity=lambda *a, **k: [],
+        detect_proximity=lambda *a, **k: ([], {}),
         build_signals_from_proximity=lambda *a, **k: [],
         build_signals_from_contract_proximity=lambda *a, **k: [],
         build_signals_from_anomalies=lambda *a, **k: [],

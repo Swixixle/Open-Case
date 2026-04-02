@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from core.datetime_utils import coerce_utc, coerce_utc_from_date_only
+from core.datetime_utils import coerce_utc
 from engines.relevance import compute_relevance_score
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,39 @@ class DonorCluster:
 
 FINANCIAL_ENTRY_TYPES = frozenset({"financial_connection", "disclosure"})
 DECISION_ENTRY_TYPES = frozenset({"vote_record", "timeline_event"})
+
+
+def new_temporal_pairing_stats() -> dict[str, Any]:
+    return {
+        "candidate_pairs_examined": 0,
+        "pairs_emitted": 0,
+        "pairs_skipped_missing_datetime": 0,
+        "pairs_skipped_window": 0,
+        "pairs_skipped_direction": 0,
+        "pairs_skipped_other": 0,
+        "sample_skips": [],
+    }
+
+
+def _append_pairing_sample_skip(
+    stats: dict[str, Any],
+    skip_reason: str,
+    raw_donation_val: Any,
+    raw_vote_val: Any,
+) -> None:
+    samples: list[dict[str, str]] = stats["sample_skips"]
+    if len(samples) >= 5:
+        return
+    samples.append(
+        {
+            "skip_reason": skip_reason,
+            "donation_raw": repr(raw_donation_val),
+            "donation_type": type(raw_donation_val).__name__,
+            "vote_raw": repr(raw_vote_val),
+            "vote_type": type(raw_vote_val).__name__,
+        }
+    )
+
 
 _DECISION_BILL_RE = re.compile(
     r"(?i)\b("
@@ -214,20 +247,47 @@ def _actor_for(entry: Any, fallback: str) -> str:
 def _collect_raw_pairs(
     evidence_entries: list[Any],
     max_days: int,
+    pairing_stats: dict[str, Any],
 ) -> list[RawProximityPair]:
     financial_events: list[tuple[datetime, Any]] = []
     decision_events: list[tuple[datetime, Any]] = []
 
     for entry in evidence_entries:
+        et = getattr(entry, "entry_type", "")
+        if et not in FINANCIAL_ENTRY_TYPES and et not in DECISION_ENTRY_TYPES:
+            continue
         dt = _entry_event_dt(entry)
         if not dt:
+            pairing_stats["pairs_skipped_other"] += 1
+            raw_ev = getattr(entry, "date_of_event", None)
+            _append_pairing_sample_skip(
+                pairing_stats,
+                "evidence_no_coercible_date",
+                raw_ev,
+                et,
+            )
             continue
-        et = getattr(entry, "entry_type", "")
         if et in FINANCIAL_ENTRY_TYPES:
             financial_events.append((dt, entry))
         elif et in DECISION_ENTRY_TYPES:
             decision_events.append((dt, entry))
 
+    if not financial_events:
+        pairing_stats["pairs_skipped_other"] += 1
+        _append_pairing_sample_skip(
+            pairing_stats,
+            "no_financial_entries_with_date",
+            len(financial_events),
+            len(decision_events),
+        )
+    if not decision_events:
+        pairing_stats["pairs_skipped_other"] += 1
+        _append_pairing_sample_skip(
+            pairing_stats,
+            "no_decision_entries_with_date",
+            len(financial_events),
+            len(decision_events),
+        )
     if not financial_events or not decision_events:
         return []
 
@@ -245,9 +305,17 @@ def _collect_raw_pairs(
         for d_date, d_entry in decision_events:
             raw_donation_val = getattr(f_entry, "date_of_event", None)
             raw_vote_val = getattr(d_entry, "date_of_event", None)
+            pairing_stats["candidate_pairs_examined"] += 1
             f_utc = coerce_utc(f_date)
             d_utc = coerce_utc(d_date)
             if f_utc is None or d_utc is None:
+                pairing_stats["pairs_skipped_missing_datetime"] += 1
+                _append_pairing_sample_skip(
+                    pairing_stats,
+                    "missing_datetime",
+                    raw_donation_val,
+                    raw_vote_val,
+                )
                 if _skip_log_count < _MAX_SKIP_LOGS:
                     logger.warning(
                         "PROXIMITY SKIP | "
@@ -257,34 +325,52 @@ def _collect_raw_pairs(
                     _skip_log_count += 1
                 continue
             days_diff = (d_utc - f_utc).days
-            if -30 <= days_diff <= max_days:
-                fin_id = str(getattr(f_entry, "id", ""))
-                dec_id = str(getattr(d_entry, "id", ""))
-                fd = getattr(f_entry, "date_of_event", None)
-                dd = getattr(d_entry, "date_of_event", None)
-                fd_s = fd.isoformat() if hasattr(fd, "isoformat") else str(fd or "")
-                dd_s = dd.isoformat() if hasattr(dd, "isoformat") else str(dd or "")
-                sp, csp = _sponsor_flags_from_vote_entry(d_entry)
-                pairs.append(
-                    RawProximityPair(
-                        actor_a=_actor_for(f_entry, "Unknown party"),
-                        actor_b=_actor_for(d_entry, "Unknown official"),
-                        financial_event=str(getattr(f_entry, "title", "")),
-                        decision_event=str(getattr(d_entry, "title", "")),
-                        financial_date=fd_s,
-                        decision_date=dd_s,
-                        days_between=days_diff,
-                        amount=amt,
-                        financial_entry_id=fin_id,
-                        decision_entry_id=dec_id,
-                        financial_flagged=flagged,
-                        financial_jurisdictional_match=_financial_jurisdictional_from_entry(
-                            f_entry
-                        ),
-                        subject_is_sponsor=sp,
-                        subject_is_cosponsor=csp,
-                    )
+            if days_diff < -30:
+                pairing_stats["pairs_skipped_direction"] += 1
+                _append_pairing_sample_skip(
+                    pairing_stats,
+                    "outside_direction_grace",
+                    raw_donation_val,
+                    raw_vote_val,
                 )
+                continue
+            if days_diff > max_days:
+                pairing_stats["pairs_skipped_window"] += 1
+                _append_pairing_sample_skip(
+                    pairing_stats,
+                    "outside_proximity_window",
+                    raw_donation_val,
+                    raw_vote_val,
+                )
+                continue
+            fin_id = str(getattr(f_entry, "id", ""))
+            dec_id = str(getattr(d_entry, "id", ""))
+            fd = getattr(f_entry, "date_of_event", None)
+            dd = getattr(d_entry, "date_of_event", None)
+            fd_s = fd.isoformat() if hasattr(fd, "isoformat") else str(fd or "")
+            dd_s = dd.isoformat() if hasattr(dd, "isoformat") else str(dd or "")
+            sp, csp = _sponsor_flags_from_vote_entry(d_entry)
+            pairing_stats["pairs_emitted"] += 1
+            pairs.append(
+                RawProximityPair(
+                    actor_a=_actor_for(f_entry, "Unknown party"),
+                    actor_b=_actor_for(d_entry, "Unknown official"),
+                    financial_event=str(getattr(f_entry, "title", "")),
+                    decision_event=str(getattr(d_entry, "title", "")),
+                    financial_date=fd_s,
+                    decision_date=dd_s,
+                    days_between=days_diff,
+                    amount=amt,
+                    financial_entry_id=fin_id,
+                    decision_entry_id=dec_id,
+                    financial_flagged=flagged,
+                    financial_jurisdictional_match=_financial_jurisdictional_from_entry(
+                        f_entry
+                    ),
+                    subject_is_sponsor=sp,
+                    subject_is_cosponsor=csp,
+                )
+            )
     return _dedupe_pairs_by_donor_and_vote(pairs)
 
 
@@ -509,13 +595,16 @@ def detect_proximity(
     evidence_entries: list[Any],
     max_days: int = 90,
     committee_label: str = "",
-) -> list[DonorCluster]:
+) -> tuple[list[DonorCluster], dict[str, Any]]:
     """
     Evidence → raw pairings → donor–official clusters → one row per relationship.
+
+    Returns clusters and a pairing_stats dict for API diagnostics (temporary).
     """
-    raw = _collect_raw_pairs(evidence_entries, max_days)
+    pairing_stats = new_temporal_pairing_stats()
+    raw = _collect_raw_pairs(evidence_entries, max_days, pairing_stats)
     if not raw:
-        return []
+        return [], pairing_stats
 
     by_rel: dict[tuple[str, str], list[RawProximityPair]] = {}
     for p in raw:
@@ -525,8 +614,25 @@ def detect_proximity(
     clusters: list[DonorCluster] = []
     for rel_pairs in by_rel.values():
         c = _cluster_from_pairs(rel_pairs, committee_label, evidence_entries)
-        if c is not None and c.final_weight > 0.01:
-            clusters.append(c)
+        if c is None:
+            pairing_stats["pairs_skipped_other"] += 1
+            _append_pairing_sample_skip(
+                pairing_stats,
+                "cluster_build_failed",
+                rel_pairs[0].financial_entry_id if rel_pairs else "",
+                rel_pairs[0].decision_entry_id if rel_pairs else "",
+            )
+            continue
+        if c.final_weight <= 0.01:
+            pairing_stats["pairs_skipped_other"] += 1
+            _append_pairing_sample_skip(
+                pairing_stats,
+                "cluster_below_weight_floor",
+                c.donor_display,
+                c.official_display,
+            )
+            continue
+        clusters.append(c)
 
     clusters.sort(key=lambda x: x.final_weight, reverse=True)
-    return clusters
+    return clusters, pairing_stats
