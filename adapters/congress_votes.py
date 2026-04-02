@@ -32,6 +32,7 @@ DEFAULT_UA = (
 # Senate LIS XML lists `lis_member_id`, not Bioguide. Optional overrides when Congress.gov
 # profile match is unavailable. Extend as needed.
 LIS_MEMBER_ID_BY_BIOGUIDE: dict[str, str] = {
+    "B001306": "S429",  # Jim Banks, Indiana R (Senate, 119th Congress)
     "Y000064": "S391",  # Todd Young — verified in 119th roll call XML
 }
 
