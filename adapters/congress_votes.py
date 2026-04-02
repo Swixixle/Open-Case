@@ -38,7 +38,7 @@ LIS_MEMBER_ID_BY_BIOGUIDE: dict[str, str] = {
     "C001095": "S374",  # Tom Cotton, Arkansas R
     "E000295": "S376",  # Joni Ernst, Iowa R
     "G000386": "S153",  # Chuck Grassley, Iowa R
-    "S000033": "S383",  # Dan Sullivan, Alaska R
+    "S001198": "S383",  # Dan Sullivan, Alaska R (not S000033 — that is Bernie Sanders)
     "S001181": "S324",  # Jeanne Shaheen, New Hampshire D
     "W000779": "S247",  # Ron Wyden, Oregon D
     "Y000064": "S391",  # Todd Young, Indiana R
