@@ -15,7 +15,7 @@ from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
 
 logger = logging.getLogger(__name__)
 
-MAX_VOTE_RESULTS = 50
+MAX_VOTE_RESULTS = 100
 # Cap how many roll calls to walk backward if the member never appears (e.g. House-only).
 MAX_ROLLS_SCAN = 400
 # Upper bound for binary search for latest roll number per congress/session.
@@ -235,12 +235,31 @@ def _find_member_vote(
     return "", None
 
 
+def _member_display_name(
+    member_el: ET.Element | None, profile: dict[str, str] | None
+) -> str:
+    """Human-readable legislator name for signal engine / evidence matched_name."""
+    if member_el is not None:
+        fn = (member_el.findtext("first_name") or "").strip()
+        ln = (member_el.findtext("last_name") or "").strip()
+        if fn or ln:
+            return f"{fn} {ln}".strip()
+        full = (member_el.findtext("member_full") or "").strip()
+        if full:
+            return full.split("(")[0].strip() or full
+    if profile:
+        return f"{profile.get('first', '')} {profile.get('last', '')}".strip()
+    return ""
+
+
 def _xml_to_vote_dict(
     root: ET.Element,
     bioguide_id: str,
     roll: int,
     position: str,
     source_url: str,
+    member_el: ET.Element | None,
+    profile: dict[str, str] | None,
 ) -> dict[str, Any]:
     congress = root.findtext("congress") or ""
     session = root.findtext("session") or ""
@@ -254,7 +273,11 @@ def _xml_to_vote_dict(
     bill_label = (doc_name or f"{doc_type} {doc_num}".strip()).strip() or "Senate vote"
     bill_title = (doc_title or root.findtext("vote_document_text") or "").strip() or "—"
 
+    display_name = _member_display_name(member_el, profile)
+
     return {
+        "bioguide_id": bioguide_id,
+        "member_name": display_name,
         "date": iso_date or raw_date,
         "voteDate": iso_date or raw_date,
         "position": position,
@@ -266,7 +289,10 @@ def _xml_to_vote_dict(
         "question": (root.findtext("question") or "").strip(),
         "bill": {"number": bill_label, "title": bill_title},
         "source_url": source_url,
-        "memberVote": {"bioguideId": bioguide_id, "vote": position},
+        "memberVote": {
+            "bioguideId": bioguide_id,
+            "vote": position,
+        },
     }
 
 
@@ -352,12 +378,16 @@ class CongressVotesAdapter(BaseAdapter):
                         misses += 1
                         continue
 
-                    pos, _mem = _find_member_vote(root, bioguide_id, profile)
+                    pos, mem_el = _find_member_vote(root, bioguide_id, profile)
                     if not pos:
                         misses += 1
                         continue
 
-                    collected.append(_xml_to_vote_dict(root, bioguide_id, roll, pos, url))
+                    collected.append(
+                        _xml_to_vote_dict(
+                            root, bioguide_id, roll, pos, url, mem_el, profile
+                        )
+                    )
                     misses = 0
 
                 if len(collected) >= MAX_VOTE_RESULTS:
@@ -381,7 +411,7 @@ class CongressVotesAdapter(BaseAdapter):
             return empty
 
         results: list[AdapterResult] = []
-        for vote in collected:
+        for vote in collected[:MAX_VOTE_RESULTS]:
             vr, _ = self._vote_to_result(vote, bioguide_id)
             if vr:
                 results.append(vr)
@@ -469,6 +499,9 @@ class CongressVotesAdapter(BaseAdapter):
                 f"{bioguide_id}?q=%7B%22role%22%3A%22legislator%22%7D"
             )
 
+        mn = (vote.get("member_name") or "").strip()
+        matched_name = mn or vote.get("bioguide_id") or bioguide_id or None
+
         return (
             AdapterResult(
                 source_name=self.source_name,
@@ -482,6 +515,7 @@ class CongressVotesAdapter(BaseAdapter):
                 ),
                 date_of_event=str(vote_date)[:10] if vote_date else None,
                 confidence="confirmed",
+                matched_name=str(matched_name) if matched_name else None,
                 raw_data=dict(vote),
             ),
             mismatch,
