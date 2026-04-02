@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import date, datetime, timezone
@@ -10,7 +11,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from auth import require_api_key, require_matching_handle
@@ -39,7 +40,7 @@ from engines.signal_scorer import (
     build_signals_from_proximity,
     evidence_tier_from_checks,
 )
-from engines.entity_resolution import resolve
+from engines.entity_resolution import ResolvedEntity, resolve
 from engines.temporal_proximity import (
     DonorCluster,
     detect_proximity,
@@ -69,6 +70,8 @@ from data.industry_jurisdiction_map import (
 from core.credentials import CredentialRegistry
 from core.datetime_utils import coerce_utc
 from scoring import add_credibility
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["investigate"])
 
@@ -493,11 +496,42 @@ def _raw_donor_from_signal(s: Signal) -> str:
 
 
 def _fingerprint_donor_key(s: Signal) -> str:
-    """Cross-case fingerprint key: resolved canonical_id (slug)."""
+    """
+    Canonical entity id for top_donor snapshots / prev_top weight deltas.
+
+    Fingerprint rows store the legacy per-signal key separately (raw donor lower).
+    """
     raw = _raw_donor_from_signal(s)
     if not raw:
         return ""
     return resolve(raw).canonical_id
+
+
+def _cross_case_fingerprint_match(
+    case_id: uuid.UUID,
+    ent: ResolvedEntity,
+    legacy_normalized_donor_key: str,
+):
+    """
+    Match other cases that share the same resolved entity, including legacy rows
+    where canonical_id was not backfilled yet (fallback to exact legacy key).
+    """
+    cid = (ent.canonical_id or "").strip()
+    leg = (legacy_normalized_donor_key or "").strip()
+    base = DonorFingerprint.case_file_id != case_id
+    canon_empty = or_(
+        DonorFingerprint.canonical_id.is_(None),
+        DonorFingerprint.canonical_id == "",
+    )
+    if cid:
+        return and_(
+            base,
+            or_(
+                DonorFingerprint.canonical_id == cid,
+                and_(canon_empty, DonorFingerprint.normalized_donor_key == leg),
+            ),
+        )
+    return and_(base, DonorFingerprint.normalized_donor_key == leg)
 
 
 async def _ingest_lda_for_unique_donors(
@@ -611,50 +645,53 @@ def _apply_cross_case_baseline_and_fingerprints(
     )
 
     for i, s in enumerate(temporal_sorted):
-        dk = _fingerprint_donor_key(s)
-        if not dk:
+        raw_d = _raw_donor_from_signal(s)
+        if not raw_d:
             continue
+        ent = resolve(raw_d)
+        cid_key = ent.canonical_id.strip().lower()
+        if not cid_key:
+            continue
+        legacy = _donor_key_from_signal_row(s)
         cc_count = (
             db.scalar(
                 select(func.count(func.distinct(DonorFingerprint.case_file_id)))
                 .select_from(DonorFingerprint)
-                .where(
-                    DonorFingerprint.normalized_donor_key == dk,
-                    DonorFingerprint.case_file_id != case_id,
-                )
+                .where(_cross_case_fingerprint_match(case_id, ent, legacy))
             )
             or 0
         )
         other_off = db.scalars(
             select(DonorFingerprint.official_name)
-            .where(
-                DonorFingerprint.normalized_donor_key == dk,
-                DonorFingerprint.case_file_id != case_id,
-            )
+            .where(_cross_case_fingerprint_match(case_id, ent, legacy))
             .distinct()
         ).all()
         s.cross_case_appearances = int(cc_count)
         s.cross_case_officials = json.dumps(
             [str(x) for x in other_off if x], separators=(",", ":")
         )
-        prev = prev_by_donor.get(dk)
+        prev = prev_by_donor.get(cid_key) or prev_by_donor.get(legacy)
         if prev is not None and prev.get("weight") is not None:
             s.weight_delta = float(s.weight or 0.0) - float(prev["weight"])
         else:
             s.weight_delta = None
         s.first_appearance = prev is None
-        s.new_top_signal = (i < 10) and (dk not in prev_top_keys)
+        s.new_top_signal = (i < 10) and (
+            cid_key not in prev_top_keys and legacy not in prev_top_keys
+        )
         db.add(s)
 
     for s in temporal_sorted[:10]:
-        dk = _fingerprint_donor_key(s)
-        if not dk:
-            continue
         raw_d = _raw_donor_from_signal(s)
+        if not raw_d:
+            continue
         ent = resolve(raw_d)
+        legacy = _donor_key_from_signal_row(s)
+        if not legacy:
+            continue
         db.add(
             DonorFingerprint(
-                normalized_donor_key=dk,
+                normalized_donor_key=legacy,
                 canonical_id=ent.canonical_id,
                 resolution_method=ent.resolution_method,
                 normalized_name=ent.normalized_name or None,
@@ -1395,6 +1432,15 @@ async def run_investigation(
             + build_signals_from_anomalies(contract_anomalies, case_id)
         )
 
+        if debug:
+            logger.info(
+                "INVESTIGATE DEBUG: candidate_pairs_examined=%s clusters=%s "
+                "pre_write_signals=%s",
+                temporal_pairing_stats.get("candidate_pairs_examined"),
+                len(donor_clusters),
+                len(all_signal_dicts),
+            )
+
         for sig_dict in all_signal_dicts:
             if not sig_dict.get("direction_verified", True):
                 raise ValueError("Signal failed direction_verified gate — not persisting.")
@@ -1450,10 +1496,14 @@ async def run_investigation(
         )
         top_donor_payload: list[dict[str, Any]] = []
         for s in temporal_sorted_run[:10]:
+            raw_td = _raw_donor_from_signal(s)
+            if not raw_td:
+                continue
+            ent_td = resolve(raw_td)
             bd_r = _signal_breakdown_local(s)
             top_donor_payload.append(
                 {
-                    "donor_key": _fingerprint_donor_key(s),
+                    "donor_key": ent_td.canonical_id,
                     "weight": float(s.weight or 0.0),
                     "min_gap_days": bd_r.get("min_gap_days"),
                     "total_amount": bd_r.get("total_amount"),

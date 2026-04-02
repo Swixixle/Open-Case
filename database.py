@@ -36,9 +36,47 @@ def run_migrations() -> None:
     command.upgrade(cfg, "head")
 
 
+def backfill_donor_fingerprint_canonical_ids() -> None:
+    """
+    Repair rows migrated before Phase 10B.1: fill canonical_id from legacy key.
+    Safe to run repeatedly.
+    """
+    from sqlalchemy import or_, select
+
+    from engines.entity_resolution import resolve
+    from models import DonorFingerprint
+
+    batch_limit = 4000
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(DonorFingerprint)
+            .where(
+                or_(
+                    DonorFingerprint.canonical_id.is_(None),
+                    DonorFingerprint.canonical_id == "",
+                )
+            )
+            .limit(batch_limit)
+        ).all()
+        touched = False
+        for fp in rows:
+            leg = (fp.normalized_donor_key or "").strip()
+            if not leg:
+                continue
+            ent = resolve(leg)
+            fp.canonical_id = ent.canonical_id
+            fp.resolution_method = ent.resolution_method
+            if ent.normalized_name:
+                fp.normalized_name = ent.normalized_name
+            touched = True
+        if touched:
+            session.commit()
+
+
 def init_db() -> None:
     """Apply Alembic migrations (replaces create_all)."""
     run_migrations()
+    backfill_donor_fingerprint_canonical_ids()
 
 
 def get_db() -> Generator[Session, None, None]:

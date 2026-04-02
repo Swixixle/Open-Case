@@ -136,7 +136,9 @@ def _load_appearances(db: Session) -> list[_Appearance]:
     case_cache: dict[uuid.UUID, str | None] = {}
     out: list[_Appearance] = []
     for fp, sig in rows:
-        dk = (fp.normalized_donor_key or "").strip().lower()
+        cid = (fp.canonical_id or "").strip().lower()
+        leg = (fp.normalized_donor_key or "").strip().lower()
+        dk = cid if cid else leg
         if not dk:
             continue
         bg = _resolve_bioguide(db, fp, case_cache)

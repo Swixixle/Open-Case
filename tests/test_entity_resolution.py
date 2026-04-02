@@ -134,7 +134,7 @@ def test_cross_case_appearances_fires_after_normalization(test_engine) -> None:
     db.flush()
     db.add(
         DonorFingerprint(
-            normalized_donor_key="morgan-stanley",
+            normalized_donor_key="morgan stanley pac",
             canonical_id="morgan-stanley",
             resolution_method="exact",
             normalized_name="MORGAN STANLEY",
