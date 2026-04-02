@@ -77,6 +77,9 @@ router = APIRouter(prefix="/api/v1", tags=["investigate"])
 
 # Top donor-cluster signals in POST investigate body (resolved only; see signals_unresolved).
 INVESTIGATE_SIGNALS_RESPONSE_LIMIT = 10
+# DonorFingerprint rows power cross-case counts and the pattern engine — not only the
+# top-10 leaderboard (investigation_run.top_donors). Cap avoids pathological inserts.
+MAX_TEMPORAL_DONOR_FINGERPRINTS_PER_RUN = 500
 MAX_LDA_DONORS_PER_RUN = 25
 MAX_WITNESS_CLUSTERS_PER_RUN = 20
 
@@ -681,7 +684,7 @@ def _apply_cross_case_baseline_and_fingerprints(
         )
         db.add(s)
 
-    for s in temporal_sorted[:10]:
+    for s in temporal_sorted[:MAX_TEMPORAL_DONOR_FINGERPRINTS_PER_RUN]:
         raw_d = _raw_donor_from_signal(s)
         if not raw_d:
             continue
