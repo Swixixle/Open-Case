@@ -15,11 +15,10 @@ from models import CaseContributor, CaseFile, EvidenceEntry, Investigator
 from payloads import (
     apply_case_file_signature,
     evidence_semantic_dict,
-    full_case_signing_payload,
     sign_evidence_entry,
+    verify_case_file_seal,
 )
 from scoring import add_credibility
-from signing import verify_signed_hash_string
 
 ENTRY_TYPES = frozenset(
     {
@@ -113,9 +112,7 @@ def case_detail_response(db: Session, case: CaseFile) -> dict[str, Any]:
     if not c:
         raise HTTPException(404, detail="case not found")
     out = case_to_response(c)
-    out["signature_check"] = verify_signed_hash_string(
-        c.signed_hash, full_case_signing_payload(c, list(c.evidence_entries))
-    )
+    out["signature_check"] = verify_case_file_seal(c, list(c.evidence_entries), db)
     return out
 
 

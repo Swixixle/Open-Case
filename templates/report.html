@@ -200,7 +200,7 @@
       <div class="crypto-box">
         <h3>Receipt seal</h3>
         <p style="margin:0 0 0.5rem;font-family:Georgia,serif;font-size:0.85rem;color:var(--ink);">
-          This page summarizes the case. The platform signs a canonical payload of case metadata and evidence after each investigation run.
+          This page summarizes the case. The platform signs a canonical payload: case fields, evidence rows, and the pattern-alert snapshot from the fingerprint ledger (<code>pattern_alerts</code>, empty when no rules fire).
         </p>
         <div><strong>Case</strong> {{ report.receipt_crypto.case_id }}</div>
         <div><strong>Signed</strong> {{ report.receipt_crypto.signed_at or "—" }}</div>
@@ -214,11 +214,17 @@
         {% if report.receipt_crypto.public_key_preview %}
         <div><strong>Verify key (public, prefix)</strong> {{ report.receipt_crypto.public_key_preview }}</div>
         {% endif %}
+        {% if report.receipt_crypto.has_embedded_payload %}
+        <div><strong>Sealed bundle schema</strong> {{ report.receipt_crypto.seal_schema_version or "—" }}</div>
+        <div><strong>Pattern alerts in sealed digest</strong> {{ report.receipt_crypto.pattern_alerts_count }} {% if report.receipt_crypto.pattern_alerts_count == 0 %}(<code>[]</code> at seal){% endif %}</div>
+        {% else %}
+        <p class="footnote" style="margin:0.65rem 0 0;">This case was sealed without an embedded payload in <code>signed_hash</code>. Reseal via <code>POST …/investigate</code> or by adding evidence so verifiers (and this page) can read <code>pattern_alerts</code> from the same JSON that was hashed.</p>
+        {% endif %}
         {% if not report.receipt_crypto.has_material %}
         <p class="footnote" style="margin:0.75rem 0 0;">No cryptographic seal stored for this case yet (signing keys may still be bootstrapping on first deploy).</p>
         {% else %}
         <p class="footnote" style="margin:0.75rem 0 0;">
-          <strong>Verification</strong> — This receipt is cryptographically signed. The seal covers the canonical case bundle (case fields and evidence entries) from the last signing run. Any change to signed content would invalidate the digest.
+          <strong>Verification</strong> — This receipt is cryptographically signed. The seal covers the canonical bundle (case fields, evidence entries, and <code>pattern_alerts</code> when using <code>open-case-full-2</code>) from the last signing run. Any change to signed content would invalidate the digest.
         </p>
         {% endif %}
       </div>

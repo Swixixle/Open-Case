@@ -100,6 +100,10 @@ def _receipt_crypto_block(case: CaseFile) -> dict[str, Any]:
         "signature_preview": "",
         "public_key_preview": "",
         "has_material": False,
+        "seal_schema_version": "",
+        "pattern_alerts_sealed": None,
+        "pattern_alerts_count": None,
+        "has_embedded_payload": False,
     }
     packed = (case.signed_hash or "").strip()
     if not packed:
@@ -116,6 +120,17 @@ def _receipt_crypto_block(case: CaseFile) -> dict[str, Any]:
         pub = os.environ.get("OPEN_CASE_PUBLIC_KEY", "").strip()
         if pub:
             block["public_key_preview"] = pub[:16] + ("…" if len(pub) > 16 else "")
+        pl = data.get("payload")
+        if isinstance(pl, dict):
+            block["has_embedded_payload"] = True
+            block["seal_schema_version"] = str(pl.get("schema_version") or "")
+            pals = pl.get("pattern_alerts")
+            if isinstance(pals, list):
+                block["pattern_alerts_sealed"] = pals
+                block["pattern_alerts_count"] = len(pals)
+            else:
+                block["pattern_alerts_sealed"] = []
+                block["pattern_alerts_count"] = 0
     except json.JSONDecodeError:
         block["content_hash_preview"] = packed[:24] + ("…" if len(packed) > 24 else packed)
         block["has_material"] = bool(packed)

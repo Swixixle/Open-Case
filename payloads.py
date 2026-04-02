@@ -1,6 +1,7 @@
 """Deterministic JSON-shaped dicts for JCS signing (case + evidence)."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +92,18 @@ def sign_evidence_entry(entry: EvidenceEntry) -> None:
     entry.signed_hash = pack_signed_hash(signed["content_hash"], signed["signature"])
 
 
+def legacy_v1_full_case_signing_payload(
+    case: CaseFile, entries: list[EvidenceEntry]
+) -> dict[str, Any]:
+    """Pre–Phase 9B bundle: no pattern_alerts key (used to verify older seals)."""
+    ordered = sorted(entries, key=lambda x: str(x.id))
+    return {
+        "schema_version": "open-case-full-1",
+        "case": case_semantic_dict(case),
+        "evidence": [evidence_semantic_dict(x) for x in ordered],
+    }
+
+
 def full_case_signing_payload(
     case: CaseFile,
     entries: list[EvidenceEntry],
@@ -104,6 +117,39 @@ def full_case_signing_payload(
         "evidence": [evidence_semantic_dict(x) for x in ordered],
         "pattern_alerts": pal,
     }
+
+
+def verify_case_file_seal(
+    case: CaseFile,
+    entries: list[EvidenceEntry],
+    db: "Session | None",
+) -> dict[str, Any]:
+    """Verify case.signed_hash: prefer embedded canonical payload; fall back to legacy shapes."""
+    from signing import unpack_signed_hash, verify_signed_hash_string
+
+    packed = (case.signed_hash or "").strip()
+    if not packed:
+        return {"ok": False, "reasons": ["empty signed_hash"]}
+    try:
+        data = unpack_signed_hash(packed)
+    except json.JSONDecodeError:
+        return {"ok": False, "reasons": ["invalid signed_hash json"]}
+    if isinstance(data.get("payload"), dict):
+        return verify_signed_hash_string(packed, None)
+    legacy = legacy_v1_full_case_signing_payload(case, entries)
+    r = verify_signed_hash_string(packed, legacy)
+    if r["ok"]:
+        return r
+    if db is not None:
+        from engines.pattern_engine import pattern_alerts_for_signing, run_pattern_engine
+
+        pal = pattern_alerts_for_signing(run_pattern_engine(db))
+        r2 = verify_signed_hash_string(
+            packed, full_case_signing_payload(case, entries, pal)
+        )
+        if r2["ok"]:
+            return r2
+    return r
 
 
 def apply_case_file_signature(
@@ -129,5 +175,7 @@ def apply_case_file_signature(
 
     payload = full_case_signing_payload(case, entries, pattern_payload)
     signed = sign_payload(payload)
-    case.signed_hash = pack_signed_hash(signed["content_hash"], signed["signature"])
+    case.signed_hash = pack_signed_hash(
+        signed["content_hash"], signed["signature"], payload
+    )
     case.last_signed_at = datetime.now(timezone.utc)
