@@ -4,6 +4,8 @@ import logging
 import re
 from datetime import timedelta
 
+from core.datetime_utils import coerce_utc
+
 import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -106,7 +108,13 @@ async def get_or_refresh_senator_committees(
     now = utc_now()
     if existing:
         newest = max(r.fetched_at for r in existing)
-        if now - newest < timedelta(days=CACHE_DAYS):
+        now_utc = coerce_utc(now)
+        newest_utc = coerce_utc(newest)
+        if now_utc is None or newest_utc is None:
+            logger.warning(
+                "[senate_committees] Could not coerce cache timestamps; refreshing."
+            )
+        elif now_utc - newest_utc < timedelta(days=CACHE_DAYS):
             return existing
 
     try:

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import statistics
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
+from core.datetime_utils import coerce_utc, coerce_utc_from_date_only
 from engines.relevance import compute_relevance_score
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -196,16 +200,12 @@ def _entry_event_dt(entry: Any) -> datetime | None:
         return None
     d = entry.date_of_event
     if isinstance(d, datetime):
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
-        return d.astimezone(timezone.utc)
+        return coerce_utc(d)
     if isinstance(d, date):
-        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
-    try:
-        raw = str(d).replace("Z", "+00:00")
-        return datetime.fromisoformat(raw)
-    except (ValueError, AttributeError):
-        return None
+        return coerce_utc_from_date_only(d)
+    if isinstance(d, str):
+        return coerce_utc(d)
+    return coerce_utc(str(d))
 
 
 def _actor_for(entry: Any, fallback: str) -> str:
@@ -244,7 +244,14 @@ def _collect_raw_pairs(
             amt = 0.0
         flagged = bool(getattr(f_entry, "flagged_for_review", False))
         for d_date, d_entry in decision_events:
-            days_diff = (d_date - f_date).days
+            f_utc = coerce_utc(f_date)
+            d_utc = coerce_utc(d_date)
+            if f_utc is None or d_utc is None:
+                logger.warning(
+                    "Skipping proximity pair: could not coerce event datetimes to UTC."
+                )
+                continue
+            days_diff = (d_utc - f_utc).days
             if -30 <= days_diff <= max_days:
                 fin_id = str(getattr(f_entry, "id", ""))
                 dec_id = str(getattr(d_entry, "id", ""))

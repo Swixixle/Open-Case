@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
+
+import logging
+
+from core.datetime_utils import coerce_utc, coerce_utc_from_date_only
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -57,16 +63,12 @@ def _entry_event_dt(entry: Any) -> datetime | None:
         return None
     d = entry.date_of_event
     if isinstance(d, datetime):
-        if d.tzinfo is None:
-            d = d.replace(tzinfo=timezone.utc)
-        return d.astimezone(timezone.utc)
+        return coerce_utc(d)
     if isinstance(d, date):
-        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
-    try:
-        raw = str(d).replace("Z", "+00:00")
-        return datetime.fromisoformat(raw)
-    except (ValueError, AttributeError):
-        return None
+        return coerce_utc_from_date_only(d)
+    if isinstance(d, str):
+        return coerce_utc(d)
+    return coerce_utc(str(d))
 
 
 def _label(entry: Any, fallback: str) -> str:
@@ -128,7 +130,14 @@ def detect_contract_proximity(evidence_entries: list[Any]) -> list[ContractProxi
             c_dt = _entry_event_dt(c_ent)
             if not c_dt:
                 continue
-            days_diff = (c_dt - d_dt).days
+            d_utc = coerce_utc(d_dt)
+            c_utc = coerce_utc(c_dt)
+            if d_utc is None or c_utc is None:
+                logger.warning(
+                    "Skipping contract pair: could not coerce event datetimes to UTC."
+                )
+                continue
+            days_diff = (c_utc - d_utc).days
             if not (-45 <= days_diff <= 270):
                 continue
             w = _contract_weight(days_diff, d_amt)

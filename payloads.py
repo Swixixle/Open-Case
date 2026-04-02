@@ -4,20 +4,21 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
+from core.datetime_utils import coerce_utc
 from models import CaseFile, EvidenceEntry
 
 
 def _dt_iso(v: Any) -> str | None:
-    """UTC `YYYY-MM-DDTHH:MM:SSZ` so SQLite round-trips match what was signed."""
+    """UTC `YYYY-MM-DDTHH:MM:SSZ` so SQLite round-trips match what is signed."""
     if v is None:
         return None
     if isinstance(v, date) and not isinstance(v, datetime):
         return v.isoformat()
     if isinstance(v, datetime):
-        if v.tzinfo is None:
-            v = v.replace(tzinfo=timezone.utc)
-        v = v.astimezone(timezone.utc)
-        return v.strftime("%Y-%m-%dT%H:%M:%SZ")
+        cu = coerce_utc(v)
+        if cu is None:
+            return None
+        return cu.strftime("%Y-%m-%dT%H:%M:%SZ")
     return str(v)
 
 

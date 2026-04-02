@@ -5,6 +5,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
@@ -928,6 +929,13 @@ async def run_investigation(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
+    prior_signal_count = (
+        db.scalar(
+            select(func.count()).select_from(Signal).where(Signal.case_file_id == case_id)
+        )
+        or 0
+    )
+
     created_entries: list[EvidenceEntry] = []
     errors: list[str] = []
     source_check_tracker: list[str] = []
@@ -1112,13 +1120,27 @@ async def run_investigation(
                 case_refresh, list(case_refresh.evidence_entries)
             )
 
+        new_signal_count = len(stored_signals)
+        if new_signal_count == 0 and prior_signal_count > 0:
+            db.rollback()
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Run produced zero signals. Prior signals preserved. "
+                    "Investigate the enrichment pipeline before re-running."
+                ),
+            )
+
         db.commit()
     except HTTPException:
         db.rollback()
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(
+            status_code=500,
+            detail=f"Investigation run failed: {e!s}. Prior signals preserved.",
+        ) from e
 
     return {
         "case_id": str(case_id),
@@ -1180,13 +1202,34 @@ async def _run_investigation_adapters(
         rk = _adapter_registry_key(adapter)
         try:
             response, from_cache = await get_adapter_response(adapter, q, qt)
-        except Exception as e:
-            errors.append(f"{adapter.source_name}: {e!s}")
+        except (httpx.HTTPError, httpx.RequestError) as e:
+            errors.append(f"{adapter.source_name}: network failure — {e!s}")
             source_statuses.append(
                 {
                     "adapter": rk,
                     "display_name": adapter.source_name,
-                    "status": "credential_unavailable",
+                    "status": "network_failure",
+                    "detail": str(e),
+                }
+            )
+            _add_source_log(
+                db,
+                case_id,
+                adapter.source_name,
+                q,
+                0,
+                request.investigator_handle,
+                "",
+                source_check_tracker,
+            )
+            return
+        except Exception as e:
+            errors.append(f"{adapter.source_name}: processing failure — {e!s}")
+            source_statuses.append(
+                {
+                    "adapter": rk,
+                    "display_name": adapter.source_name,
+                    "status": "processing_failure",
                     "detail": str(e),
                 }
             )
