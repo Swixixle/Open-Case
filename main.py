@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from database import init_db
+from routes.admin import router as admin_router
 from routes.auth import router as auth_router
 from routes.cases import router as cases_router
 from routes.evidence_disambig import router as evidence_disambig_router
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="OPEN CASE", version="0.2.0", lifespan=lifespan)
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(cases_router)
 app.include_router(investigate_router)

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+
+def _bust_cache_enabled() -> bool:
+    return os.getenv("BUST_CACHE", "").strip().lower() in ("1", "true", "yes")
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -25,6 +30,9 @@ def get_cached_response(
     adapter_name: str,
     query_string: str,
 ) -> dict[str, Any] | None:
+    if _bust_cache_enabled():
+        return None
+
     cache_key = make_cache_key(adapter_name, query_string)
     now = _utc_now()
     row = db.scalar(
