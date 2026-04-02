@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import defaultdict
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -18,9 +19,13 @@ FINANCIAL_TYPES = frozenset({"financial_connection"})
 DECISION_TYPES = frozenset({"vote_record", "decision_event", "congressional_vote"})
 
 
-def run_assertions(case_id: uuid.UUID, db: Session) -> tuple[bool, dict[str, Any]]:
+def run_assertions(
+    case_id: uuid.UUID, db: Session
+) -> tuple[bool, dict[str, Any], dict[int, str]]:
     """
-    Run all assertions. Return (passed, diagnostic_dict).
+    Run all assertions. Return (passed, diagnostic_dict, category_results).
+
+    category_results maps 1..4 to \"PASS\" or \"FAIL\" for closure artifacts.
     diagnostic_dict is always emitted to stdout for debugging.
     """
     diagnostics: dict[str, Any] = {}
@@ -109,6 +114,16 @@ def run_assertions(case_id: uuid.UUID, db: Session) -> tuple[bool, dict[str, Any
                 f"entry_type={e.entry_type!r}  title={tit!r}"
             )
 
+        by_adapter: dict[str, list[EvidenceEntry]] = defaultdict(list)
+        for e in signal_evidence:
+            key = (e.adapter_name or e.source_name or "(unknown)").strip() or "(unknown)"
+            by_adapter[key].append(e)
+        print("\n--- Category 3 by adapter/source (failure triage) ---")
+        for ad_key in sorted(by_adapter.keys()):
+            rows = by_adapter[ad_key]
+            types = sorted({r.entry_type for r in rows})
+            print(f"  [{ad_key}] n={len(rows)}  entry_types={types}")
+
         print("\n--- Category 3 Assertion ---")
         print(
             "REQUIRE: at least one entry_type in FINANCIAL_TYPES "
@@ -176,4 +191,11 @@ def run_assertions(case_id: uuid.UUID, db: Session) -> tuple[bool, dict[str, Any
     if all_pass:
         print("\nRESULT: PASS")
 
-    return all_pass, diagnostics
+    category_results: dict[int, str] = {
+        1: "PASS" if cat1_pass else "FAIL",
+        2: "PASS" if cat2_pass else "FAIL",
+        3: "PASS" if cat3_pass else "FAIL",
+        4: "PASS" if cat4_pass else "FAIL",
+    }
+
+    return all_pass, diagnostics, category_results
