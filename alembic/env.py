@@ -11,11 +11,11 @@ _root = Path(__file__).resolve().parents[1]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from database import SQLALCHEMY_DATABASE_URL  # noqa: E402
+from database import DATABASE_URL  # noqa: E402
 from models import Base  # noqa: E402
 
 config = context.config
-config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -38,11 +38,10 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = create_engine(
-        SQLALCHEMY_DATABASE_URL,
-        poolclass=pool.NullPool,
-        connect_args={"check_same_thread": False},
-    )
+    kw: dict = {"poolclass": pool.NullPool}
+    if DATABASE_URL.startswith("sqlite"):
+        kw["connect_args"] = {"check_same_thread": False}
+    connectable = create_engine(DATABASE_URL, **kw)
 
     with connectable.connect() as connection:
         context.configure(
