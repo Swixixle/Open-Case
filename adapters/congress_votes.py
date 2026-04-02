@@ -31,9 +31,15 @@ DEFAULT_UA = (
 
 # Senate LIS XML lists `lis_member_id`, not Bioguide. Optional overrides when Congress.gov
 # profile match is unavailable. Extend as needed.
+# Senate roll XML uses LIS member ids; map bioguide when XML omits bioguide_id or matching fails.
+# Verified from Senate vote XML (e.g. vote_119_1_00050.xml, 119th Congress).
 LIS_MEMBER_ID_BY_BIOGUIDE: dict[str, str] = {
-    "B001306": "S429",  # Jim Banks, Indiana R (Senate, 119th Congress)
-    "Y000064": "S391",  # Todd Young — verified in 119th roll call XML
+    "B001306": "S429",  # Jim Banks, Indiana R
+    "C000127": "S275",  # Maria Cantwell, Washington D
+    "C000880": "S266",  # Mike Crapo, Idaho R
+    "G000386": "S153",  # Chuck Grassley, Iowa R
+    "W000779": "S247",  # Ron Wyden, Oregon D
+    "Y000064": "S391",  # Todd Young, Indiana R
 }
 
 # Congress.gov returns full state names; Senate XML uses postal abbreviations.
