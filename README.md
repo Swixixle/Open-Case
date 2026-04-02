@@ -312,6 +312,24 @@ On first boot:
 - Ed25519 keypair is generated and written to `.env`
 - No manual setup required
 
+### API keys (Phase 6 — write paths)
+
+**POST** and **PATCH** routes that change data require a Bearer token. Mint one **once** per investigator handle (plaintext shown a single time):
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/auth/keys?handle=your_handle"
+```
+
+Use the returned `api_key` on writes:
+
+```bash
+-H "Authorization: Bearer open_case_..."
+```
+
+`created_by`, `investigator_handle`, `taken_by`, etc. in the JSON body **must match** that same handle. **GET** routes (reports, public case read, signal list, subjects search) stay unauthenticated.
+
+**Deployment:** set `ENV=production` in the host environment and a non-localhost `BASE_URL`, or the process exits at startup (Open Graph links must not point at localhost in production).
+
 ### Verify the Detection Loop Works
 
 ```bash
