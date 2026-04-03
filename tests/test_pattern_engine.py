@@ -748,11 +748,11 @@ def test_nearest_vote_description_extracted(test_engine) -> None:
     a = sb[0]
     assert a.nearest_vote_question == "On the Motion to Proceed"
     assert a.nearest_vote_result == "Motion to Proceed Rejected"
-    assert a.nearest_vote_description == "On the Motion to Proceed"
+    assert a.nearest_vote_description == long_title
     pl = pattern_alert_to_payload(a)
     assert pl["nearest_vote_question"] == "On the Motion to Proceed"
     assert pl["nearest_vote_result"] == "Motion to Proceed Rejected"
-    assert pl["nearest_vote_description"] == "On the Motion to Proceed"
+    assert pl["nearest_vote_description"] == long_title
 
     Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     db2 = Session()
@@ -798,6 +798,52 @@ def test_nearest_vote_description_extracted(test_engine) -> None:
     assert sb2[0].nearest_vote_description == long_title
     assert sb2[0].nearest_vote_result == "Rejected"
     assert sb2[0].nearest_vote_question is None
+
+
+def test_nearest_vote_result_accepts_voteResult_key(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-vres-{uuid.uuid4().hex[:8]}", "Senator VoteResultKey")
+    db.flush()
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 4, 9),
+        raw_data={
+            "congress": "119",
+            "question": "On Passage",
+            "voteResult": "Agreed to",
+            "bill": {"number": "S. 1", "title": "An Act to Test"},
+        },
+    )
+    committee = "Friends of VoteResult"
+    for dk, ddisplay, fd, amt in [
+        ("r1", "R1", "2026-04-08", 400.0),
+        ("r2", "R2", "2026-04-09", 400.0),
+        ("r3", "R3", "2026-04-10", 400.0),
+        ("r4", "R4", "2026-04-11", 400.0),
+    ]:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator VoteResultKey",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator VoteResultKey", "S92000007")
+    db.commit()
+    sb = [
+        a
+        for a in run_pattern_engine(db)
+        if a.rule_id == RULE_SOFT_BUNDLE and str(c.id) in a.matched_case_ids
+    ]
+    db.close()
+    assert len(sb) == 1
+    assert sb[0].nearest_vote_result == "Agreed to"
 
 
 def test_nearest_vote_description_none_when_missing(test_engine) -> None:

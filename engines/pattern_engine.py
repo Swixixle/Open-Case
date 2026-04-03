@@ -147,23 +147,21 @@ def _bill_dict(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _nearest_vote_description_from_raw(raw: dict[str, Any]) -> str | None:
-    """Bill / motion text for display; priority matches LIS adapter JSON shape."""
+    """Bill subject / measure text — not the motion question (that is nearest_vote_question)."""
     billd = _bill_dict(raw)
-    for key in ("question",):
-        s = _nonempty_str(raw.get(key))
-        if s:
-            return s
-    for key in ("vote_question", "voteQuestion"):
-        s = _nonempty_str(raw.get(key))
-        if s:
-            return s
-    for key in ("measure_title", "title"):
-        s = _nonempty_str(raw.get(key)) or _nonempty_str(billd.get(key))
-        if s:
-            return s
-    s = _nonempty_str(raw.get("description"))
+    s = _nonempty_str(billd.get("title"))
     if s:
         return s
+    for key in ("measure_title",):
+        t = _nonempty_str(raw.get(key)) or _nonempty_str(billd.get(key))
+        if t:
+            return t
+    t = _nonempty_str(raw.get("title")) or _nonempty_str(billd.get("title"))
+    if t:
+        return t
+    t = _nonempty_str(raw.get("description"))
+    if t:
+        return t
     bn = _nonempty_str(raw.get("bill_number") or billd.get("number"))
     cong = _nonempty_str(raw.get("congress"))
     if bn and cong:
@@ -191,9 +189,11 @@ def _vote_details_from_evidence_id(db: Session, evidence_id: str | None) -> tupl
     if not isinstance(raw, dict):
         return None, None, None
     desc = _nearest_vote_description_from_raw(raw)
-    result = _nonempty_str(raw.get("result") or raw.get("vote_result"))
+    result = _nonempty_str(
+        raw.get("result") or raw.get("vote_result") or raw.get("voteResult")
+    )
     question = _nonempty_str(raw.get("question")) or _nonempty_str(
-        raw.get("vote_question") or raw.get("voteQuestion")
+        raw.get("voteQuestion") or raw.get("vote_question")
     )
     return desc, result, question
 
