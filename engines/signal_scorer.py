@@ -180,6 +180,9 @@ def build_signals_from_proximity(
             "relevance_indicator_count": conf_eval["relevance_indicator_count"],
         }
 
+        # Diagnostic (Sullivan / receipt_date): remove after confirming keys at persist boundary.
+        print("DEBUG breakdown:", breakdown, flush=True)
+
         signals.append(
             {
                 "case_file_id": case_file_id,
