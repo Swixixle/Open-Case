@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -12,6 +13,8 @@ from engines.temporal_proximity import (
     build_cluster_copy_text,
 )
 from signals.dedup import make_signal_identity_hash
+
+logger = logging.getLogger(__name__)
 
 
 def evidence_tier_from_checks(conf_checks: dict[str, Any] | None) -> str:
@@ -144,6 +147,13 @@ def build_signals_from_proximity(
             ),
             "relevance_score": rel_score,
         }
+
+        logger.info(
+            "signal_scorer donor_cluster weight_breakdown keys=%s receipt_date=%r exemplar_financial_date=%r",
+            sorted(breakdown.keys()),
+            breakdown.get("receipt_date"),
+            breakdown.get("exemplar_financial_date"),
+        )
 
         exposure_state = "unresolved" if cluster.has_collision else "internal"
 

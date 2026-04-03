@@ -148,8 +148,6 @@ def upsert_signal(
 
     if new_weight > old_w:
         existing.weight = new_weight
-        if signal_dict.get("weight_breakdown") is not None:
-            existing.weight_breakdown = signal_dict["weight_breakdown"]
         if signal_dict.get("weight_explanation") is not None:
             existing.weight_explanation = signal_dict["weight_explanation"]
         if signal_dict.get("description") is not None:
@@ -202,6 +200,11 @@ def upsert_signal(
                 note=f"repeat {repeat}",
             )
         )
+
+    # Repeat runs must refresh weight_breakdown even when weight does not increase —
+    # otherwise pre-existing rows never pick up new schema fields (e.g. receipt_date).
+    if signal_dict.get("weight_breakdown") is not None:
+        existing.weight_breakdown = signal_dict["weight_breakdown"]
 
     na = signal_dict.get("amount")
     if na is not None:
