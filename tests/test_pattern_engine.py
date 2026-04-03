@@ -143,7 +143,14 @@ def _signal(
     return s
 
 
-def _vote_record(db, case_id: uuid.UUID, vote_day: date) -> EvidenceEntry:
+def _vote_record(
+    db,
+    case_id: uuid.UUID,
+    vote_day: date,
+    *,
+    raw_data: dict[str, Any] | None = None,
+) -> EvidenceEntry:
+    rd = json.dumps(raw_data, sort_keys=True, default=str) if raw_data is not None else ""
     ev = EvidenceEntry(
         case_file_id=case_id,
         entry_type="vote_record",
@@ -154,6 +161,7 @@ def _vote_record(db, case_id: uuid.UUID, vote_day: date) -> EvidenceEntry:
         date_of_event=vote_day,
         entered_by="pat_eng_tester",
         confidence="confirmed",
+        raw_data_json=rd,
     )
     db.add(ev)
     return ev
@@ -692,6 +700,144 @@ def test_suspicion_score_computed(test_engine) -> None:
     assert abs(float(pl["suspicion_score"] or 0.0) - expected) < 1e-9
     assert pl["proximity_to_vote_score"] == 1.0
     assert pl["deadline_discount"] == 1.0
+
+
+def test_nearest_vote_description_extracted(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-vdesc-{uuid.uuid4().hex[:8]}", "Senator VoteDesc")
+    db.flush()
+    long_title = (
+        "A joint resolution providing for congressional disapproval of the rule "
+        "submitted by the Internal Revenue Service relating to the Corporate AMT."
+    )
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 2, 9),
+        raw_data={
+            "congress": "119",
+            "question": "On the Motion to Proceed",
+            "result": "Motion to Proceed Rejected",
+            "bill": {"number": "S.J.Res. 95", "title": long_title},
+        },
+    )
+    committee = "Friends of VoteDesc"
+    for dk, ddisplay, fd, amt in [
+        ("v1", "V1", "2026-02-08", 400.0),
+        ("v2", "V2", "2026-02-09", 400.0),
+        ("v3", "V3", "2026-02-10", 400.0),
+        ("v4", "V4", "2026-02-11", 400.0),
+    ]:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator VoteDesc",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator VoteDesc", "S92000004")
+    db.commit()
+    sb = [a for a in run_pattern_engine(db) if a.rule_id == RULE_SOFT_BUNDLE]
+    db.close()
+    assert len(sb) == 1
+    a = sb[0]
+    assert a.nearest_vote_question == "On the Motion to Proceed"
+    assert a.nearest_vote_result == "Motion to Proceed Rejected"
+    assert a.nearest_vote_description == "On the Motion to Proceed"
+    pl = pattern_alert_to_payload(a)
+    assert pl["nearest_vote_question"] == "On the Motion to Proceed"
+    assert pl["nearest_vote_result"] == "Motion to Proceed Rejected"
+    assert pl["nearest_vote_description"] == "On the Motion to Proceed"
+
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db2 = Session()
+    c2 = _case(db2, f"sb-vdesc2-{uuid.uuid4().hex[:8]}", "Senator BillTitleOnly")
+    db2.flush()
+    _vote_record(
+        db2,
+        c2.id,
+        date(2026, 3, 9),
+        raw_data={
+            "congress": "119",
+            "result": "Rejected",
+            "bill": {"number": "S.J.Res. 95", "title": long_title},
+        },
+    )
+    committee2 = "Friends of BillTitle"
+    for dk, ddisplay, fd, amt in [
+        ("b1", "B1", "2026-03-08", 400.0),
+        ("b2", "B2", "2026-03-09", 400.0),
+        ("b3", "B3", "2026-03-10", 400.0),
+        ("b4", "B4", "2026-03-11", 400.0),
+    ]:
+        s = _signal(
+            db2,
+            c2.id,
+            ddisplay,
+            "Senator BillTitleOnly",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee2,
+        )
+        _fingerprint(db2, dk, c2.id, s.id, "Senator BillTitleOnly", "S92000006")
+    db2.commit()
+    c2_id = str(c2.id)
+    sb2 = [
+        a
+        for a in run_pattern_engine(db2)
+        if a.rule_id == RULE_SOFT_BUNDLE and c2_id in a.matched_case_ids
+    ]
+    db2.close()
+    assert len(sb2) == 1
+    assert sb2[0].nearest_vote_description == long_title
+    assert sb2[0].nearest_vote_result == "Rejected"
+    assert sb2[0].nearest_vote_question is None
+
+
+def test_nearest_vote_description_none_when_missing(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-vnone-{uuid.uuid4().hex[:8]}", "Senator Vnone")
+    db.flush()
+    _vote_record(db, c.id, date(2026, 2, 9), raw_data={})
+    committee = "Friends of Vnone"
+    for dk, ddisplay, fd, amt in [
+        ("n1", "N1", "2026-02-08", 400.0),
+        ("n2", "N2", "2026-02-09", 400.0),
+        ("n3", "N3", "2026-02-10", 400.0),
+        ("n4", "N4", "2026-02-11", 400.0),
+    ]:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator Vnone",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Vnone", "S92000005")
+    db.commit()
+    sb = [a for a in run_pattern_engine(db) if a.rule_id == RULE_SOFT_BUNDLE]
+    db.close()
+    assert len(sb) == 1
+    a = sb[0]
+    assert a.nearest_vote_id is not None
+    assert a.nearest_vote_description is None
+    assert a.nearest_vote_result is None
+    assert a.nearest_vote_question is None
+    pl = pattern_alert_to_payload(a)
+    assert pl["nearest_vote_description"] is None
+    assert pl["nearest_vote_result"] is None
+    assert pl["nearest_vote_question"] is None
 
 
 def test_refund_rows_are_not_ingested_from_fec_schedule_a() -> None:

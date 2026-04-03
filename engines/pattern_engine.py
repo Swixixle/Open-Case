@@ -76,6 +76,9 @@ class PatternAlert:
     days_to_nearest_vote: int | None = None
     nearest_vote_id: str | None = None
     nearest_vote_date: str | None = None
+    nearest_vote_description: str | None = None
+    nearest_vote_result: str | None = None
+    nearest_vote_question: str | None = None
     proximity_to_vote_score: float | None = None
     deadline_adjacent: bool = False
     deadline_discount: float = 1.0
@@ -131,6 +134,70 @@ def _cluster_midpoint_date(d0: date, d1: date) -> date:
     return date.fromordinal(mid_ord)
 
 
+def _nonempty_str(val: Any) -> str | None:
+    if val is None:
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
+def _bill_dict(raw: dict[str, Any]) -> dict[str, Any]:
+    b = raw.get("bill")
+    return b if isinstance(b, dict) else {}
+
+
+def _nearest_vote_description_from_raw(raw: dict[str, Any]) -> str | None:
+    """Bill / motion text for display; priority matches LIS adapter JSON shape."""
+    billd = _bill_dict(raw)
+    for key in ("question",):
+        s = _nonempty_str(raw.get(key))
+        if s:
+            return s
+    for key in ("vote_question", "voteQuestion"):
+        s = _nonempty_str(raw.get(key))
+        if s:
+            return s
+    for key in ("measure_title", "title"):
+        s = _nonempty_str(raw.get(key)) or _nonempty_str(billd.get(key))
+        if s:
+            return s
+    s = _nonempty_str(raw.get("description"))
+    if s:
+        return s
+    bn = _nonempty_str(raw.get("bill_number") or billd.get("number"))
+    cong = _nonempty_str(raw.get("congress"))
+    if bn and cong:
+        return f"{bn} ({cong}th Congress)"
+    return bn
+
+
+def _vote_details_from_evidence_id(db: Session, evidence_id: str | None) -> tuple[str | None, str | None, str | None]:
+    if not evidence_id or not str(evidence_id).strip():
+        return None, None, None
+    try:
+        eid = uuid.UUID(str(evidence_id).strip())
+    except ValueError:
+        return None, None, None
+    entry = db.get(EvidenceEntry, eid)
+    if entry is None:
+        return None, None, None
+    raw_text = (entry.raw_data_json or "").strip()
+    if not raw_text:
+        return None, None, None
+    try:
+        raw = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return None, None, None
+    if not isinstance(raw, dict):
+        return None, None, None
+    desc = _nearest_vote_description_from_raw(raw)
+    result = _nonempty_str(raw.get("result") or raw.get("vote_result"))
+    question = _nonempty_str(raw.get("question")) or _nonempty_str(
+        raw.get("vote_question") or raw.get("voteQuestion")
+    )
+    return desc, result, question
+
+
 def _vote_evidence_by_case(db: Session) -> dict[uuid.UUID, list[tuple[uuid.UUID, date]]]:
     rows = db.execute(
         select(EvidenceEntry.id, EvidenceEntry.case_file_id, EvidenceEntry.date_of_event).where(
@@ -147,10 +214,19 @@ def _vote_evidence_by_case(db: Session) -> dict[uuid.UUID, list[tuple[uuid.UUID,
 
 
 def _nearest_vote_for_cases(
+    db: Session,
     case_ids: set[uuid.UUID],
     midpoint: date,
     votes_by_case: dict[uuid.UUID, list[tuple[uuid.UUID, date]]],
-) -> tuple[int | None, str | None, str | None, float]:
+) -> tuple[
+    int | None,
+    str | None,
+    str | None,
+    float,
+    str | None,
+    str | None,
+    str | None,
+]:
     best_days: int | None = None
     best_id: str | None = None
     best_date: str | None = None
@@ -162,7 +238,8 @@ def _nearest_vote_for_cases(
                 best_id = str(vid)
                 best_date = vd.isoformat()
     prof = proximity_to_vote_score_from_days(best_days)
-    return best_days, best_id, best_date, prof
+    vdesc, vres, vq = _vote_details_from_evidence_id(db, best_id)
+    return best_days, best_id, best_date, prof, vdesc, vres, vq
 
 
 def _donation_date_for_signal(s: Signal) -> date | None:
@@ -315,7 +392,9 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
         span_days = (d1 - d0).days
         case_uuids = {e.case_file_id for e in window}
         midpoint = _cluster_midpoint_date(d0, d1)
-        d_days, v_id, v_date, prof = _nearest_vote_for_cases(case_uuids, midpoint, votes_by_case)
+        d_days, v_id, v_date, prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
+            db, case_uuids, midpoint, votes_by_case
+        )
         if is_deadline_adjacent(d1):
             dl_adj = True
             dl_discount = 0.6
@@ -346,6 +425,9 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 days_to_nearest_vote=d_days,
                 nearest_vote_id=v_id,
                 nearest_vote_date=v_date,
+                nearest_vote_description=v_desc,
+                nearest_vote_result=v_res,
+                nearest_vote_question=v_q,
                 proximity_to_vote_score=prof,
                 deadline_adjacent=dl_adj,
                 deadline_discount=dl_discount,
@@ -563,6 +645,9 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         "days_to_nearest_vote": a.days_to_nearest_vote,
         "nearest_vote_id": a.nearest_vote_id,
         "nearest_vote_date": a.nearest_vote_date,
+        "nearest_vote_description": a.nearest_vote_description,
+        "nearest_vote_result": a.nearest_vote_result,
+        "nearest_vote_question": a.nearest_vote_question,
         "proximity_to_vote_score": a.proximity_to_vote_score,
         "deadline_adjacent": a.deadline_adjacent,
         "deadline_discount": a.deadline_discount,
