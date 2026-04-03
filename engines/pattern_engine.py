@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
@@ -29,7 +30,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "1.3"
+PATTERN_ENGINE_VERSION = "1.4"
 
 # Rule IDs — increment when logic changes, never reuse
 RULE_COMMITTEE_SWEEP = "COMMITTEE_SWEEP_V1"
@@ -57,6 +58,7 @@ GEO_MISMATCH_MIN_DONORS = 5
 GEO_MISMATCH_WINDOW_DAYS = 14
 GEO_MISMATCH_OUT_OF_STATE_THRESHOLD = 0.75
 GEO_MISMATCH_MIN_AGGREGATE = 1000.0
+GEO_MISMATCH_WINDOW_DONOR_OVERLAP = 0.8
 
 # DC + org-style name → unknown (not out-of-state); see _geo_bucket
 _GEO_DC_UNKNOWN_NAME_MARKERS = ("PAC", "COMMITTEE", "ASSOCIATION", "COUNCIL", "INSTITUTE")
@@ -256,6 +258,21 @@ ISSUE_CODE_TO_SECTOR: dict[str, str] = {
     "TEC": "tech",
 }
 
+# Longer role phrases first so "assistant secretary of defense" wins over "secretary of defense".
+NOMINATION_ROLE_TO_SECTOR: dict[str, str] = {
+    "assistant secretary of defense": "defense",
+    "under secretary of defense": "defense",
+    "administrator of the environmental protection agency": "energy",
+    "commissioner of food and drugs": "pharma",
+    "comptroller of the currency": "finance",
+    "secretary of defense": "defense",
+    "secretary of energy": "energy",
+    "secretary of the treasury": "finance",
+    "secretary of health": "pharma",
+    "secretary of agriculture": "agriculture",
+    "secretary of housing": "real_estate",
+}
+
 SENATOR_HOME_STATE: dict[str, str] = {
     "S001198": "AK",
     "C001095": "AR",
@@ -332,6 +349,7 @@ class PatternAlert:
     matched_issue_codes: list[str] | None = None
     revolving_door_vote_relevant: bool | None = None
     lda_filing_year: int | None = None
+    lda_match_count: int | None = None
 
 
 def _utc_now() -> datetime:
@@ -401,6 +419,46 @@ def _sectors_matching_vote_text(vote_blob: str) -> set[str]:
     if not vote_blob.strip():
         return set()
     return {s for s in VOTE_SECTOR_KEYWORDS if vote_matches_sector(vote_blob, s)}
+
+
+def _nomination_vote_sector(vote_description: str) -> str | None:
+    text = (vote_description or "").lower()
+    if not text.strip():
+        return None
+    for role, sector in sorted(
+        NOMINATION_ROLE_TO_SECTOR.items(), key=lambda x: -len(x[0])
+    ):
+        if role in text:
+            return sector
+    return None
+
+
+def _revolving_door_vote_relevant(
+    vdesc: str | None,
+    vq: str | None,
+    vres: str | None,
+    lda_sectors: set[str],
+) -> bool:
+    if not lda_sectors:
+        return False
+    vblob = _vote_text_bundle(vdesc, vq, vres)
+    vote_sectors = _sectors_matching_vote_text(vblob)
+    if vote_sectors & lda_sectors:
+        return True
+    if (vq or "").strip().lower() == "on the nomination":
+        nom_sec = _nomination_vote_sector(vdesc or "")
+        if nom_sec and nom_sec in lda_sectors:
+            return True
+    return False
+
+
+def _donor_sets_jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a and not b:
+        return 1.0
+    union = len(a | b)
+    if union == 0:
+        return 1.0
+    return len(a & b) / union
 
 
 def _normalize_match_token(s: str) -> str:
@@ -780,6 +838,100 @@ class _EnrichedClusterRow:
     has_lda_filing: bool
 
 
+@dataclass
+class _GeoCand:
+    d0: date
+    d1: date
+    donors: frozenset[str]
+
+
+def _geo_build_alert_if_qualified(
+    db: Session,
+    votes_by_case: dict[uuid.UUID, list[tuple[uuid.UUID, date]]],
+    fired_at: datetime,
+    window: list[_EnrichedClusterRow],
+    d0: date,
+    d1: date,
+) -> PatternAlert | None:
+    if len({e.donor_key for e in window}) < GEO_MISMATCH_MIN_DONORS:
+        return None
+    total_amt = sum(e.amount for e in window)
+    if total_amt < GEO_MISMATCH_MIN_AGGREGATE:
+        return None
+    bg = next((e.bioguide_id for e in window if e.bioguide_id), None)
+    if not bg or bg not in SENATOR_HOME_STATE:
+        return None
+    home = SENATOR_HOME_STATE[bg]
+    in_n = out_n = unk_n = 0
+    state_counts: dict[str, int] = {}
+    for e in window:
+        b = _geo_bucket(e.donor_display, e.contributor_state, home)
+        if b == "in":
+            in_n += 1
+        elif b == "out":
+            out_n += 1
+            st = (e.contributor_state or "").strip().upper()
+            if st:
+                state_counts[st] = state_counts.get(st, 0) + 1
+        else:
+            unk_n += 1
+    classified = in_n + out_n
+    if classified < GEO_MISMATCH_MIN_DONORS:
+        return None
+    ratio = out_n / classified if classified else 0.0
+    if ratio < GEO_MISMATCH_OUT_OF_STATE_THRESHOLD:
+        return None
+    top_states = [s for s, _ in sorted(state_counts.items(), key=lambda x: -x[1])[:3]]
+    case_uuids = {e.case_file_id for e in window}
+    midpoint = _cluster_midpoint_date(d0, d1)
+    d_days, v_id, v_date, prof, vdesc, vres, vq = _nearest_vote_for_cases(
+        db, case_uuids, midpoint, votes_by_case
+    )
+    if is_deadline_adjacent(d1):
+        dl_adj, dl_disc, dl_note = True, 0.6, (
+            "Bundle window overlaps FEC quarterly deadline — reduced weight"
+        )
+    else:
+        dl_adj, dl_disc, dl_note = False, 1.0, None
+    suspicion = ratio * float(prof) * dl_disc
+    donor_labels = sorted({e.donor_display for e in window})
+    preview = ", ".join(donor_labels[:5])
+    if len(donor_labels) > 5:
+        preview = f"{preview}, +{len(donor_labels) - 5} more"
+    return PatternAlert(
+        rule_id=RULE_GEO_MISMATCH,
+        pattern_version=PATTERN_ENGINE_VERSION,
+        donor_entity=f"Geographic mismatch — {preview}",
+        matched_officials=sorted({e.official_name for e in window}),
+        matched_case_ids=sorted({str(e.case_file_id) for e in window}),
+        committee=window[0].committee_display,
+        window_days=int((d1 - d0).days),
+        evidence_refs=sorted({str(e.signal_id) for e in window}),
+        fired_at=fired_at,
+        donation_window_start=d0,
+        donation_window_end=d1,
+        aggregate_amount=float(total_amt),
+        cluster_size=len({e.donor_key for e in window}),
+        days_to_nearest_vote=d_days,
+        nearest_vote_id=v_id,
+        nearest_vote_date=v_date,
+        nearest_vote_description=vdesc,
+        nearest_vote_result=vres,
+        nearest_vote_question=vq,
+        proximity_to_vote_score=prof,
+        deadline_adjacent=dl_adj,
+        deadline_discount=dl_disc,
+        deadline_note=dl_note,
+        suspicion_score=suspicion,
+        senator_state=home,
+        out_of_state_ratio=float(ratio),
+        out_of_state_count=out_n,
+        in_state_count=in_n,
+        unknown_state_count=unk_n,
+        top_donor_states=top_states,
+    )
+
+
 def _load_enriched_cluster_rows(db: Session) -> list[_EnrichedClusterRow]:
     rows = db.execute(
         select(DonorFingerprint, Signal).join(Signal, DonorFingerprint.signal_id == Signal.id)
@@ -979,11 +1131,11 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
         by_committee[ck][1].append(row)
 
     alerts: list[PatternAlert] = []
-    seen_fs: set[frozenset[uuid.UUID]] = set()
     for _disp, events in by_committee.values():
         if len(events) < GEO_MISMATCH_MIN_DONORS:
             continue
         dates_sorted = sorted({e.d for e in events})
+        candidates: list[_GeoCand] = []
         for d0 in dates_sorted:
             for d1 in dates_sorted:
                 if (d1 - d0).days > GEO_MISMATCH_WINDOW_DAYS:
@@ -999,16 +1151,12 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
                     continue
                 home = SENATOR_HOME_STATE[bg]
                 in_n = out_n = unk_n = 0
-                state_counts: dict[str, int] = {}
                 for e in window:
                     b = _geo_bucket(e.donor_display, e.contributor_state, home)
                     if b == "in":
                         in_n += 1
                     elif b == "out":
                         out_n += 1
-                        st = (e.contributor_state or "").strip().upper()
-                        if st:
-                            state_counts[st] = state_counts.get(st, 0) + 1
                     else:
                         unk_n += 1
                 classified = in_n + out_n
@@ -1017,61 +1165,65 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 ratio = out_n / classified if classified else 0.0
                 if ratio < GEO_MISMATCH_OUT_OF_STATE_THRESHOLD:
                     continue
-                fs = frozenset(e.signal_id for e in window)
-                if fs in seen_fs:
+                donors = frozenset({e.donor_key for e in window})
+                candidates.append(_GeoCand(d0=d0, d1=d1, donors=donors))
+
+        if not candidates:
+            continue
+
+        n_c = len(candidates)
+        parent = list(range(n_c))
+
+        def _find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def _union(ai: int, bi: int) -> None:
+            ra, rb = _find(ai), _find(bi)
+            if ra != rb:
+                parent[rb] = ra
+
+        for i in range(n_c):
+            for j in range(i + 1, n_c):
+                if _donor_sets_jaccard(candidates[i].donors, candidates[j].donors) < (
+                    GEO_MISMATCH_WINDOW_DONOR_OVERLAP
+                ):
                     continue
-                seen_fs.add(fs)
-                top_states = [s for s, _ in sorted(state_counts.items(), key=lambda x: -x[1])[:3]]
-                case_uuids = {e.case_file_id for e in window}
-                midpoint = _cluster_midpoint_date(d0, d1)
-                d_days, v_id, v_date, prof, vdesc, vres, vq = _nearest_vote_for_cases(
-                    db, case_uuids, midpoint, votes_by_case
-                )
-                if is_deadline_adjacent(d1):
-                    dl_adj, dl_disc, dl_note = True, 0.6, (
-                        "Bundle window overlaps FEC quarterly deadline — reduced weight"
-                    )
-                else:
-                    dl_adj, dl_disc, dl_note = False, 1.0, None
-                suspicion = ratio * float(prof) * dl_disc
-                donor_labels = sorted({e.donor_display for e in window})
-                preview = ", ".join(donor_labels[:5])
-                if len(donor_labels) > 5:
-                    preview = f"{preview}, +{len(donor_labels) - 5} more"
-                alerts.append(
-                    PatternAlert(
-                        rule_id=RULE_GEO_MISMATCH,
-                        pattern_version=PATTERN_ENGINE_VERSION,
-                        donor_entity=f"Geographic mismatch — {preview}",
-                        matched_officials=sorted({e.official_name for e in window}),
-                        matched_case_ids=sorted({str(e.case_file_id) for e in window}),
-                        committee=window[0].committee_display,
-                        window_days=int((d1 - d0).days),
-                        evidence_refs=sorted({str(e.signal_id) for e in window}),
-                        fired_at=fired_at,
-                        donation_window_start=d0,
-                        donation_window_end=d1,
-                        aggregate_amount=float(total_amt),
-                        cluster_size=len({e.donor_key for e in window}),
-                        days_to_nearest_vote=d_days,
-                        nearest_vote_id=v_id,
-                        nearest_vote_date=v_date,
-                        nearest_vote_description=vdesc,
-                        nearest_vote_result=vres,
-                        nearest_vote_question=vq,
-                        proximity_to_vote_score=prof,
-                        deadline_adjacent=dl_adj,
-                        deadline_discount=dl_disc,
-                        deadline_note=dl_note,
-                        suspicion_score=suspicion,
-                        senator_state=home,
-                        out_of_state_ratio=float(ratio),
-                        out_of_state_count=out_n,
-                        in_state_count=in_n,
-                        unknown_state_count=unk_n,
-                        top_donor_states=top_states,
-                    )
-                )
+                d0m = min(candidates[i].d0, candidates[j].d0)
+                d1m = max(candidates[i].d1, candidates[j].d1)
+                if (d1m - d0m).days > GEO_MISMATCH_WINDOW_DAYS:
+                    continue
+                _union(i, j)
+
+        comp_members: dict[int, list[int]] = defaultdict(list)
+        for i in range(n_c):
+            comp_members[_find(i)].append(i)
+
+        final_windows: list[tuple[date, date]] = []
+        for _root, idxs in comp_members.items():
+            idxs_sorted = sorted(idxs)
+            d0m = min(candidates[i].d0 for i in idxs_sorted)
+            d1m = max(candidates[i].d1 for i in idxs_sorted)
+            if len(idxs_sorted) > 1 and (d1m - d0m).days > GEO_MISMATCH_WINDOW_DAYS:
+                for i in idxs_sorted:
+                    final_windows.append((candidates[i].d0, candidates[i].d1))
+            else:
+                final_windows.append((d0m, d1m))
+
+        seen_bounds: set[tuple[date, date]] = set()
+        for d0, d1 in final_windows:
+            key = (d0, d1)
+            if key in seen_bounds:
+                continue
+            seen_bounds.add(key)
+            merged = [e for e in events if d0 <= e.d <= d1]
+            alert = _geo_build_alert_if_qualified(
+                db, votes_by_case, fired_at, merged, d0, d1
+            )
+            if alert is not None:
+                alerts.append(alert)
     return alerts
 
 
@@ -1187,79 +1339,108 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
     rows = db.execute(
         select(DonorFingerprint, Signal).join(Signal, DonorFingerprint.signal_id == Signal.id)
     ).all()
-    alerts: list[PatternAlert] = []
-    seen: set[tuple[str, str, str]] = set()
+    grouped: dict[tuple[uuid.UUID, str], list[tuple[DonorFingerprint, Signal]]] = defaultdict(
+        list
+    )
     for fp, sig in rows:
         bd = _signal_breakdown_json(sig)
         if str(bd.get("kind") or "") != "donor_cluster":
             continue
         if not bool(bd.get("has_lda_filing")):
             continue
-        case_id = fp.case_file_id
+        dk = (fp.canonical_id or "").strip().lower() or (fp.normalized_donor_key or "").strip().lower()
+        if not dk:
+            continue
+        grouped[(fp.case_file_id, dk)].append((fp, sig))
+
+    alerts: list[PatternAlert] = []
+    for (case_id, dk), pairs in grouped.items():
         lda_list = lda_by_case.get(case_id, [])
         if not lda_list:
             continue
-        emp, occ, _, __ = _fec_fields_from_signal(db, sig)
-        dk = (fp.canonical_id or "").strip().lower() or (fp.normalized_donor_key or "").strip().lower()
-        display = _donor_display_for_signal(sig, dk)
+        pairs.sort(key=lambda t: str(t[1].id))
+        fp0, sig0 = pairs[0]
+        display = _donor_display_for_signal(sig0, dk)
         if _revolving_door_donor_blocked(display):
             continue
+        emp, _, _, __ = _fec_fields_from_signal(db, sig0)
         matches = match_donor_to_lda(display, emp, lda_list)
         if len(matches) < REVOLVING_DOOR_MIN_MATCHED_DONORS:
             continue
-        d = _donation_date_for_signal(sig)
-        if d is None:
+        dates = [
+            d
+            for _, s in pairs
+            if (d := _donation_date_for_signal(s)) is not None
+        ]
+        if not dates:
             continue
+        d_start, d_end = min(dates), max(dates)
         case_uuids = {case_id}
-        midpoint = d
+        midpoint = _cluster_midpoint_date(d_start, d_end)
         _, _, _, _, vdesc, vres, vq = _nearest_vote_for_cases(
             db, case_uuids, midpoint, votes_by_case
         )
-        vblob = _vote_text_bundle(vdesc, vq, vres)
-        vote_sectors = _sectors_matching_vote_text(vblob)
+        by_reg: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for m in matches:
-            uid = m.get("filing_uuid") or ""
-            reg = str(m.get("registrant_name") or "")
-            sk = (str(case_id), str(sig.id), uid)
-            if sk in seen:
-                continue
-            seen.add(sk)
-            codes = m.get("issue_codes") or []
-            if not isinstance(codes, list):
-                codes = []
+            reg = str(m.get("registrant_name") or "").strip() or str(
+                m.get("client_name") or ""
+            ).strip()
+            if reg:
+                by_reg[reg].append(m)
+        lda_match_count = len(by_reg)
+        evidence_ids = sorted({str(s.id) for _, s in pairs})
+        officials = sorted(
+            {
+                (fp.official_name or sig.actor_b or "").strip() or "Unknown"
+                for fp, sig in pairs
+            }
+        )
+        bd = _signal_breakdown_json(sig0)
+        cl = str(bd.get("committee_label") or "")
+        for reg, reg_matches in sorted(by_reg.items()):
+            codes_set: set[str] = set()
+            fy_best: int | None = None
+            for m in reg_matches:
+                cr = m.get("issue_codes") or []
+                if isinstance(cr, list):
+                    for c in cr:
+                        codes_set.add(str(c).strip().upper())
+                fy = m.get("filing_year")
+                try:
+                    fy_i = int(fy) if fy is not None else None
+                except (TypeError, ValueError):
+                    fy_i = None
+                if fy_i is not None and (fy_best is None or fy_i > fy_best):
+                    fy_best = fy_i
+            codes = sorted(codes_set)
             lda_sectors: set[str] = set()
             for c in codes:
-                s = ISSUE_CODE_TO_SECTOR.get(str(c).strip().upper())
-                if s:
-                    lda_sectors.add(s)
-            rel = bool(lda_sectors and vote_sectors and (lda_sectors & vote_sectors))
-            fy = m.get("filing_year")
-            try:
-                fy_i = int(fy) if fy is not None else None
-            except (TypeError, ValueError):
-                fy_i = None
-            cl = str(bd.get("committee_label") or "")
+                s_sec = ISSUE_CODE_TO_SECTOR.get(str(c).strip().upper())
+                if s_sec:
+                    lda_sectors.add(s_sec)
+            rel = _revolving_door_vote_relevant(vdesc, vq, vres, lda_sectors)
             alerts.append(
                 PatternAlert(
                     rule_id=RULE_REVOLVING_DOOR,
                     pattern_version=PATTERN_ENGINE_VERSION,
                     donor_entity=f"Revolving door — {display}",
-                    matched_officials=[(fp.official_name or sig.actor_b or "").strip() or "Unknown"],
+                    matched_officials=officials,
                     matched_case_ids=[str(case_id)],
                     committee=cl,
                     window_days=None,
-                    evidence_refs=[str(sig.id)],
+                    evidence_refs=evidence_ids,
                     fired_at=fired_at,
-                    donation_window_start=d,
-                    donation_window_end=d,
+                    donation_window_start=d_start,
+                    donation_window_end=d_end,
                     nearest_vote_description=vdesc,
                     nearest_vote_result=vres,
                     nearest_vote_question=vq,
                     matched_donor=display,
-                    matched_lda_registrant=reg or str(m.get("client_name") or ""),
-                    matched_issue_codes=[str(c) for c in codes],
+                    matched_lda_registrant=reg,
+                    matched_issue_codes=codes,
                     revolving_door_vote_relevant=rel,
-                    lda_filing_year=fy_i,
+                    lda_filing_year=fy_best,
+                    lda_match_count=lda_match_count,
                     suspicion_score=1.0 if rel else 0.6,
                 )
             )
@@ -1623,6 +1804,7 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         else None,
         "revolving_door_vote_relevant": a.revolving_door_vote_relevant,
         "lda_filing_year": a.lda_filing_year,
+        "lda_match_count": a.lda_match_count,
     }
 
 

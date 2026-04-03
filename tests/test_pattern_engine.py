@@ -1584,6 +1584,369 @@ def test_revolving_door_actblue_skipped(test_engine) -> None:
     assert not rev
 
 
+def test_revolving_door_dedup_single_alert_per_relationship(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-dedup1-{uuid.uuid4().hex[:8]}", "Senator Dedup1")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            adapter_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "DEDUP LOBBY INC SERVICES LLC",
+                    "client_name": "Client",
+                    "filing_year": 2025,
+                    "issue_codes": ["TAX"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    donor_disp = "DEDUP LOBBY INC"
+    for i in range(5):
+        fd = f"2026-04-{i + 1:02d}"
+        fe = _fec_receipt_entry(
+            db,
+            c.id,
+            contributor_name=donor_disp,
+            amount=300.0,
+            receipt_date=fd,
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            donor_disp,
+            "Senator Dedup1",
+            fd,
+            0.5,
+            fe,
+            total_amount=300.0,
+            committee_label="Friends Dedup",
+            donor_key="dedupdk",
+            has_lda_filing=True,
+        )
+        _fingerprint(db, "dedupdk", c.id, s.id, "Senator Dedup1", "C001095")
+    _vote_record(db, c.id, date(2026, 4, 10))
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
+    db.close()
+    assert len(rev) == 1
+    assert len(rev[0].evidence_refs) == 5
+    assert rev[0].lda_match_count == 1
+
+
+def test_revolving_door_dedup_two_registrants_two_alerts(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-dedup2-{uuid.uuid4().hex[:8]}", "Senator Dedup2")
+    db.flush()
+    for reg_name in ("DEDUP TWO REG ALPHA LLC", "DEDUP TWO REG BETA LLC"):
+        db.add(
+            EvidenceEntry(
+                case_file_id=c.id,
+                entry_type="lobbying_filing",
+                title="LDA filing",
+                body="test",
+                source_url="https://lda.senate.gov/",
+                source_name="Senate LDA",
+                adapter_name="Senate LDA",
+                entered_by="pat_eng_tester",
+                confidence="confirmed",
+                raw_data_json=json.dumps(
+                    {
+                        "filing_uuid": str(uuid.uuid4()),
+                        "registrant_name": reg_name,
+                        "client_name": "Client",
+                        "filing_year": 2025,
+                        "issue_codes": ["TAX"],
+                        "lobbyist_names": [],
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+    donor_disp = "DEDUP TWO REG"
+    for i, fd in enumerate(["2026-05-01", "2026-05-02"]):
+        fe = _fec_receipt_entry(
+            db,
+            c.id,
+            contributor_name=donor_disp,
+            amount=350.0,
+            receipt_date=fd,
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            donor_disp,
+            "Senator Dedup2",
+            fd,
+            0.5,
+            fe,
+            total_amount=350.0,
+            committee_label="Friends Dedup2",
+            donor_key="dedup2dk",
+            has_lda_filing=True,
+        )
+        _fingerprint(db, "dedup2dk", c.id, s.id, "Senator Dedup2", "C001095")
+    _vote_record(db, c.id, date(2026, 5, 5))
+    db.commit()
+    case_id_str = str(c.id)
+    rev = sorted(
+        [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids],
+        key=lambda x: (x.matched_lda_registrant or ""),
+    )
+    db.close()
+    assert len(rev) == 2
+    assert rev[0].lda_match_count == 2
+    assert rev[1].lda_match_count == 2
+    assert len(rev[0].evidence_refs) == 2
+    regs = {a.matched_lda_registrant for a in rev}
+    assert "DEDUP TWO REG ALPHA LLC" in regs
+    assert "DEDUP TWO REG BETA LLC" in regs
+
+
+def test_revolving_door_nomination_vote_relevant(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-nom-y-{uuid.uuid4().hex[:8]}", "Senator NomYes")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            adapter_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "NOM DEFENSE LOBBY LLC",
+                    "client_name": "Client",
+                    "filing_year": 2025,
+                    "issue_codes": ["DEF"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    fe = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="NOM DEFENSE LOBBY",
+        amount=400.0,
+        receipt_date="2026-06-08",
+    )
+    s = _signal_with_fec(
+        db,
+        c.id,
+        "NOM DEFENSE LOBBY",
+        "Senator NomYes",
+        "2026-06-08",
+        0.5,
+        fe,
+        total_amount=400.0,
+        committee_label="Friends NomY",
+        donor_key="nomdef",
+        has_lda_filing=True,
+    )
+    _fingerprint(db, "nomdef", c.id, s.id, "Senator NomYes", "C001095")
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 6, 12),
+        raw_data={
+            "question": "On the Nomination",
+            "bill": {
+                "title": (
+                    "Jane Q. Public, of Virginia, to be Assistant Secretary of Defense for "
+                    "Health Affairs"
+                ),
+            },
+        },
+    )
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
+    db.close()
+    assert rev and rev[0].revolving_door_vote_relevant is True
+
+
+def test_revolving_door_nomination_vote_not_relevant(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-nom-n-{uuid.uuid4().hex[:8]}", "Senator NomNo")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            adapter_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "NOM DEFENSE LOBBY TWO LLC",
+                    "client_name": "Client",
+                    "filing_year": 2025,
+                    "issue_codes": ["DEF"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    fe = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="NOM DEFENSE LOBBY TWO",
+        amount=400.0,
+        receipt_date="2026-07-08",
+    )
+    s = _signal_with_fec(
+        db,
+        c.id,
+        "NOM DEFENSE LOBBY TWO",
+        "Senator NomNo",
+        "2026-07-08",
+        0.5,
+        fe,
+        total_amount=400.0,
+        committee_label="Friends NomN",
+        donor_key="nomdef2",
+        has_lda_filing=True,
+    )
+    _fingerprint(db, "nomdef2", c.id, s.id, "Senator NomNo", "C001095")
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 7, 12),
+        raw_data={
+            "question": "On the Nomination",
+            "bill": {
+                "title": "Pat Smith, of Iowa, to be Secretary of Agriculture",
+            },
+        },
+    )
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
+    db.close()
+    assert rev and rev[0].revolving_door_vote_relevant is False
+
+
+def test_geo_mismatch_dedup_maximal_window(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"geo-dedup-{uuid.uuid4().hex[:8]}", "Senator Sullivan")
+    db.flush()
+    comm = "Alaska PAC Merge"
+    states_and_days = [
+        ("TX", "2026-06-01"),
+        ("FL", "2026-06-02"),
+        ("NY", "2026-06-03"),
+        ("CA", "2026-06-04"),
+        ("WA", "2026-06-05"),
+        ("OH", "2026-06-08"),
+    ]
+    for i, (st, fd) in enumerate(states_and_days):
+        dk = f"gm{i}"
+        disp = f"OUT PAC {i}"
+        amt = 500.0
+        fe = _fec_receipt_entry(
+            db, c.id, contributor_name=disp, amount=amt, receipt_date=fd, contributor_state=st
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Sullivan",
+            fd,
+            0.5,
+            fe,
+            total_amount=amt,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Sullivan", "S001198")
+    fe2 = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="OUT PAC 2",
+        amount=500.0,
+        receipt_date="2026-06-06",
+        contributor_state="NY",
+    )
+    s2 = _signal_with_fec(
+        db,
+        c.id,
+        "OUT PAC 2",
+        "Senator Sullivan",
+        "2026-06-06",
+        0.5,
+        fe2,
+        total_amount=500.0,
+        committee_label=comm,
+        donor_key="gm2",
+    )
+    _fingerprint(db, "gm2", c.id, s2.id, "Senator Sullivan", "S001198")
+    for dk, disp, fd, st in [
+        ("gm0", "OUT PAC 0", "2026-06-09", "TX"),
+        ("gm1", "OUT PAC 1", "2026-06-10", "FL"),
+    ]:
+        fe = _fec_receipt_entry(
+            db, c.id, contributor_name=disp, amount=500.0, receipt_date=fd, contributor_state=st
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Sullivan",
+            fd,
+            0.5,
+            fe,
+            total_amount=500.0,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Sullivan", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
+    db.close()
+    merged = geo[0]
+    assert len(geo) == 1
+    assert merged.donation_window_start == date(2026, 6, 1)
+    assert merged.donation_window_end == date(2026, 6, 10)
+    assert (merged.donation_window_end - merged.donation_window_start).days == 9
+
+
 def test_revolving_door_filing_before_2024_skipped(test_engine) -> None:
     Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     db = Session()
