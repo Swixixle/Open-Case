@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import date
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -28,6 +29,7 @@ from engines.pattern_engine import (
     is_deadline_adjacent,
     pattern_alert_to_payload,
     proximity_to_vote_score_from_days,
+    match_donor_to_lda,
     run_pattern_engine,
     vote_matches_sector,
 )
@@ -1488,6 +1490,98 @@ def test_revolving_door_vote_relevant_true(test_engine) -> None:
     rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
     db.close()
     assert rev and rev[0].revolving_door_vote_relevant is True
+
+
+def test_match_donor_to_lda_short_employer_does_not_fire() -> None:
+    """Employer substring match requires >= 8 chars (e.g. 'BURLING' vs Covington)."""
+    raw = {
+        "filing_uuid": str(uuid.uuid4()),
+        "registrant_name": "COVINGTON & BURLING LLP",
+        "client_name": "",
+        "filing_year": 2025,
+        "issue_codes": [],
+        "lobbyist_names": [],
+    }
+    ent = SimpleNamespace(
+        entry_type="lobbying_filing",
+        raw_data_json=json.dumps(raw, separators=(",", ":")),
+    )
+    assert match_donor_to_lda("SOME DRAFT COMMITTEE", "BURLING", [ent]) == []
+
+
+def test_match_donor_to_lda_retired_employer_ignored() -> None:
+    raw = {
+        "filing_uuid": str(uuid.uuid4()),
+        "registrant_name": "COVINGTON & BURLING LLP",
+        "client_name": "",
+        "filing_year": 2025,
+        "issue_codes": [],
+        "lobbyist_names": [],
+    }
+    ent = SimpleNamespace(
+        entry_type="lobbying_filing",
+        raw_data_json=json.dumps(raw, separators=(",", ":")),
+    )
+    assert match_donor_to_lda("UNRELATED PAC", "Retired", [ent]) == []
+
+
+def test_revolving_door_actblue_skipped(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-ab-{uuid.uuid4().hex[:8]}", "Senator ActblueBlock")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            adapter_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "COVINGTON & BURLING LLP",
+                    "client_name": "Some Client",
+                    "filing_year": 2025,
+                    "issue_codes": ["TAX"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    fe = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="ACTBLUE",
+        amount=250.0,
+        receipt_date="2026-10-01",
+        contributor_employer="ATTORNEY",
+    )
+    s = _signal_with_fec(
+        db,
+        c.id,
+        "ACTBLUE",
+        "Senator ActblueBlock",
+        "2026-10-01",
+        0.5,
+        fe,
+        total_amount=250.0,
+        committee_label="Friends Actblue",
+        donor_key="ab",
+        has_lda_filing=True,
+    )
+    _fingerprint(db, "ab", c.id, s.id, "Senator ActblueBlock", "C001095")
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
+    db.close()
+    assert not rev
 
 
 def test_revolving_door_filing_before_2024_skipped(test_engine) -> None:

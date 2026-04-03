@@ -9,7 +9,6 @@ They assert nothing about intent or causation.
 from __future__ import annotations
 
 import json
-import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -30,9 +29,7 @@ from models import (
     SubjectProfile,
 )
 
-logger = logging.getLogger(__name__)
-
-PATTERN_ENGINE_VERSION = "1.2"
+PATTERN_ENGINE_VERSION = "1.3"
 
 # Rule IDs — increment when logic changes, never reuse
 RULE_COMMITTEE_SWEEP = "COMMITTEE_SWEEP_V1"
@@ -70,6 +67,35 @@ DISBURSEMENT_LOOP_MIN_AMOUNT = 5000.0
 REVOLVING_DOOR_MIN_MATCHED_DONORS = 1
 REVOLVING_DOOR_MIN_LDA_FILING_YEAR = 2024
 REVOLVING_DOOR_MIN_NAME_SUBSTRING_LEN = 6
+REVOLVING_DOOR_MIN_EMPLOYER_SUBSTRING_LEN = 8
+
+REVOLVING_DOOR_DONOR_BLOCKLIST = frozenset(
+    {
+        "actblue",
+        "winred",
+        "ngp van",
+        "anedot",
+        "revv",
+        "republican national committee",
+        "democratic national committee",
+        "democratic senatorial campaign committee",
+        "national republican senatorial committee",
+    }
+)
+
+_REVOLVING_DOOR_EMPLOYER_BLOCKLIST_RAW = (
+    "self",
+    "self-employed",
+    "retired",
+    "none",
+    "n/a",
+    "na",
+    "various",
+    "homemaker",
+    "not employed",
+    "unemployed",
+    "student",
+)
 
 SECTOR_KEYWORDS: dict[str, list[str]] = {
     "pharma": [
@@ -383,9 +409,46 @@ def _normalize_match_token(s: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+REVOLVING_DOOR_EMPLOYER_BLOCKLIST = frozenset(
+    _normalize_match_token(p) for p in _REVOLVING_DOOR_EMPLOYER_BLOCKLIST_RAW
+)
+
+
+def _revolving_door_donor_blocked(display_name: str) -> bool:
+    """Pass-through / party infra donors — exclude from revolving-door matching."""
+    dn = _normalize_match_token(display_name)
+    if not dn:
+        return False
+    if dn in REVOLVING_DOOR_DONOR_BLOCKLIST:
+        return True
+    return any(phrase in dn for phrase in REVOLVING_DOOR_DONOR_BLOCKLIST)
+
+
+def _revolving_door_employer_blocked(normalized_employer: str) -> bool:
+    """Generic / vacant employer strings — do not use for employer→LDA substring match."""
+    if not (normalized_employer or "").strip():
+        return True
+    if normalized_employer in REVOLVING_DOOR_EMPLOYER_BLOCKLIST:
+        return True
+    for phrase in REVOLVING_DOOR_EMPLOYER_BLOCKLIST:
+        if " " in phrase:
+            if phrase in normalized_employer:
+                return True
+        elif phrase in normalized_employer.split():
+            return True
+    return False
+
+
 def _lda_substring_hit(needle: str, haystack: str) -> bool:
     """Contiguous substring only; short needles avoid keyword collisions."""
     if len(needle) < REVOLVING_DOOR_MIN_NAME_SUBSTRING_LEN:
+        return False
+    return bool(needle and haystack and needle in haystack)
+
+
+def _lda_employer_substring_hit(needle: str, haystack: str) -> bool:
+    """Employer-only matches use a longer needle to reduce generic-term overlap."""
+    if len(needle) < REVOLVING_DOOR_MIN_EMPLOYER_SUBSTRING_LEN:
         return False
     return bool(needle and haystack and needle in haystack)
 
@@ -395,12 +458,6 @@ def match_donor_to_lda(
     employer: str,
     lda_entries: list[EvidenceEntry],
 ) -> list[dict[str, Any]]:
-    # TEMP: confirm Render runs this code path; remove after REVOLVING_DOOR diagnosis
-    logger.warning(
-        "[match_donor_to_lda] lda_entry_count=%s first_donor_name=%r",
-        len(lda_entries),
-        (donor_normalized_name or "")[:240],
-    )
     dn = _normalize_match_token(donor_normalized_name)
     em = _normalize_match_token(employer)
     matches: list[dict[str, Any]] = []
@@ -429,7 +486,14 @@ def match_donor_to_lda(
         hit = False
         if _lda_substring_hit(dn, rn) or _lda_substring_hit(dn, cn):
             hit = True
-        if not hit and (_lda_substring_hit(em, rn) or _lda_substring_hit(em, cn)):
+        if (
+            not hit
+            and em
+            and not _revolving_door_employer_blocked(em)
+            and (
+                _lda_employer_substring_hit(em, rn) or _lda_employer_substring_hit(em, cn)
+            )
+        ):
             hit = True
         if not hit and dn:
             for ln in lnorm:
@@ -1138,6 +1202,8 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
         emp, occ, _, __ = _fec_fields_from_signal(db, sig)
         dk = (fp.canonical_id or "").strip().lower() or (fp.normalized_donor_key or "").strip().lower()
         display = _donor_display_for_signal(sig, dk)
+        if _revolving_door_donor_blocked(display):
+            continue
         matches = match_donor_to_lda(display, emp, lda_list)
         if len(matches) < REVOLVING_DOOR_MIN_MATCHED_DONORS:
             continue
