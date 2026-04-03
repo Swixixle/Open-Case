@@ -1441,6 +1441,19 @@ async def run_investigation(
             + build_signals_from_anomalies(contract_anomalies, case_id)
         )
 
+        n_temporal_pre_upsert = sum(
+            1 for d in all_signal_dicts if d.get("signal_type") == "temporal_proximity"
+        )
+        logger.info(
+            "investigate temporal path: substantive=%s donor_clusters=%s "
+            "temporal_signal_dicts=%s total_signal_dicts=%s "
+            "(no dedup before scorer; empty clusters => no donor_cluster breakdown writes)",
+            len(substantive),
+            len(donor_clusters),
+            n_temporal_pre_upsert,
+            len(all_signal_dicts),
+        )
+
         if debug:
             logger.info(
                 "INVESTIGATE DEBUG: candidate_pairs_examined=%s clusters=%s "

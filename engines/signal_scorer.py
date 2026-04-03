@@ -74,6 +74,11 @@ def build_signals_from_proximity(
     case_file_id: uuid.UUID,
 ) -> list[dict[str, Any]]:
     """One persisted signal per donor–official cluster."""
+    logger.info(
+        "build_signals_from_proximity: case_id=%s donor_clusters=%s",
+        case_file_id,
+        len(donor_clusters),
+    )
     signals: list[dict[str, Any]] = []
     case_s = str(case_file_id)
     for cluster in donor_clusters:
@@ -148,8 +153,8 @@ def build_signals_from_proximity(
             "relevance_score": rel_score,
         }
 
-        logger.info(
-            "signal_scorer donor_cluster weight_breakdown keys=%s receipt_date=%r exemplar_financial_date=%r",
+        logger.debug(
+            "signal_scorer donor_cluster breakdown keys=%s receipt_date=%r exemplar_financial_date=%r",
             sorted(breakdown.keys()),
             breakdown.get("receipt_date"),
             breakdown.get("exemplar_financial_date"),
@@ -179,9 +184,6 @@ def build_signals_from_proximity(
             **conf_eval["confirmation_checks"],
             "relevance_indicator_count": conf_eval["relevance_indicator_count"],
         }
-
-        # Diagnostic (Sullivan / receipt_date): remove after confirming keys at persist boundary.
-        print("DEBUG breakdown:", breakdown, flush=True)
 
         signals.append(
             {
