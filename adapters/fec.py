@@ -158,6 +158,31 @@ async def resolve_principal_committee_id_for_official(
 
 
 # Donor shapes that are very unlikely to be accidental multi-entity personal-name matches.
+# FEC Schedule A transaction types treated as refunds / reversals for ingestion.
+# Do not add 15Z here — negative 15Z rows are handled via amount check + warning.
+FEC_SCHEDULE_A_SKIP_TRANSACTION_TYPES = frozenset({"22Z", "20Z", "17Z"})
+
+
+def fec_schedule_a_row_exclusion_reason(item: dict[str, Any]) -> str | None:
+    """
+    If the Schedule A row must not become an AdapterResult, return a short reason code.
+    Used by the adapter and by tests (refund / negative receipt guard).
+    """
+    if not isinstance(item, dict):
+        return "invalid_item"
+    tp = str(item.get("transaction_tp") or "").strip().upper()
+    if tp in FEC_SCHEDULE_A_SKIP_TRANSACTION_TYPES:
+        return "fec_refund_transaction_type"
+    raw_amt = item.get("contribution_receipt_amount") or 0
+    try:
+        amt_f = float(raw_amt)
+    except (TypeError, ValueError):
+        return None
+    if amt_f < 0:
+        return "negative_amount"
+    return None
+
+
 _UNAMBIGUOUS_NAME_MARKERS = (
     "PAC",
     "INC",
@@ -346,14 +371,39 @@ class FECAdapter(BaseAdapter):
                 empty.parse_warning = detail
                 return empty
 
+            filtered_items: list[dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                reason = fec_schedule_a_row_exclusion_reason(item)
+                if reason:
+                    if reason == "negative_amount":
+                        logger.warning(
+                            "FEC schedule_a skipping row with negative amount "
+                            "(transaction_tp=%r contribution_receipt_amount=%r)",
+                            str(item.get("transaction_tp") or "").strip().upper(),
+                            item.get("contribution_receipt_amount"),
+                        )
+                    continue
+                filtered_items.append(item)
+
+            if not filtered_items:
+                detail = self._fec_detail_line(cred_src, query, query_type, 0)
+                detail = f"{detail} | all rows skipped (refunds/negative amounts)"
+                empty = self._make_empty_response(query, parse_warning=detail)
+                empty.result_hash = raw_hash
+                empty.credential_mode = cred_src
+                empty.parse_warning = detail
+                return empty
+
             unique_names = {
-                str(item.get("contributor_name") or "").lower() for item in items
+                str(item.get("contributor_name") or "").lower() for item in filtered_items
             }
             unique_names.discard("")
             collision_count = max(1, len(unique_names))
 
             results: list[AdapterResult] = []
-            for item in items:
+            for item in filtered_items:
                 amount = item.get("contribution_receipt_amount") or 0
                 committee = item.get("committee") or {}
                 recipient = (

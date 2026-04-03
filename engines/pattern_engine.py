@@ -24,11 +24,16 @@ PATTERN_ENGINE_VERSION = "1.0"
 # Rule IDs — increment when logic changes, never reuse
 RULE_COMMITTEE_SWEEP = "COMMITTEE_SWEEP_V1"
 RULE_FINGERPRINT_BLOOM = "FINGERPRINT_BLOOM_V1"
+RULE_SOFT_BUNDLE = "SOFT_BUNDLE_V1"
 
 COMMITTEE_SWEEP_MIN_OFFICIALS = 3
 COMMITTEE_SWEEP_MAX_WINDOW_DAYS = 14
 FINGERPRINT_BLOOM_MIN_CASES = 4
 FINGERPRINT_BLOOM_MIN_RELEVANCE = 0.3
+
+SOFT_BUNDLE_MIN_UNIQUE_DONORS = 3
+SOFT_BUNDLE_MAX_SPAN_DAYS = 7
+SOFT_BUNDLE_MIN_AGGREGATE = 1000.0
 
 PATTERN_ALERT_DISCLAIMER = (
     "This alert documents donor appearance across public records. "
@@ -50,6 +55,9 @@ class PatternAlert:
     disclaimer: str = PATTERN_ALERT_DISCLAIMER
     donation_window_start: date | None = None
     donation_window_end: date | None = None
+    aggregate_amount: float | None = None
+    cluster_size: int | None = None
+    amount_diversification: float | None = None
 
 
 def _utc_now() -> datetime:
@@ -87,6 +95,151 @@ def _donation_date_for_signal(s: Signal) -> date | None:
         except ValueError:
             pass
     return None
+
+
+@dataclass
+class _SoftBundleRow:
+    donor_key: str
+    donor_display: str
+    committee_key: str
+    committee_display: str
+    d: date
+    amount: float
+    case_file_id: uuid.UUID
+    signal_id: uuid.UUID
+    official_name: str
+
+
+def _load_soft_bundle_rows(db: Session) -> list[_SoftBundleRow]:
+    """Donor-cluster signals with committee labels + dated financials (fingerprint join)."""
+    rows = db.execute(
+        select(DonorFingerprint, Signal).join(Signal, DonorFingerprint.signal_id == Signal.id)
+    ).all()
+    out: list[_SoftBundleRow] = []
+    for fp, sig in rows:
+        bd = _signal_breakdown_json(sig)
+        if str(bd.get("kind") or "") != "donor_cluster":
+            continue
+        cl = str(bd.get("committee_label") or "").strip()
+        if not cl:
+            continue
+        d = _donation_date_for_signal(sig)
+        if d is None:
+            continue
+        raw_amt = bd.get("total_amount")
+        try:
+            amt_f = float(raw_amt) if raw_amt is not None else float(sig.amount or 0.0)
+        except (TypeError, ValueError):
+            amt_f = float(sig.amount or 0.0)
+        if amt_f <= 0:
+            continue
+        cid = (fp.canonical_id or "").strip().lower()
+        leg = (fp.normalized_donor_key or "").strip().lower()
+        dk = cid if cid else leg
+        if not dk:
+            continue
+        ck = cl.lower()
+        out.append(
+            _SoftBundleRow(
+                donor_key=dk,
+                donor_display=_donor_display_for_signal(sig, dk),
+                committee_key=ck,
+                committee_display=cl,
+                d=d,
+                amount=amt_f,
+                case_file_id=fp.case_file_id,
+                signal_id=sig.id,
+                official_name=(fp.official_name or sig.actor_b or "").strip() or "Unknown official",
+            )
+        )
+    return out
+
+
+def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    by_committee: dict[str, tuple[str, list[_SoftBundleRow]]] = {}
+    for row in _load_soft_bundle_rows(db):
+        disp = row.committee_display
+        ck = row.committee_key
+        if ck not in by_committee:
+            by_committee[ck] = (disp, [])
+        by_committee[ck][1].append(row)
+
+    qualifying: list[
+        tuple[frozenset[uuid.UUID], list[_SoftBundleRow], date, date, int, float, float | None]
+    ] = []
+    for _committee_display, events in by_committee.values():
+        if len(events) < SOFT_BUNDLE_MIN_UNIQUE_DONORS:
+            continue
+        dates_sorted = sorted({e.d for e in events})
+        for d0 in dates_sorted:
+            for d1 in dates_sorted:
+                if (d1 - d0).days > SOFT_BUNDLE_MAX_SPAN_DAYS:
+                    continue
+                window = [e for e in events if d0 <= e.d <= d1]
+                donors = {e.donor_key for e in window}
+                if len(donors) < SOFT_BUNDLE_MIN_UNIQUE_DONORS:
+                    continue
+                total = sum(e.amount for e in window)
+                if total < SOFT_BUNDLE_MIN_AGGREGATE:
+                    continue
+                fs = frozenset(e.signal_id for e in window)
+                per_donor: dict[str, float] = {}
+                for e in window:
+                    per_donor[e.donor_key] = per_donor.get(e.donor_key, 0.0) + e.amount
+                div: float | None = None
+                if total > 0 and per_donor:
+                    hhi = sum((v / total) ** 2 for v in per_donor.values())
+                    div = 1.0 - float(hhi)
+                qualifying.append((fs, window, d0, d1, len(donors), total, div))
+
+    by_sig_set: dict[frozenset[uuid.UUID], tuple] = {}
+    for tup in qualifying:
+        fs0 = tup[0]
+        if fs0 not in by_sig_set:
+            by_sig_set[fs0] = tup
+    deduped = list(by_sig_set.values())
+
+    maximal_sets: set[frozenset[uuid.UUID]] = set()
+    for tup in sorted(deduped, key=lambda t: -len(t[0])):
+        fs = tup[0]
+        if fs in maximal_sets:
+            continue
+        if any(fs < k for k in maximal_sets):
+            continue
+        subsumed = {k for k in maximal_sets if k < fs}
+        maximal_sets -= subsumed
+        maximal_sets.add(fs)
+
+    alerts: list[PatternAlert] = []
+    for tup in deduped:
+        fs, window, d0, d1, n_donors, total, div = tup
+        if fs not in maximal_sets:
+            continue
+        sample_row = window[0]
+        donor_labels = sorted({e.donor_display for e in window})
+        preview = ", ".join(donor_labels[:5])
+        if len(donor_labels) > 5:
+            preview = f"{preview}, +{len(donor_labels) - 5} more"
+        span_days = (d1 - d0).days
+        alerts.append(
+            PatternAlert(
+                rule_id=RULE_SOFT_BUNDLE,
+                pattern_version=PATTERN_ENGINE_VERSION,
+                donor_entity=f"Soft bundle — {n_donors} donors ({preview})",
+                matched_officials=sorted({e.official_name for e in window}),
+                matched_case_ids=sorted({str(e.case_file_id) for e in window}),
+                committee=sample_row.committee_display,
+                window_days=int(span_days),
+                evidence_refs=sorted({str(e.signal_id) for e in window}),
+                fired_at=fired_at,
+                donation_window_start=d0,
+                donation_window_end=d1,
+                aggregate_amount=float(total),
+                cluster_size=int(n_donors),
+                amount_diversification=div,
+            )
+        )
+    return alerts
 
 
 def _committees_by_bioguide(db: Session) -> dict[str, set[str]]:
@@ -267,6 +420,7 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
     alerts: list[PatternAlert] = []
     alerts.extend(_detect_committee_sweep(by_donor, committees_map, fired_at))
     alerts.extend(_detect_fingerprint_bloom(by_donor, fired_at))
+    alerts.extend(_detect_soft_bundles(db, fired_at))
     alerts.sort(key=lambda x: (x.donor_entity.lower(), x.rule_id, x.committee or ""))
     return alerts
 
@@ -289,6 +443,9 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         "donation_window_end": a.donation_window_end.isoformat()
         if a.donation_window_end
         else None,
+        "aggregate_amount": a.aggregate_amount,
+        "cluster_size": a.cluster_size,
+        "amount_diversification": a.amount_diversification,
     }
 
 
@@ -334,6 +491,14 @@ def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
         rule_line = (
             f"Committee Sweep — appeared for {COMMITTEE_SWEEP_MIN_OFFICIALS}+ members of "
             f"{a.committee} within {a.window_days} day(s)"
+        )
+    elif a.rule_id == RULE_SOFT_BUNDLE:
+        badge = "Soft Bundle"
+        agg = float(a.aggregate_amount or 0.0)
+        n = int(a.cluster_size or 0)
+        rule_line = (
+            f"Soft bundle — {n} distinct donors aggregated ${agg:,.0f} to {a.committee} "
+            f"within {a.window_days} day(s)"
         )
     else:
         badge = "Cross-Case Donor"

@@ -10,11 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from auth import generate_raw_key, hash_key
+from adapters.fec import fec_schedule_a_row_exclusion_reason
 from engines.pattern_engine import (
     COMMITTEE_SWEEP_MAX_WINDOW_DAYS,
     FINGERPRINT_BLOOM_MIN_RELEVANCE,
     RULE_COMMITTEE_SWEEP,
     RULE_FINGERPRINT_BLOOM,
+    RULE_SOFT_BUNDLE,
+    SOFT_BUNDLE_MAX_SPAN_DAYS,
     run_pattern_engine,
 )
 from models import (
@@ -98,8 +101,16 @@ def _signal(
     official: str,
     fin_date: str,
     relevance: float,
+    *,
+    total_amount: float | None = None,
+    committee_label: str | None = None,
 ) -> Signal:
     ident = (uuid.uuid4().hex + uuid.uuid4().hex)[:64]
+    bd_extra: dict[str, Any] = {"relevance_score": relevance}
+    if total_amount is not None:
+        bd_extra["total_amount"] = float(total_amount)
+    if committee_label is not None:
+        bd_extra["committee_label"] = committee_label
     s = Signal(
         case_file_id=case_id,
         signal_identity_hash=ident,
@@ -114,7 +125,7 @@ def _signal(
         event_date_b="2025-06-01",
         days_between=-5,
         relevance_score=relevance,
-        weight_breakdown=_breakdown_json(donor, official, relevance_score=relevance),
+        weight_breakdown=_breakdown_json(donor, official, **bd_extra),
     )
     db.add(s)
     db.flush()
@@ -370,3 +381,155 @@ def test_full_case_payload_includes_pattern_alerts_array(test_engine) -> None:
     assert packed["payload"].get("pattern_alerts") == []
     assert "methodology_note" in packed["payload"]
     db.close()
+
+
+def test_soft_bundle_fires_at_threshold(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-{uuid.uuid4().hex[:8]}", "Senator Softbundle")
+    db.flush()
+    committee = "Friends of X"
+    specs = [
+        ("donor a", "DONOR A", "2025-03-01", 400.0),
+        ("donor b", "DONOR B", "2025-03-02", 400.0),
+        ("donor c", "DONOR C", "2025-03-03", 400.0),
+        ("donor d", "DONOR D", "2025-03-04", 400.0),
+    ]
+    for dk, ddisplay, fd, amt in specs:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator Softbundle",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Softbundle", "S90000001")
+    db.commit()
+    alerts = run_pattern_engine(db)
+    db.close()
+    sb = [a for a in alerts if a.rule_id == RULE_SOFT_BUNDLE]
+    assert len(sb) == 1
+    assert sb[0].cluster_size == 4
+    assert sb[0].aggregate_amount == 1600.0
+    assert sb[0].window_days <= SOFT_BUNDLE_MAX_SPAN_DAYS
+
+
+def test_soft_bundle_insufficient_donors(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb2-{uuid.uuid4().hex[:8]}", "Senator Two")
+    db.flush()
+    committee = "Friends of X"
+    for dk, ddisplay, fd, amt in [
+        ("x1", "PERSON ONE", "2025-03-01", 600.0),
+        ("x2", "PERSON TWO", "2025-03-02", 600.0),
+    ]:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator Two",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Two", "S90000002")
+    db.commit()
+    alerts = run_pattern_engine(db)
+    db.close()
+    assert not any(a.rule_id == RULE_SOFT_BUNDLE for a in alerts)
+
+
+def test_soft_bundle_insufficient_aggregate(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb3-{uuid.uuid4().hex[:8]}", "Senator Low")
+    db.flush()
+    committee = "Friends of X"
+    for i, dk in enumerate(["u1", "u2", "u3", "u4"]):
+        s = _signal(
+            db,
+            c.id,
+            f"DONOR {i}",
+            "Senator Low",
+            f"2025-04-{i+1:02d}",
+            0.5,
+            total_amount=200.0,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Low", "S90000003")
+    db.commit()
+    alerts = run_pattern_engine(db)
+    db.close()
+    assert not any(a.rule_id == RULE_SOFT_BUNDLE for a in alerts)
+
+
+def test_soft_bundle_does_not_fire_when_spread_exceeds_window(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb4-{uuid.uuid4().hex[:8]}", "Senator Wide")
+    db.flush()
+    committee = "Friends of X"
+    specs = [
+        ("w0", "W0", "2025-03-01", 400.0),
+        ("w5", "W5", "2025-03-06", 400.0),
+        ("w10", "W10", "2025-03-11", 400.0),
+        ("w15", "W15", "2025-03-16", 400.0),
+    ]
+    for dk, ddisplay, fd, amt in specs:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator Wide",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Wide", "S90000004")
+    db.commit()
+    alerts = run_pattern_engine(db)
+    db.close()
+    assert not any(a.rule_id == RULE_SOFT_BUNDLE for a in alerts)
+
+
+def test_refund_rows_are_not_ingested_from_fec_schedule_a() -> None:
+    assert (
+        fec_schedule_a_row_exclusion_reason(
+            {"transaction_tp": "22Z", "contribution_receipt_amount": -2400}
+        )
+        == "fec_refund_transaction_type"
+    )
+    assert (
+        fec_schedule_a_row_exclusion_reason(
+            {"transaction_tp": "20Z", "contribution_receipt_amount": "-100"}
+        )
+        == "fec_refund_transaction_type"
+    )
+    assert (
+        fec_schedule_a_row_exclusion_reason(
+            {"transaction_tp": "17Z", "contribution_receipt_amount": 50}
+        )
+        == "fec_refund_transaction_type"
+    )
+    assert (
+        fec_schedule_a_row_exclusion_reason(
+            {"transaction_tp": "15Z", "contribution_receipt_amount": 250}
+        )
+        is None
+    )
+    assert (
+        fec_schedule_a_row_exclusion_reason(
+            {"transaction_tp": "15Z", "contribution_receipt_amount": -88}
+        )
+        == "negative_amount"
+    )

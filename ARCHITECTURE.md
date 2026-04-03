@@ -372,6 +372,29 @@ involving the same or related actors within the proximity window
 This engine works for any subject type (local official, corporation, etc.)
 because it uses contract award dates rather than vote dates for the decision event.
 
+### Pattern engine (read-side)
+
+The pattern engine scans the global **donor fingerprint** ledger joined to **signals**
+whose `weight_breakdown.kind` is `donor_cluster`. Rules emit **`PatternAlert`**
+objects (e.g. for the report UI and `GET /api/v1/patterns`); they do not mutate
+signal weights or case state.
+
+**`COMMITTEE_SWEEP_V1`** — one donor linked (via bioguide committee assignments)
+to appearances for **≥3** distinct officials who share a **Senate committee** name,
+with dated donations inside a **14-day** span.
+
+**`FINGERPRINT_BLOOM_V1`** — one donor appears in **≥4** investigations (cases)
+with relevance **≥ 0.3** on the linked signals.
+
+**`SOFT_BUNDLE_V1`** — **≥3** distinct donors (**`normalized_donor_key` /
+canonical id**) with `donor_cluster` signals sharing the same
+**`committee_label`** (recipient committee) in the breakdown, donation dates
+(from `event_date_a` / `exemplar_financial_date` in the breakdown) within a
+**7-day** span, and **aggregate** `total_amount` from those rows **≥ $1,000**.
+Amount diversification `(1 − HHI)` over per-donor shares is included in the alert
+payload for reporting; employer concentration is reserved for when employer
+fields exist on clustered evidence.
+
 ---
 
 ## Known Limitations
