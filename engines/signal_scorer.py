@@ -107,6 +107,12 @@ def build_signals_from_proximity(
                 eid_set.append(wid)
 
         rel_score = float(cluster.relevance_score)
+        rec_norm = (cluster.receipt_date or "").strip()
+        if not rec_norm and cluster.exemplar_financial_date:
+            rec_norm = str(cluster.exemplar_financial_date).strip()[:10]
+        ex_fin = (cluster.exemplar_financial_date or "").strip()
+        if not ex_fin and rec_norm:
+            ex_fin = rec_norm
         breakdown = {
             "kind": "donor_cluster",
             "donor": cluster.donor_display,
@@ -121,6 +127,8 @@ def build_signals_from_proximity(
             "exemplar_gap": cluster.exemplar_gap,
             "exemplar_direction": cluster.exemplar_direction,
             "exemplar_position": cluster.exemplar_position,
+            "exemplar_financial_date": ex_fin,
+            "receipt_date": rec_norm,
             "proximity_score": cluster.proximity_score,
             "amount_multiplier": cluster.amount_multiplier,
             "committee_label": cluster.committee_label,

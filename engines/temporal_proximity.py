@@ -15,6 +15,32 @@ from engines.relevance import compute_relevance_score
 logger = logging.getLogger(__name__)
 
 
+def _fec_contribution_receipt_date_from_entry(entry: Any) -> str:
+    """
+    ISO yyyy-mm-dd from OpenFEC schedule_a raw_data when present.
+    Used so donor_cluster breakdown can carry receipt_date for calendar clustering
+    (soft-bundle and similar) even when date_of_event normalization differs.
+    """
+    if str(getattr(entry, "source_name", "") or "").upper() != "FEC":
+        return ""
+    raw = getattr(entry, "raw_data_json", None)
+    if not raw or not str(raw).strip():
+        return ""
+    try:
+        obj = json.loads(raw) if isinstance(raw, str) else {}
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(obj, dict):
+        return ""
+    dt = obj.get("contribution_receipt_date")
+    if dt is None:
+        return ""
+    s = str(dt).strip()
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    return ""
+
+
 @dataclass
 class RawProximityPair:
     """One donation × one vote pairing (internal only)."""
@@ -33,6 +59,7 @@ class RawProximityPair:
     financial_jurisdictional_match: bool = False
     subject_is_sponsor: bool = False
     subject_is_cosponsor: bool = False
+    receipt_date: str = ""
 
 
 @dataclass
@@ -70,6 +97,7 @@ class DonorCluster:
     relevance_score: float = 0.0
     exemplar_financial_date: str = ""
     exemplar_decision_date: str = ""
+    receipt_date: str = ""
     supporting_pairs: list[dict[str, Any]] = field(default_factory=list)
     witness_evidence_ids: list[uuid.UUID] = field(default_factory=list)
 
@@ -365,6 +393,7 @@ def _collect_raw_pairs(
             dd_s = dd.isoformat() if hasattr(dd, "isoformat") else str(dd or "")
             sp, csp = _sponsor_flags_from_vote_entry(d_entry)
             pairing_stats["pairs_emitted"] += 1
+            rec_raw = _fec_contribution_receipt_date_from_entry(f_entry)
             pairs.append(
                 RawProximityPair(
                     actor_a=_actor_for(f_entry, "Unknown party"),
@@ -383,6 +412,7 @@ def _collect_raw_pairs(
                     ),
                     subject_is_sponsor=sp,
                     subject_is_cosponsor=csp,
+                    receipt_date=rec_raw,
                 )
             )
     return _dedupe_pairs_by_donor_and_vote(pairs)
@@ -472,9 +502,16 @@ def _cluster_from_pairs(
             "jurisdictional_match": p.financial_jurisdictional_match,
             "subject_is_sponsor": p.subject_is_sponsor,
             "subject_is_cosponsor": p.subject_is_cosponsor,
+            "financial_date": p.financial_date,
+            "receipt_date": p.receipt_date
+            or (p.financial_date[:10] if len(p.financial_date) >= 10 else ""),
         }
         for p in rel_pairs
     ]
+
+    ex_rec = (exemplar.receipt_date or "").strip()
+    if not ex_rec and exemplar.financial_date:
+        ex_rec = str(exemplar.financial_date).strip()[:10]
 
     return DonorCluster(
         donor_key=donor_key,
@@ -506,6 +543,7 @@ def _cluster_from_pairs(
         relevance_score=relevance_score,
         exemplar_financial_date=exemplar.financial_date,
         exemplar_decision_date=exemplar.decision_date,
+        receipt_date=ex_rec,
         supporting_pairs=supporting,
     )
 

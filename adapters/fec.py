@@ -434,6 +434,9 @@ class FECAdapter(BaseAdapter):
                     row_collision_count = collision_count
                     row_collision_set = other
 
+                # Full row (includes contribution_receipt_date) is stored on evidence;
+                # temporal proximity / signal_scorer copy receipt_date into donor_cluster
+                # weight_breakdown for calendar rules (e.g. SOFT_BUNDLE_V1).
                 ar = AdapterResult(
                     source_name=self.source_name,
                     source_url=source_url,

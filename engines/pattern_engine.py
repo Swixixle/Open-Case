@@ -88,6 +88,12 @@ def _donation_date_for_signal(s: Signal) -> date | None:
         except ValueError:
             pass
     bd = _signal_breakdown_json(s)
+    rpt = bd.get("receipt_date")
+    if rpt:
+        try:
+            return date.fromisoformat(str(rpt).strip()[:10])
+        except ValueError:
+            pass
     ex = bd.get("exemplar_financial_date")
     if ex:
         try:

@@ -104,6 +104,7 @@ def _signal(
     *,
     total_amount: float | None = None,
     committee_label: str | None = None,
+    store_date_as_receipt_only: bool = False,
 ) -> Signal:
     ident = (uuid.uuid4().hex + uuid.uuid4().hex)[:64]
     bd_extra: dict[str, Any] = {"relevance_score": relevance}
@@ -111,6 +112,11 @@ def _signal(
         bd_extra["total_amount"] = float(total_amount)
     if committee_label is not None:
         bd_extra["committee_label"] = committee_label
+    if store_date_as_receipt_only:
+        bd_extra["receipt_date"] = fin_date.strip()[:10]
+        ev_a: str | None = None
+    else:
+        ev_a = fin_date
     s = Signal(
         case_file_id=case_id,
         signal_identity_hash=ident,
@@ -121,7 +127,7 @@ def _signal(
         exposure_state="internal",
         actor_a=donor,
         actor_b=official,
-        event_date_a=fin_date,
+        event_date_a=ev_a,
         event_date_b="2025-06-01",
         days_between=-5,
         relevance_score=relevance,
@@ -500,6 +506,40 @@ def test_soft_bundle_does_not_fire_when_spread_exceeds_window(test_engine) -> No
     alerts = run_pattern_engine(db)
     db.close()
     assert not any(a.rule_id == RULE_SOFT_BUNDLE for a in alerts)
+
+
+def test_soft_bundle_fires_when_only_receipt_date_in_breakdown(test_engine) -> None:
+    """Calendar clustering uses weight_breakdown.receipt_date when event_date_a is absent."""
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sbrec-{uuid.uuid4().hex[:8]}", "Senator ReceiptOnly")
+    db.flush()
+    committee = "Friends of X"
+    specs = [
+        ("r1", "R1", "2025-03-01", 400.0),
+        ("r2", "R2", "2025-03-02", 400.0),
+        ("r3", "R3", "2025-03-03", 400.0),
+        ("r4", "R4", "2025-03-04", 400.0),
+    ]
+    for dk, ddisplay, fd, amt in specs:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator ReceiptOnly",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+            store_date_as_receipt_only=True,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator ReceiptOnly", "S91000001")
+    db.commit()
+    alerts = run_pattern_engine(db)
+    db.close()
+    sb = [a for a in alerts if a.rule_id == RULE_SOFT_BUNDLE]
+    assert len(sb) == 1
 
 
 def test_refund_rows_are_not_ingested_from_fec_schedule_a() -> None:

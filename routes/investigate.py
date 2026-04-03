@@ -798,6 +798,7 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
                 "signal_type": s.temporal_class,
                 "donor": bd.get("donor"),
                 "official": bd.get("official"),
+                "receipt_date": bd.get("receipt_date"),
                 "total_amount": bd.get("total_amount"),
                 "donation_count": bd.get("donation_count"),
                 "vote_count": bd.get("vote_count"),
@@ -1148,6 +1149,11 @@ def _ingest_adapter_results(
             d = _parse_event_date(result.date_of_event)
         except ValueError:
             d = None
+        if d is None and isinstance(getattr(result, "raw_data", None), dict):
+            d = _parse_event_date(
+                str(result.raw_data.get("contribution_receipt_date") or "").strip()
+                or None
+            )
 
         de = str(result.date_of_event) if result.date_of_event else None
         eh = make_evidence_hash(
