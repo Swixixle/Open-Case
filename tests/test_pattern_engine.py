@@ -15,14 +15,21 @@ from adapters.fec import fec_schedule_a_row_exclusion_reason
 from engines.pattern_engine import (
     COMMITTEE_SWEEP_MAX_WINDOW_DAYS,
     FINGERPRINT_BLOOM_MIN_RELEVANCE,
+    PATTERN_ENGINE_VERSION,
     RULE_COMMITTEE_SWEEP,
+    RULE_DISBURSEMENT_LOOP,
     RULE_FINGERPRINT_BLOOM,
+    RULE_GEO_MISMATCH,
+    RULE_REVOLVING_DOOR,
+    RULE_SECTOR_CONVERGENCE,
     RULE_SOFT_BUNDLE,
     SOFT_BUNDLE_MAX_SPAN_DAYS,
+    classify_donor_sector,
     is_deadline_adjacent,
     pattern_alert_to_payload,
     proximity_to_vote_score_from_days,
     run_pattern_engine,
+    vote_matches_sector,
 )
 from models import (
     CaseContributor,
@@ -185,6 +192,110 @@ def _fingerprint(
             bioguide_id=bioguide,
         )
     )
+
+
+def _fec_receipt_entry(
+    db,
+    case_id: uuid.UUID,
+    *,
+    contributor_name: str,
+    amount: float,
+    receipt_date: str,
+    contributor_state: str | None = None,
+    contributor_employer: str = "",
+    contributor_occupation: str = "",
+    contributor_committee_id: str | None = None,
+) -> EvidenceEntry:
+    raw: dict[str, Any] = {
+        "contributor_name": contributor_name,
+        "contribution_receipt_amount": amount,
+        "contribution_receipt_date": receipt_date,
+    }
+    if contributor_state:
+        raw["contributor_state"] = contributor_state
+    if contributor_employer:
+        raw["contributor_employer"] = contributor_employer
+    if contributor_occupation:
+        raw["contributor_occupation"] = contributor_occupation
+    if contributor_committee_id:
+        raw["contributor_committee_id"] = contributor_committee_id
+    ev = EvidenceEntry(
+        case_file_id=case_id,
+        entry_type="financial_connection",
+        title=f"FEC: {contributor_name}",
+        body="test",
+        source_url="https://www.fec.gov/",
+        source_name="FEC",
+        adapter_name="FEC",
+        date_of_event=date.fromisoformat(receipt_date[:10]),
+        entered_by="pat_eng_tester",
+        confidence="confirmed",
+        amount=amount,
+        matched_name=contributor_name,
+        raw_data_json=json.dumps(raw, separators=(",", ":")),
+    )
+    db.add(ev)
+    db.flush()
+    return ev
+
+
+def _signal_with_fec(
+    db,
+    case_id: uuid.UUID,
+    donor: str,
+    official: str,
+    fin_date: str,
+    relevance: float,
+    fec_entry: EvidenceEntry,
+    *,
+    total_amount: float,
+    committee_label: str,
+    donor_key: str,
+    **bd_extra: Any,
+) -> Signal:
+    ident = (uuid.uuid4().hex + uuid.uuid4().hex)[:64]
+    bd = {
+        "kind": "donor_cluster",
+        "donor": donor,
+        "official": official,
+        "total_amount": total_amount,
+        "donation_count": 1,
+        "vote_count": 1,
+        "pair_count": 1,
+        "min_gap_days": -5,
+        "median_gap_days": -5.0,
+        "exemplar_vote": "S.1",
+        "exemplar_gap": -5,
+        "exemplar_direction": "after",
+        "exemplar_position": "Yea",
+        "proximity_score": 0.5,
+        "amount_multiplier": 1.0,
+        "committee_label": committee_label,
+        "has_collision": False,
+        "has_jurisdictional_match": False,
+        "has_lda_filing": False,
+        "relevance_score": relevance,
+    }
+    bd.update(bd_extra)
+    s = Signal(
+        case_file_id=case_id,
+        signal_identity_hash=ident,
+        signal_type="temporal_proximity",
+        weight=0.6,
+        description="test",
+        evidence_ids=json.dumps([str(fec_entry.id)], separators=(",", ":")),
+        exposure_state="internal",
+        actor_a=donor,
+        actor_b=official,
+        event_date_a=fin_date,
+        event_date_b="2025-06-01",
+        days_between=-5,
+        relevance_score=relevance,
+        weight_breakdown=json.dumps(bd, separators=(",", ":")),
+    )
+    db.add(s)
+    db.flush()
+    return s
 
 
 def _seed_finance_committee(db, *bioguides: str) -> None:
@@ -355,7 +466,7 @@ def test_get_patterns_endpoint_returns_200(client) -> None:
     data = r.json()
     assert "alerts" in data
     assert data.get("total") == len(data["alerts"])
-    assert data.get("pattern_engine_version") == "1.0"
+    assert data.get("pattern_engine_version") == PATTERN_ENGINE_VERSION
     assert "run_at" in data
 
 
@@ -929,6 +1040,503 @@ def test_nearest_vote_description_none_when_missing(test_engine) -> None:
     assert pl["nearest_vote_description"] is None
     assert pl["nearest_vote_result"] is None
     assert pl["nearest_vote_question"] is None
+
+
+def test_classify_donor_sector_pharma() -> None:
+    assert classify_donor_sector("PHARMACEUTICAL RESEARCH PAC", "", "") == "pharma"
+
+
+def test_classify_donor_sector_finance() -> None:
+    assert classify_donor_sector("AMERICAN BANKERS ASSOCIATION PAC", "", "") == "finance"
+
+
+def test_classify_donor_sector_none() -> None:
+    assert classify_donor_sector("SMITH, JOHN", "", "") is None
+
+
+def test_vote_matches_sector_true() -> None:
+    assert vote_matches_sector("Corporate Alternative Minimum Tax", "finance")
+
+
+def test_vote_matches_sector_false() -> None:
+    assert not vote_matches_sector("Corporate Alternative Minimum Tax", "pharma")
+
+
+def test_sector_convergence_fires(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sec-conv-{uuid.uuid4().hex[:8]}", "Senator Sector")
+    db.flush()
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 2, 10),
+        raw_data={
+            "bill": {"title": "Corporate Alternative Minimum Tax repeal"},
+            "question": "On Passage",
+            "result": "Rejected",
+        },
+    )
+    comm = "Friends of Sector"
+    specs = [
+        ("bk1", "FIRST BANK PAC", "2026-02-01", 2000.0),
+        ("bk2", "CAPITAL MARKETS PAC", "2026-02-03", 2000.0),
+        ("bk3", "SECURITIES GROUP PAC", "2026-02-05", 2000.0),
+        ("bk4", "LENDING ALL INC PAC", "2026-02-07", 2000.0),
+    ]
+    for dk, disp, fd, amt in specs:
+        fe = _fec_receipt_entry(db, c.id, contributor_name=disp, amount=amt, receipt_date=fd[:10])
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Sector",
+            fd,
+            0.5,
+            fe,
+            total_amount=amt,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Sector", "C001095")
+    db.commit()
+    case_id_str = str(c.id)
+    sc = [a for a in run_pattern_engine(db) if a.rule_id == RULE_SECTOR_CONVERGENCE]
+    db.close()
+    assert len(sc) >= 1
+    hit = next(x for x in sc if case_id_str in x.matched_case_ids)
+    assert hit.sector == "finance"
+    assert hit.sector_vote_match is True
+    assert hit.sector_donor_count == 4
+
+
+def test_sector_convergence_no_match_still_fires(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sec-nm-{uuid.uuid4().hex[:8]}", "Senator Ag")
+    db.flush()
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 3, 10),
+        raw_data={"bill": {"title": "Corporate Alternative Minimum Tax"}},
+    )
+    comm = "Ag Committee Friends"
+    specs = [
+        ("ag1", "CORN GROWERS PAC", "2026-03-01", 2000.0),
+        ("ag2", "SOYBEAN FARMERS PAC", "2026-03-03", 2000.0),
+        ("ag3", "RURAL GRAIN PAC", "2026-03-05", 2000.0),
+        ("ag4", "WHEAT PRODUCERS PAC", "2026-03-07", 2000.0),
+    ]
+    for dk, disp, fd, amt in specs:
+        fe = _fec_receipt_entry(db, c.id, contributor_name=disp, amount=amt, receipt_date=fd[:10])
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Ag",
+            fd,
+            0.5,
+            fe,
+            total_amount=amt,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Ag", "C001095")
+    db.commit()
+    case_id_str = str(c.id)
+    sc = [a for a in run_pattern_engine(db) if a.rule_id == RULE_SECTOR_CONVERGENCE]
+    db.close()
+    hit = next(x for x in sc if case_id_str in x.matched_case_ids)
+    assert hit.sector == "agriculture"
+    assert hit.sector_vote_match is False
+
+
+def test_geo_mismatch_fires(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"geo-{uuid.uuid4().hex[:8]}", "Senator Sullivan")
+    db.flush()
+    comm = "Alaska PAC"
+    states = ["TX", "FL", "NY", "CA", "WA"]
+    for i, st in enumerate(states):
+        dk = f"out{i}"
+        disp = f"OUT OF STATE PAC {i}"
+        fd = f"2026-06-{i+1:02d}"
+        amt = 500.0
+        fe = _fec_receipt_entry(
+            db, c.id, contributor_name=disp, amount=amt, receipt_date=fd[:10], contributor_state=st
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Sullivan",
+            fd,
+            0.5,
+            fe,
+            total_amount=amt,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Sullivan", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH]
+    db.close()
+    assert any(case_id_str in a.matched_case_ids for a in geo)
+    hit = next(a for a in geo if case_id_str in a.matched_case_ids)
+    assert hit.senator_state == "AK"
+    assert hit.out_of_state_ratio >= 0.6
+    assert len(hit.top_donor_states or []) >= 1
+
+
+def test_geo_mismatch_no_fire_mostly_instate(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"geo-in-{uuid.uuid4().hex[:8]}", "Senator Sul In")
+    db.flush()
+    comm = "Alaska In"
+    for i, st in enumerate(["AK", "AK", "AK", "AK", "TX"]):
+        dk = f"ix{i}"
+        disp = f"DONOR {i}"
+        fd = f"2026-07-{i+1:02d}"
+        amt = 300.0
+        fe = _fec_receipt_entry(
+            db, c.id, contributor_name=disp, amount=amt, receipt_date=fd[:10], contributor_state=st
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Sul In",
+            fd,
+            0.5,
+            fe,
+            total_amount=amt,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Sul In", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
+    db.close()
+    assert not geo
+
+
+def test_geo_mismatch_dc_pac_excluded(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"geo-dc-{uuid.uuid4().hex[:8]}", "Senator Sul DC")
+    db.flush()
+    comm = "Alaska DC"
+    for i, (disp, st) in enumerate(
+        [
+            ("TRADE ASSOCIATION PAC", "DC"),
+            ("LOBBY COMMITTEE PAC", "DC"),
+            ("TEXAS OIL PAC", "TX"),
+            ("FLORIDA GROWERS PAC", "FL"),
+            ("NEVADA MINING PAC", "NV"),
+        ]
+    ):
+        dk = f"dc{i}"
+        fd = f"2026-08-{i+1:02d}"
+        amt = 400.0
+        fe = _fec_receipt_entry(
+            db, c.id, contributor_name=disp, amount=amt, receipt_date=fd[:10], contributor_state=st
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Sul DC",
+            fd,
+            0.5,
+            fe,
+            total_amount=amt,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Sul DC", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
+    db.close()
+    assert any(a.out_of_state_ratio >= 0.6 for a in geo)
+
+
+def test_disbursement_loop_fires(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"dis-loop-{uuid.uuid4().hex[:8]}", "Senator Loop")
+    db.flush()
+    _vote_record(db, c.id, date(2026, 4, 15))
+    fe = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="TRANSFER PAC",
+        amount=100.0,
+        receipt_date="2026-04-10",
+        contributor_committee_id="C00987654",
+    )
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="fec_disbursement",
+            title="Disbursement test",
+            body="test",
+            source_url="https://www.fec.gov/",
+            source_name="FEC",
+            adapter_name="FEC",
+            date_of_event=date(2026, 4, 12),
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            amount=6000.0,
+            raw_data_json=json.dumps(
+                {
+                    "disbursement_amount": 6000,
+                    "disbursement_date": "2026-04-12",
+                    "recipient_committee_id": "C00987654",
+                    "recipient_name": "TRANSFER PAC",
+                    "committee_id": "C00112233",
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    db.commit()
+    case_id_str = str(c.id)
+    loops = [a for a in run_pattern_engine(db) if a.rule_id == RULE_DISBURSEMENT_LOOP]
+    db.close()
+    assert any(case_id_str in x.matched_case_ids and x.loop_confirmed for x in loops)
+
+
+def test_disbursement_loop_no_fire_no_loop(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"dis-nl-{uuid.uuid4().hex[:8]}", "Senator Noloop")
+    db.flush()
+    _vote_record(db, c.id, date(2026, 5, 15))
+    fe = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="OTHER PAC",
+        amount=100.0,
+        receipt_date="2026-05-10",
+        contributor_committee_id="C11111111",
+    )
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="fec_disbursement",
+            title="Disbursement out",
+            body="test",
+            source_url="https://www.fec.gov/",
+            source_name="FEC",
+            adapter_name="FEC",
+            date_of_event=date(2026, 5, 12),
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "disbursement_amount": 8000,
+                    "disbursement_date": "2026-05-12",
+                    "recipient_committee_id": "C00999999",
+                    "committee_id": "C00112233",
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    db.commit()
+    case_id_str = str(c.id)
+    loops = [
+        a
+        for a in run_pattern_engine(db)
+        if a.rule_id == RULE_DISBURSEMENT_LOOP and case_id_str in a.matched_case_ids
+    ]
+    db.close()
+    assert loops and all(not x.loop_confirmed for x in loops)
+
+
+def test_revolving_door_fires(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-{uuid.uuid4().hex[:8]}", "Senator Revolving")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            adapter_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "ACME LOBBY GROUP",
+                    "client_name": "MegaCorp",
+                    "filing_year": 2025,
+                    "issue_codes": ["TAX"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    fe = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="ACME LOBBY GROUP PAC",
+        amount=500.0,
+        receipt_date="2026-06-01",
+    )
+    s = _signal_with_fec(
+        db,
+        c.id,
+        "ACME LOBBY GROUP PAC",
+        "Senator Revolving",
+        "2026-06-01",
+        0.5,
+        fe,
+        total_amount=500.0,
+        committee_label="Friends of Revolving",
+        donor_key="acme",
+        has_lda_filing=True,
+    )
+    _fingerprint(db, "acme", c.id, s.id, "Senator Revolving", "C001095")
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 6, 5),
+        raw_data={"bill": {"title": "Corporate income tax reform"}},
+    )
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR]
+    db.close()
+    assert any(case_id_str in x.matched_case_ids for x in rev)
+
+
+def test_revolving_door_vote_relevant_true(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-vr-{uuid.uuid4().hex[:8]}", "Senator RelV")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "TAX ADVOCATES INC",
+                    "client_name": "ClientCo",
+                    "filing_year": 2025,
+                    "issue_codes": ["TAX", "FIN"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    fe = _fec_receipt_entry(db, c.id, contributor_name="TAX ADVOCATES INC", amount=400.0, receipt_date="2026-08-01")
+    s = _signal_with_fec(
+        db,
+        c.id,
+        "TAX ADVOCATES INC",
+        "Senator RelV",
+        "2026-08-01",
+        0.5,
+        fe,
+        total_amount=400.0,
+        committee_label="Friends Rel",
+        donor_key="taxadv",
+        has_lda_filing=True,
+    )
+    _fingerprint(db, "taxadv", c.id, s.id, "Senator RelV", "C001095")
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 8, 5),
+        raw_data={"bill": {"title": "Securities lending reform and bank oversight"}},
+    )
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
+    db.close()
+    assert rev and rev[0].revolving_door_vote_relevant is True
+
+
+def test_revolving_door_no_match(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-nm-{uuid.uuid4().hex[:8]}", "Senator NoLda")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "UNRELATED ENTITY LLC",
+                    "client_name": "OtherCo",
+                    "filing_year": 2025,
+                    "issue_codes": ["TAX"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    fe = _fec_receipt_entry(db, c.id, contributor_name="RANDOM DONOR PAC", amount=400.0, receipt_date="2026-09-01")
+    s = _signal_with_fec(
+        db,
+        c.id,
+        "RANDOM DONOR PAC",
+        "Senator NoLda",
+        "2026-09-01",
+        0.5,
+        fe,
+        total_amount=400.0,
+        committee_label="Friends Nm",
+        donor_key="rnd",
+        has_lda_filing=True,
+    )
+    _fingerprint(db, "rnd", c.id, s.id, "Senator NoLda", "C001095")
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
+    db.close()
+    assert not rev
 
 
 def test_refund_rows_are_not_ingested_from_fec_schedule_a() -> None:

@@ -23,6 +23,8 @@ from scoring import add_credibility
 ENTRY_TYPES = frozenset(
     {
         "financial_connection",
+        "fec_disbursement",
+        "lobbying_filing",
         "vote_record",
         "property_record",
         "court_record",

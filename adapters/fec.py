@@ -237,6 +237,8 @@ class FECAdapter(BaseAdapter):
         return f"credential_mode={cred_src} | {qctx} | {tail}"
 
     async def search(self, query: str, query_type: str = "person") -> AdapterResponse:
+        if query_type == "schedule_b":
+            return await self.search_schedule_b(query)
         cred_src = _fec_key_source_label()
         try:
             api_key = CredentialRegistry.get_credential("fec") or "DEMO_KEY"
@@ -477,6 +479,127 @@ class FECAdapter(BaseAdapter):
                 results=[],
                 found=False,
                 error=f"{e!s} | credential_mode={cred_src} | {qctx}",
+                error_kind="processing",
+                credential_mode=cred_src,
+            )
+
+    async def search_schedule_b(self, committee_id: str) -> AdapterResponse:
+        """FEC Schedule B — disbursements from the committee (upstream tracing)."""
+        cred_src = _fec_key_source_label()
+        try:
+            api_key = CredentialRegistry.get_credential("fec") or "DEMO_KEY"
+        except CredentialUnavailable:
+            api_key = "DEMO_KEY"
+        cid = (committee_id or "").strip().upper()
+        if not cid:
+            return self._fec_schedule_failure(
+                committee_id,
+                "committee",
+                "empty committee_id",
+                "processing",
+                cred_src,
+            )
+        from datetime import date as _date
+
+        cycle_year = _date.today().year
+        params: dict[str, str | int] = {
+            "committee_id": cid,
+            "api_key": api_key,
+            "per_page": 100,
+            "sort": "-disbursement_date",
+            "sort_hide_null": False,
+            "two_year_transaction_period": cycle_year if cycle_year % 2 == 0 else cycle_year + 1,
+        }
+        api_path = f"{self.BASE_URL}/schedules/schedule_b/"
+        source_url = f"https://www.fec.gov/data/disbursements/?committee_id={cid}"
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.get(api_path, params=params)
+            if response.status_code == 429:
+                return self._fec_schedule_failure(
+                    cid, "committee", "FEC API rate limit exceeded", "rate_limited", cred_src
+                )
+            if response.status_code == 403:
+                return self._fec_schedule_failure(
+                    cid,
+                    "committee",
+                    "FEC API authentication failed (HTTP 403)",
+                    "credential",
+                    cred_src,
+                )
+            try:
+                data = response.json()
+            except Exception as e:
+                return self._fec_schedule_failure(
+                    cid,
+                    "committee",
+                    f"invalid JSON: {e!s}",
+                    "processing",
+                    cred_src,
+                )
+            if response.status_code >= 400:
+                api_err = _fec_interpret_body_api_error(data)
+                if api_err:
+                    ek, msg = api_err
+                    return self._fec_schedule_failure(cid, "committee", msg, ek, cred_src)
+                return self._fec_schedule_failure(
+                    cid, "committee", f"HTTP {response.status_code}", "processing", cred_src
+                )
+            api_err = _fec_interpret_body_api_error(data)
+            if api_err:
+                ek, msg = api_err
+                return self._fec_schedule_failure(cid, "committee", msg, ek, cred_src)
+            raw_hash = hashlib.sha256(
+                json.dumps(data, sort_keys=True).encode()
+            ).hexdigest()
+            items = data.get("results") or []
+            if not isinstance(items, list):
+                items = []
+            results: list[AdapterResult] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                amt = item.get("disbursement_amount") or 0
+                try:
+                    amt_f = float(amt)
+                except (TypeError, ValueError):
+                    amt_f = 0.0
+                raw_dd = item.get("disbursement_date") or ""
+                dd = str(raw_dd).strip()[:10] if raw_dd else ""
+                rec_name = item.get("recipient_name") or "Unknown recipient"
+                memo = item.get("memo_text") or ""
+                desc = item.get("disbursement_description") or ""
+                ar = AdapterResult(
+                    source_name=self.source_name,
+                    source_url=source_url,
+                    entry_type="fec_disbursement",
+                    title=f"FEC Disbursement: ${amt_f:,.0f} to {rec_name}",
+                    body=f"Disbursement on {dd}: {desc} {memo}".strip()[:500],
+                    date_of_event=dd if dd else None,
+                    amount=amt_f,
+                    matched_name=str(rec_name) if rec_name else None,
+                    raw_data=dict(item),
+                    confidence="confirmed",
+                )
+                apply_collision_rule(ar)
+                results.append(ar)
+            detail = f"credential_mode={cred_src} | committee_id={cid} | {len(results)} schedule_b rows"
+            return AdapterResponse(
+                source_name=self.source_name,
+                query=cid,
+                results=results,
+                found=True,
+                result_hash=raw_hash,
+                credential_mode=cred_src,
+                parse_warning=detail,
+            )
+        except Exception as e:
+            return AdapterResponse(
+                source_name=self.source_name,
+                query=cid,
+                results=[],
+                found=False,
+                error=f"{e!s} | credential_mode={cred_src} | schedule_b",
                 error_kind="processing",
                 credential_mode=cred_src,
             )

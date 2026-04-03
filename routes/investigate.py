@@ -571,10 +571,17 @@ async def _ingest_lda_for_unique_donors(
             uid = f.get("filing_uuid")
             if not uid:
                 continue
+            issue_codes: list[str] = []
+            for act in f.get("lobbying_activities") or []:
+                if isinstance(act, dict):
+                    code = act.get("general_issue_code")
+                    if code:
+                        issue_codes.append(str(code).strip().upper())
             rd = {
                 **f,
                 "donor_key": donor_key_norm,
                 "lda_detail_url": f"https://lda.senate.gov/filings/{uid}/",
+                "issue_codes": sorted(set(issue_codes)),
             }
             eh = make_evidence_hash(
                 case_id,
@@ -1651,6 +1658,33 @@ async def _run_investigation_adapters(
             store_cached_response(db, adapter.source_name, q, resp)
         return resp, False
 
+    async def run_optional_fec_schedule_b(committee_id: str) -> None:
+        qkey = f"{committee_id.strip().upper()}|fec_schedule_b"
+        try:
+            fec = FECAdapter()
+            response, from_cache = await get_adapter_response(fec, qkey, "schedule_b")
+        except Exception as e:
+            logger.warning("FEC Schedule B skipped (fetch): %s", e)
+            return
+        try:
+            rk = _adapter_registry_key(fec)
+            _append_source_status(source_statuses, rk, response, from_cache)
+            if from_cache:
+                cache_hits.append("FEC_schedule_b")
+            if response.found and response.results:
+                _ingest_adapter_results(
+                    db,
+                    case_id,
+                    request.investigator_handle,
+                    fec,
+                    response,
+                    qkey,
+                    created_entries,
+                    source_check_tracker,
+                )
+        except Exception as e:
+            logger.warning("FEC Schedule B skipped (ingest): %s", e)
+
     async def run_cached(adapter: BaseAdapter, q: str, qt: str = "person") -> None:
         rk = _adapter_registry_key(adapter)
         try:
@@ -1771,6 +1805,7 @@ async def _run_investigation_adapters(
     if request.fec_committee_id:
         cid = request.fec_committee_id.strip().upper()
         await run_cached(FECAdapter(), cid, "committee")
+        await run_optional_fec_schedule_b(cid)
     elif case.subject_type == "public_official":
         resolved_committee = await resolve_principal_committee_id_for_official(
             request.subject_name,
@@ -1778,6 +1813,7 @@ async def _run_investigation_adapters(
         )
         if resolved_committee:
             await run_cached(FECAdapter(), resolved_committee, "committee")
+            await run_optional_fec_schedule_b(resolved_committee)
         else:
             errors.append(
                 f"credential_mode={fec_credential_source_label()} | committee resolution "
