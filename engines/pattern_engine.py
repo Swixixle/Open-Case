@@ -17,7 +17,14 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from models import DonorFingerprint, PatternAlertRecord, SenatorCommittee, Signal, SubjectProfile
+from models import (
+    DonorFingerprint,
+    EvidenceEntry,
+    PatternAlertRecord,
+    SenatorCommittee,
+    Signal,
+    SubjectProfile,
+)
 
 PATTERN_ENGINE_VERSION = "1.0"
 
@@ -34,6 +41,14 @@ FINGERPRINT_BLOOM_MIN_RELEVANCE = 0.3
 SOFT_BUNDLE_MIN_UNIQUE_DONORS = 3
 SOFT_BUNDLE_MAX_SPAN_DAYS = 7
 SOFT_BUNDLE_MIN_AGGREGATE = 1000.0
+
+FEC_FUNDRAISING_DEADLINES: list[tuple[int, int]] = [
+    (3, 31),
+    (6, 30),
+    (9, 30),
+    (12, 31),
+]
+DEADLINE_WINDOW_DAYS = 5
 
 PATTERN_ALERT_DISCLAIMER = (
     "This alert documents donor appearance across public records. "
@@ -58,6 +73,14 @@ class PatternAlert:
     aggregate_amount: float | None = None
     cluster_size: int | None = None
     amount_diversification: float | None = None
+    days_to_nearest_vote: int | None = None
+    nearest_vote_id: str | None = None
+    nearest_vote_date: str | None = None
+    proximity_to_vote_score: float | None = None
+    deadline_adjacent: bool = False
+    deadline_discount: float = 1.0
+    deadline_note: str | None = None
+    suspicion_score: float | None = None
 
 
 def _utc_now() -> datetime:
@@ -78,6 +101,68 @@ def _donor_display_for_signal(s: Signal, normalized_fallback: str) -> str:
     if d and str(d).strip():
         return str(d).strip()
     return normalized_fallback
+
+
+def proximity_to_vote_score_from_days(days_to_nearest: int | None) -> float:
+    """Maps calendar distance from bundle midpoint to nearest vote (tiers 0.1–1.0)."""
+    if days_to_nearest is None:
+        return 0.1
+    if days_to_nearest <= 7:
+        return 1.0
+    if days_to_nearest <= 14:
+        return 0.75
+    if days_to_nearest <= 30:
+        return 0.5
+    if days_to_nearest <= 60:
+        return 0.25
+    return 0.1
+
+
+def is_deadline_adjacent(window_end_date: date) -> bool:
+    for month, day in FEC_FUNDRAISING_DEADLINES:
+        deadline = date(window_end_date.year, month, day)
+        if abs((window_end_date - deadline).days) <= DEADLINE_WINDOW_DAYS:
+            return True
+    return False
+
+
+def _cluster_midpoint_date(d0: date, d1: date) -> date:
+    mid_ord = (d0.toordinal() + d1.toordinal()) // 2
+    return date.fromordinal(mid_ord)
+
+
+def _vote_evidence_by_case(db: Session) -> dict[uuid.UUID, list[tuple[uuid.UUID, date]]]:
+    rows = db.execute(
+        select(EvidenceEntry.id, EvidenceEntry.case_file_id, EvidenceEntry.date_of_event).where(
+            EvidenceEntry.entry_type == "vote_record",
+            EvidenceEntry.date_of_event.isnot(None),
+        )
+    ).all()
+    m: dict[uuid.UUID, list[tuple[uuid.UUID, date]]] = {}
+    for eid, cid, d in rows:
+        if cid is None or d is None:
+            continue
+        m.setdefault(cid, []).append((eid, d))
+    return m
+
+
+def _nearest_vote_for_cases(
+    case_ids: set[uuid.UUID],
+    midpoint: date,
+    votes_by_case: dict[uuid.UUID, list[tuple[uuid.UUID, date]]],
+) -> tuple[int | None, str | None, str | None, float]:
+    best_days: int | None = None
+    best_id: str | None = None
+    best_date: str | None = None
+    for cid in case_ids:
+        for vid, vd in votes_by_case.get(cid, []):
+            dist = abs((midpoint - vd).days)
+            if best_days is None or dist < best_days:
+                best_days = dist
+                best_id = str(vid)
+                best_date = vd.isoformat()
+    prof = proximity_to_vote_score_from_days(best_days)
+    return best_days, best_id, best_date, prof
 
 
 def _donation_date_for_signal(s: Signal) -> date | None:
@@ -162,6 +247,7 @@ def _load_soft_bundle_rows(db: Session) -> list[_SoftBundleRow]:
 
 
 def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    votes_by_case = _vote_evidence_by_case(db)
     by_committee: dict[str, tuple[str, list[_SoftBundleRow]]] = {}
     for row in _load_soft_bundle_rows(db):
         disp = row.committee_display
@@ -227,6 +313,20 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
         if len(donor_labels) > 5:
             preview = f"{preview}, +{len(donor_labels) - 5} more"
         span_days = (d1 - d0).days
+        case_uuids = {e.case_file_id for e in window}
+        midpoint = _cluster_midpoint_date(d0, d1)
+        d_days, v_id, v_date, prof = _nearest_vote_for_cases(case_uuids, midpoint, votes_by_case)
+        if is_deadline_adjacent(d1):
+            dl_adj = True
+            dl_discount = 0.6
+            dl_note = "Bundle window overlaps FEC quarterly deadline — reduced weight"
+        else:
+            dl_adj = False
+            dl_discount = 1.0
+            dl_note = None
+        div_f = float(div) if div is not None else 0.0
+        size_factor = min(int(n_donors) / 10.0, 1.0)
+        suspicion = div_f * prof * dl_discount * size_factor
         alerts.append(
             PatternAlert(
                 rule_id=RULE_SOFT_BUNDLE,
@@ -243,6 +343,14 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 aggregate_amount=float(total),
                 cluster_size=int(n_donors),
                 amount_diversification=div,
+                days_to_nearest_vote=d_days,
+                nearest_vote_id=v_id,
+                nearest_vote_date=v_date,
+                proximity_to_vote_score=prof,
+                deadline_adjacent=dl_adj,
+                deadline_discount=dl_discount,
+                deadline_note=dl_note,
+                suspicion_score=suspicion,
             )
         )
     return alerts
@@ -452,6 +560,14 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         "aggregate_amount": a.aggregate_amount,
         "cluster_size": a.cluster_size,
         "amount_diversification": a.amount_diversification,
+        "days_to_nearest_vote": a.days_to_nearest_vote,
+        "nearest_vote_id": a.nearest_vote_id,
+        "nearest_vote_date": a.nearest_vote_date,
+        "proximity_to_vote_score": a.proximity_to_vote_score,
+        "deadline_adjacent": a.deadline_adjacent,
+        "deadline_discount": a.deadline_discount,
+        "deadline_note": a.deadline_note,
+        "suspicion_score": a.suspicion_score,
     }
 
 

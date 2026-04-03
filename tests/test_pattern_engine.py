@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import date
 from typing import Any
 
 from sqlalchemy import select
@@ -18,12 +19,16 @@ from engines.pattern_engine import (
     RULE_FINGERPRINT_BLOOM,
     RULE_SOFT_BUNDLE,
     SOFT_BUNDLE_MAX_SPAN_DAYS,
+    is_deadline_adjacent,
+    pattern_alert_to_payload,
+    proximity_to_vote_score_from_days,
     run_pattern_engine,
 )
 from models import (
     CaseContributor,
     CaseFile,
     DonorFingerprint,
+    EvidenceEntry,
     Investigator,
     SenatorCommittee,
     Signal,
@@ -136,6 +141,22 @@ def _signal(
     db.add(s)
     db.flush()
     return s
+
+
+def _vote_record(db, case_id: uuid.UUID, vote_day: date) -> EvidenceEntry:
+    ev = EvidenceEntry(
+        case_file_id=case_id,
+        entry_type="vote_record",
+        title="Vote: Yea on S. 1 (119th Congress)",
+        body="Test roll call",
+        source_url="https://www.senate.gov/legislative/LIS/roll_call_votes/test.xml",
+        source_name="congress_votes",
+        date_of_event=vote_day,
+        entered_by="pat_eng_tester",
+        confidence="confirmed",
+    )
+    db.add(ev)
+    return ev
 
 
 def _fingerprint(
@@ -540,6 +561,137 @@ def test_soft_bundle_fires_when_only_receipt_date_in_breakdown(test_engine) -> N
     db.close()
     sb = [a for a in alerts if a.rule_id == RULE_SOFT_BUNDLE]
     assert len(sb) == 1
+
+
+def test_deadline_discount_applied(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-dl-{uuid.uuid4().hex[:8]}", "Senator YearEnd")
+    db.flush()
+    committee = "Friends of YearEnd"
+    specs = [
+        ("y1", "Y1", "2026-12-26", 400.0),
+        ("y2", "Y2", "2026-12-27", 400.0),
+        ("y3", "Y3", "2026-12-28", 400.0),
+        ("y4", "Y4", "2026-12-31", 400.0),
+    ]
+    for dk, ddisplay, fd, amt in specs:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator YearEnd",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator YearEnd", "S92000001")
+    db.commit()
+    sb = [a for a in run_pattern_engine(db) if a.rule_id == RULE_SOFT_BUNDLE]
+    db.close()
+    assert len(sb) == 1
+    assert sb[0].deadline_adjacent is True
+    assert sb[0].deadline_discount == 0.6
+    assert sb[0].deadline_note == "Bundle window overlaps FEC quarterly deadline — reduced weight"
+    pl = pattern_alert_to_payload(sb[0])
+    assert pl["deadline_adjacent"] is True
+    assert pl["deadline_discount"] == 0.6
+
+
+def test_no_deadline_discount_february(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-feb-{uuid.uuid4().hex[:8]}", "Senator CottonFeb")
+    db.flush()
+    committee = "Cotton Committee"
+    specs = [
+        ("f1", "F1", "2026-02-08", 400.0),
+        ("f2", "F2", "2026-02-09", 400.0),
+        ("f3", "F3", "2026-02-10", 400.0),
+        ("f4", "F4", "2026-02-11", 400.0),
+    ]
+    for dk, ddisplay, fd, amt in specs:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator CottonFeb",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator CottonFeb", "S92000002")
+    db.commit()
+    sb = [a for a in run_pattern_engine(db) if a.rule_id == RULE_SOFT_BUNDLE]
+    db.close()
+    assert len(sb) == 1
+    assert sb[0].deadline_adjacent is False
+    assert sb[0].deadline_discount == 1.0
+    assert sb[0].deadline_note is None
+
+
+def test_proximity_to_vote_score_tiers() -> None:
+    assert proximity_to_vote_score_from_days(None) == 0.1
+    assert proximity_to_vote_score_from_days(0) == 1.0
+    assert proximity_to_vote_score_from_days(7) == 1.0
+    assert proximity_to_vote_score_from_days(8) == 0.75
+    assert proximity_to_vote_score_from_days(14) == 0.75
+    assert proximity_to_vote_score_from_days(15) == 0.5
+    assert proximity_to_vote_score_from_days(30) == 0.5
+    assert proximity_to_vote_score_from_days(31) == 0.25
+    assert proximity_to_vote_score_from_days(60) == 0.25
+    assert proximity_to_vote_score_from_days(61) == 0.1
+    assert is_deadline_adjacent(date(2026, 12, 31)) is True
+    assert is_deadline_adjacent(date(2026, 2, 11)) is False
+
+
+def test_suspicion_score_computed(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-sus-{uuid.uuid4().hex[:8]}", "Senator Suspect")
+    db.flush()
+    committee = "Friends of Score"
+    # Cluster midpoint for 2026-02-08 .. 2026-02-11 is 2026-02-09 (ordinal average).
+    _vote_record(db, c.id, date(2026, 2, 9))
+    specs = [
+        ("s1", "S1", "2026-02-08", 400.0),
+        ("s2", "S2", "2026-02-09", 400.0),
+        ("s3", "S3", "2026-02-10", 400.0),
+        ("s4", "S4", "2026-02-11", 400.0),
+    ]
+    for dk, ddisplay, fd, amt in specs:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator Suspect",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Suspect", "S92000003")
+    db.commit()
+    sb = [a for a in run_pattern_engine(db) if a.rule_id == RULE_SOFT_BUNDLE]
+    db.close()
+    assert len(sb) == 1
+    a = sb[0]
+    assert a.proximity_to_vote_score == 1.0
+    assert a.deadline_discount == 1.0
+    assert a.days_to_nearest_vote == 0
+    assert a.amount_diversification is not None
+    div = float(a.amount_diversification)
+    expected = div * 1.0 * 1.0 * min(4 / 10.0, 1.0)
+    assert abs(float(a.suspicion_score or 0.0) - expected) < 1e-9
+    pl = pattern_alert_to_payload(a)
+    assert abs(float(pl["suspicion_score"] or 0.0) - expected) < 1e-9
+    assert pl["proximity_to_vote_score"] == 1.0
+    assert pl["deadline_discount"] == 1.0
 
 
 def test_refund_rows_are_not_ingested_from_fec_schedule_a() -> None:
