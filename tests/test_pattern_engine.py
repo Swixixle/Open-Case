@@ -1190,7 +1190,7 @@ def test_geo_mismatch_fires(test_engine) -> None:
     assert any(case_id_str in a.matched_case_ids for a in geo)
     hit = next(a for a in geo if case_id_str in a.matched_case_ids)
     assert hit.senator_state == "AK"
-    assert hit.out_of_state_ratio >= 0.6
+    assert hit.out_of_state_ratio >= 0.75
     assert len(hit.top_donor_states or []) >= 1
 
 
@@ -1243,6 +1243,8 @@ def test_geo_mismatch_dc_pac_excluded(test_engine) -> None:
             ("TEXAS OIL PAC", "TX"),
             ("FLORIDA GROWERS PAC", "FL"),
             ("NEVADA MINING PAC", "NV"),
+            ("CALIFORNIA GRID COUNCIL PAC", "CA"),
+            ("HEARTLAND POLICY INSTITUTE PAC", "WA"),
         ]
     ):
         dk = f"dc{i}"
@@ -1268,7 +1270,7 @@ def test_geo_mismatch_dc_pac_excluded(test_engine) -> None:
     case_id_str = str(c.id)
     geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
     db.close()
-    assert any(a.out_of_state_ratio >= 0.6 for a in geo)
+    assert any(a.out_of_state_ratio >= 0.75 for a in geo)
 
 
 def test_disbursement_loop_fires(test_engine) -> None:
@@ -1387,7 +1389,7 @@ def test_revolving_door_fires(test_engine) -> None:
             raw_data_json=json.dumps(
                 {
                     "filing_uuid": str(uuid.uuid4()),
-                    "registrant_name": "ACME LOBBY GROUP",
+                    "registrant_name": "ACME LOBBY GROUP FEDERAL AFFAIRS",
                     "client_name": "MegaCorp",
                     "filing_year": 2025,
                     "issue_codes": ["TAX"],
@@ -1400,14 +1402,14 @@ def test_revolving_door_fires(test_engine) -> None:
     fe = _fec_receipt_entry(
         db,
         c.id,
-        contributor_name="ACME LOBBY GROUP PAC",
+        contributor_name="ACME LOBBY GROUP",
         amount=500.0,
         receipt_date="2026-06-01",
     )
     s = _signal_with_fec(
         db,
         c.id,
-        "ACME LOBBY GROUP PAC",
+        "ACME LOBBY GROUP",
         "Senator Revolving",
         "2026-06-01",
         0.5,
@@ -1486,6 +1488,64 @@ def test_revolving_door_vote_relevant_true(test_engine) -> None:
     rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
     db.close()
     assert rev and rev[0].revolving_door_vote_relevant is True
+
+
+def test_revolving_door_filing_before_2024_skipped(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"rev-old-{uuid.uuid4().hex[:8]}", "Senator OldLda")
+    db.flush()
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="lobbying_filing",
+            title="LDA filing",
+            body="test",
+            source_url="https://lda.senate.gov/",
+            source_name="Senate LDA",
+            adapter_name="Senate LDA",
+            entered_by="pat_eng_tester",
+            confidence="confirmed",
+            raw_data_json=json.dumps(
+                {
+                    "filing_uuid": str(uuid.uuid4()),
+                    "registrant_name": "OLD YEAR LOBBYISTS NATIONAL HEADQUARTERS",
+                    "client_name": "ClientCo",
+                    "filing_year": 2023,
+                    "issue_codes": ["TAX"],
+                    "lobbyist_names": [],
+                },
+                separators=(",", ":"),
+            ),
+        )
+    )
+    fe = _fec_receipt_entry(
+        db,
+        c.id,
+        contributor_name="OLD YEAR LOBBYISTS",
+        amount=500.0,
+        receipt_date="2026-06-01",
+    )
+    s = _signal_with_fec(
+        db,
+        c.id,
+        "OLD YEAR LOBBYISTS",
+        "Senator OldLda",
+        "2026-06-01",
+        0.5,
+        fe,
+        total_amount=500.0,
+        committee_label="Friends Old",
+        donor_key="oldy",
+        has_lda_filing=True,
+    )
+    _fingerprint(db, "oldy", c.id, s.id, "Senator OldLda", "C001095")
+    db.commit()
+    case_id_str = str(c.id)
+    rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
+    db.close()
+    assert not rev
 
 
 def test_revolving_door_no_match(test_engine) -> None:

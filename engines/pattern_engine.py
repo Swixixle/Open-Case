@@ -29,7 +29,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "1.1"
+PATTERN_ENGINE_VERSION = "1.2"
 
 # Rule IDs — increment when logic changes, never reuse
 RULE_COMMITTEE_SWEEP = "COMMITTEE_SWEEP_V1"
@@ -53,15 +53,20 @@ SECTOR_CONVERGENCE_MIN_DONORS = 3
 SECTOR_CONVERGENCE_WINDOW_DAYS = 14
 SECTOR_CONVERGENCE_MIN_AGGREGATE = 5000.0
 
-GEO_MISMATCH_MIN_DONORS = 3
+GEO_MISMATCH_MIN_DONORS = 5
 GEO_MISMATCH_WINDOW_DAYS = 14
-GEO_MISMATCH_OUT_OF_STATE_THRESHOLD = 0.6
+GEO_MISMATCH_OUT_OF_STATE_THRESHOLD = 0.75
 GEO_MISMATCH_MIN_AGGREGATE = 1000.0
+
+# DC + org-style name → unknown (not out-of-state); see _geo_bucket
+_GEO_DC_UNKNOWN_NAME_MARKERS = ("PAC", "COMMITTEE", "ASSOCIATION", "COUNCIL", "INSTITUTE")
 
 DISBURSEMENT_LOOP_WINDOW_DAYS = 30
 DISBURSEMENT_LOOP_MIN_AMOUNT = 5000.0
 
 REVOLVING_DOOR_MIN_MATCHED_DONORS = 1
+REVOLVING_DOOR_MIN_LDA_FILING_YEAR = 2024
+REVOLVING_DOOR_MIN_NAME_SUBSTRING_LEN = 6
 
 SECTOR_KEYWORDS: dict[str, list[str]] = {
     "pharma": [
@@ -375,6 +380,13 @@ def _normalize_match_token(s: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _lda_substring_hit(needle: str, haystack: str) -> bool:
+    """Contiguous substring only; short needles avoid keyword collisions."""
+    if len(needle) < REVOLVING_DOOR_MIN_NAME_SUBSTRING_LEN:
+        return False
+    return bool(needle and haystack and needle in haystack)
+
+
 def match_donor_to_lda(
     donor_normalized_name: str,
     employer: str,
@@ -392,6 +404,13 @@ def match_donor_to_lda(
             continue
         if not isinstance(raw, dict):
             continue
+        fy: int | None = None
+        try:
+            fy = int(raw.get("filing_year")) if raw.get("filing_year") is not None else None
+        except (TypeError, ValueError):
+            fy = None
+        if fy is None or fy < REVOLVING_DOOR_MIN_LDA_FILING_YEAR:
+            continue
         rn = _normalize_match_token(str(raw.get("registrant_name") or ""))
         cn = _normalize_match_token(str(raw.get("client_name") or ""))
         lobbyists = raw.get("lobbyist_names") or []
@@ -399,13 +418,13 @@ def match_donor_to_lda(
             lobbyists = []
         lnorm = [_normalize_match_token(str(x)) for x in lobbyists if x]
         hit = False
-        if dn and (dn in rn or rn in dn or dn in cn or cn in dn):
+        if _lda_substring_hit(dn, rn) or _lda_substring_hit(dn, cn):
             hit = True
-        if not hit and em and (em in rn or em in cn):
+        if not hit and (_lda_substring_hit(em, rn) or _lda_substring_hit(em, cn)):
             hit = True
         if not hit and dn:
             for ln in lnorm:
-                if ln and (dn in ln or ln in dn):
+                if _lda_substring_hit(dn, ln):
                     hit = True
                     break
         if not hit:
@@ -414,11 +433,6 @@ def match_donor_to_lda(
         if not isinstance(codes_raw, list):
             codes_raw = []
         codes = [str(c).strip().upper() for c in codes_raw if c]
-        fy: int | None = None
-        try:
-            fy = int(raw.get("filing_year")) if raw.get("filing_year") is not None else None
-        except (TypeError, ValueError):
-            fy = None
         matches.append(
             {
                 "registrant_name": str(raw.get("registrant_name") or ""),
@@ -469,7 +483,7 @@ def _geo_bucket(
     if not st:
         return "unknown"
     up = donor_display.upper()
-    if st == "DC" and any(x in up for x in ("PAC", "COMMITTEE", "ASSOCIATION")):
+    if st == "DC" and any(x in up for x in _GEO_DC_UNKNOWN_NAME_MARKERS):
         return "unknown"
     hs = home_state.strip().upper()
     if st == hs:
