@@ -9,6 +9,7 @@ They assert nothing about intent or causation.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ from models import (
     Signal,
     SubjectProfile,
 )
+
+logger = logging.getLogger(__name__)
 
 PATTERN_ENGINE_VERSION = "1.2"
 
@@ -392,6 +395,12 @@ def match_donor_to_lda(
     employer: str,
     lda_entries: list[EvidenceEntry],
 ) -> list[dict[str, Any]]:
+    # TEMP: confirm Render runs this code path; remove after REVOLVING_DOOR diagnosis
+    logger.warning(
+        "[match_donor_to_lda] lda_entry_count=%s first_donor_name=%r",
+        len(lda_entries),
+        (donor_normalized_name or "")[:240],
+    )
     dn = _normalize_match_token(donor_normalized_name)
     em = _normalize_match_token(employer)
     matches: list[dict[str, Any]] = []
