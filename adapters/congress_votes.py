@@ -298,7 +298,12 @@ def _xml_to_vote_dict(
 
     display_name = _member_display_name(member_el, profile)
 
-    return {
+    vote_result_plain = (root.findtext("vote_result") or "").strip()
+    vote_result_text = (root.findtext("vote_result_text") or "").strip()
+    result_elem = (root.findtext("result") or "").strip()
+    outcome = vote_result_text or vote_result_plain or result_elem
+
+    vote_dict: dict[str, Any] = {
         "bioguide_id": bioguide_id,
         "member_name": display_name,
         "date": iso_date or raw_date,
@@ -321,6 +326,13 @@ def _xml_to_vote_dict(
         "subject_is_sponsor": False,
         "subject_is_cosponsor": False,
     }
+    if outcome:
+        vote_dict["result"] = outcome
+    if vote_result_plain:
+        vote_dict["vote_result"] = vote_result_plain
+    if vote_result_text:
+        vote_dict["vote_result_text"] = vote_result_text
+    return vote_dict
 
 
 def _lis_document_to_api_bill(
@@ -531,11 +543,15 @@ class CongressVotesAdapter(BaseAdapter):
                         misses += 1
                         continue
 
-                    collected.append(
-                        _xml_to_vote_dict(
-                            root, bioguide_id, roll, pos, url, mem_el, profile
-                        )
+                    vd = _xml_to_vote_dict(
+                        root, bioguide_id, roll, pos, url, mem_el, profile
                     )
+                    collected.append(vd)
+                    if len(collected) == 1:
+                        logger.debug(
+                            "Senate LIS sample vote raw_data keys: %s",
+                            sorted(vd.keys()),
+                        )
                     misses = 0
 
                 if len(collected) >= MAX_VOTE_RESULTS:

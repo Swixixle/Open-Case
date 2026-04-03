@@ -190,7 +190,10 @@ def _vote_details_from_evidence_id(db: Session, evidence_id: str | None) -> tupl
         return None, None, None
     desc = _nearest_vote_description_from_raw(raw)
     result = _nonempty_str(
-        raw.get("result") or raw.get("vote_result") or raw.get("voteResult")
+        raw.get("result")
+        or raw.get("vote_result")
+        or raw.get("voteResult")
+        or raw.get("vote_result_text")
     )
     question = _nonempty_str(raw.get("question")) or _nonempty_str(
         raw.get("voteQuestion") or raw.get("vote_question")

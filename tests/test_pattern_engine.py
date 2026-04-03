@@ -800,6 +800,51 @@ def test_nearest_vote_description_extracted(test_engine) -> None:
     assert sb2[0].nearest_vote_question is None
 
 
+def test_nearest_vote_result_accepts_vote_result_text_key(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb-vrtx-{uuid.uuid4().hex[:8]}", "Senator VoteResultText")
+    db.flush()
+    _vote_record(
+        db,
+        c.id,
+        date(2026, 5, 9),
+        raw_data={
+            "congress": "119",
+            "vote_result_text": "Motion to Proceed Rejected",
+            "bill": {"number": "S.J.Res. 95", "title": "Corporate AMT disapproval"},
+        },
+    )
+    committee = "Friends of Vrtx"
+    for dk, ddisplay, fd, amt in [
+        ("t1", "T1", "2026-05-08", 400.0),
+        ("t2", "T2", "2026-05-09", 400.0),
+        ("t3", "T3", "2026-05-10", 400.0),
+        ("t4", "T4", "2026-05-11", 400.0),
+    ]:
+        s = _signal(
+            db,
+            c.id,
+            ddisplay,
+            "Senator VoteResultText",
+            fd,
+            0.5,
+            total_amount=amt,
+            committee_label=committee,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator VoteResultText", "S92000008")
+    db.commit()
+    sb = [
+        a
+        for a in run_pattern_engine(db)
+        if a.rule_id == RULE_SOFT_BUNDLE and str(c.id) in a.matched_case_ids
+    ]
+    db.close()
+    assert len(sb) == 1
+    assert sb[0].nearest_vote_result == "Motion to Proceed Rejected"
+
+
 def test_nearest_vote_result_accepts_voteResult_key(test_engine) -> None:
     Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     db = Session()
