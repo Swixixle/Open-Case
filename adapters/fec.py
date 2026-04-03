@@ -483,6 +483,20 @@ class FECAdapter(BaseAdapter):
                 credential_mode=cred_src,
             )
 
+    def _schedule_b_soft_empty(self, cred_src: str, cid: str, note: str) -> AdapterResponse:
+        """Non-blocking empty result: never use error Kind — investigate treats Schedule B as optional."""
+        return AdapterResponse(
+            source_name=self.source_name,
+            query=cid,
+            results=[],
+            found=False,
+            error=None,
+            error_kind=None,
+            credential_mode=cred_src,
+            empty_success=True,
+            parse_warning=note,
+        )
+
     async def search_schedule_b(self, committee_id: str) -> AdapterResponse:
         """FEC Schedule B — disbursements from the committee (upstream tracing)."""
         cred_src = _fec_key_source_label()
@@ -492,12 +506,11 @@ class FECAdapter(BaseAdapter):
             api_key = "DEMO_KEY"
         cid = (committee_id or "").strip().upper()
         if not cid:
-            return self._fec_schedule_failure(
-                committee_id,
-                "committee",
-                "empty committee_id",
-                "processing",
+            logger.warning("FEC Schedule B skipped: empty committee_id")
+            return self._schedule_b_soft_empty(
                 cred_src,
+                cid,
+                "Schedule B skipped: empty committee_id",
             )
         from datetime import date as _date
 
@@ -515,40 +528,43 @@ class FECAdapter(BaseAdapter):
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 response = await client.get(api_path, params=params)
-            if response.status_code == 429:
-                return self._fec_schedule_failure(
-                    cid, "committee", "FEC API rate limit exceeded", "rate_limited", cred_src
-                )
-            if response.status_code == 403:
-                return self._fec_schedule_failure(
+            if response.status_code != 200:
+                logger.warning(
+                    "FEC Schedule B non-200 (committee_id=%s): HTTP %s",
                     cid,
-                    "committee",
-                    "FEC API authentication failed (HTTP 403)",
-                    "credential",
+                    response.status_code,
+                )
+                return self._schedule_b_soft_empty(
                     cred_src,
+                    cid,
+                    f"Schedule B skipped: HTTP {response.status_code} for committee_id={cid}",
                 )
             try:
                 data = response.json()
             except Exception as e:
-                return self._fec_schedule_failure(
+                logger.warning(
+                    "FEC Schedule B invalid JSON (committee_id=%s): %s",
                     cid,
-                    "committee",
-                    f"invalid JSON: {e!s}",
-                    "processing",
-                    cred_src,
+                    e,
                 )
-            if response.status_code >= 400:
-                api_err = _fec_interpret_body_api_error(data)
-                if api_err:
-                    ek, msg = api_err
-                    return self._fec_schedule_failure(cid, "committee", msg, ek, cred_src)
-                return self._fec_schedule_failure(
-                    cid, "committee", f"HTTP {response.status_code}", "processing", cred_src
+                return self._schedule_b_soft_empty(
+                    cred_src,
+                    cid,
+                    f"Schedule B skipped: invalid JSON ({e!s})",
                 )
             api_err = _fec_interpret_body_api_error(data)
             if api_err:
-                ek, msg = api_err
-                return self._fec_schedule_failure(cid, "committee", msg, ek, cred_src)
+                _, msg = api_err
+                logger.warning(
+                    "FEC Schedule B API error body (committee_id=%s): %s",
+                    cid,
+                    msg,
+                )
+                return self._schedule_b_soft_empty(
+                    cred_src,
+                    cid,
+                    f"Schedule B skipped: {msg}",
+                )
             raw_hash = hashlib.sha256(
                 json.dumps(data, sort_keys=True).encode()
             ).hexdigest()
@@ -594,12 +610,13 @@ class FECAdapter(BaseAdapter):
                 parse_warning=detail,
             )
         except Exception as e:
-            return AdapterResponse(
-                source_name=self.source_name,
-                query=cid,
-                results=[],
-                found=False,
-                error=f"{e!s} | credential_mode={cred_src} | schedule_b",
-                error_kind="processing",
-                credential_mode=cred_src,
+            logger.warning(
+                "FEC Schedule B request failed (committee_id=%s): %s",
+                cid,
+                e,
+            )
+            return self._schedule_b_soft_empty(
+                cred_src,
+                cid,
+                f"Schedule B skipped: {e!s}",
             )

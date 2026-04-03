@@ -423,7 +423,7 @@ def _append_source_status(
             )
             return
         dc = None
-        if registry_key in ("fec", "congress"):
+        if registry_key in ("fec", "congress", "fec_schedule_b"):
             dc = response.parse_warning or (
                 f"{len(response.results)} row(s) (cached response)"
             )
@@ -470,7 +470,7 @@ def _append_source_status(
     else:
         st = "clean"
     detail_out = response.error
-    if detail_out is None and registry_key in ("fec", "congress"):
+    if detail_out is None and registry_key in ("fec", "congress", "fec_schedule_b"):
         detail_out = response.parse_warning or (
             f"{len(response.results)} result row(s) returned"
         )
@@ -1667,8 +1667,9 @@ async def _run_investigation_adapters(
             logger.warning("FEC Schedule B skipped (fetch): %s", e)
             return
         try:
-            rk = _adapter_registry_key(fec)
-            _append_source_status(source_statuses, rk, response, from_cache)
+            # Separate from core "fec" status so Schedule B never overwrites Schedule A
+            # in _failed_required_core_adapters (dict last-wins per adapter key).
+            _append_source_status(source_statuses, "fec_schedule_b", response, from_cache)
             if from_cache:
                 cache_hits.append("FEC_schedule_b")
             if response.found and response.results:

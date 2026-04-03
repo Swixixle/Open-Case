@@ -40,3 +40,27 @@ def test_schedule_b_fetched() -> None:
     raw = out.results[0].raw_data or {}
     assert raw.get("recipient_committee_id") == "C00888888"
     assert float(raw.get("disbursement_amount") or 0) == 5400.0
+
+
+def test_schedule_b_422_returns_soft_empty() -> None:
+    mock_resp = MagicMock()
+    mock_resp.status_code = 422
+    mock_resp.json.return_value = {"error": {"message": "invalid parameters"}}
+
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("adapters.fec.httpx.AsyncClient", return_value=mock_client),
+        patch("adapters.fec.CredentialRegistry.get_credential", return_value="DEMO_KEY"),
+    ):
+        out = asyncio.run(FECAdapter().search_schedule_b("C00777777"))
+
+    assert out.found is False
+    assert out.results == []
+    assert out.error is None
+    assert out.error_kind is None
+    assert out.empty_success is True
+    assert "422" in (out.parse_warning or "")
