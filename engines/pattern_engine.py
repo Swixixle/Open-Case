@@ -9,6 +9,7 @@ They assert nothing about intent or causation.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from collections import Counter, defaultdict
@@ -19,10 +20,11 @@ from typing import Any
 from signals.dedup import _parse_evidence_id_list
 
 from adapters.fec import classify_donor_type
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from models import (
+    CaseFile,
     DonorFingerprint,
     EvidenceEntry,
     PatternAlertRecord,
@@ -31,7 +33,9 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "1.6"
+PATTERN_ENGINE_VERSION = "2.0"
+
+logger = logging.getLogger(__name__)
 
 # Rule IDs — increment when logic changes, never reuse
 RULE_COMMITTEE_SWEEP = "COMMITTEE_SWEEP_V1"
@@ -41,6 +45,11 @@ RULE_SOFT_BUNDLE_V2 = "SOFT_BUNDLE_V2"
 RULE_SECTOR_CONVERGENCE = "SECTOR_CONVERGENCE_V1"
 RULE_GEO_MISMATCH = "GEO_MISMATCH_V1"
 RULE_DISBURSEMENT_LOOP = "DISBURSEMENT_LOOP_V1"
+RULE_JOINT_FUNDRAISING = "JOINT_FUNDRAISING_V1"
+RULE_BASELINE_ANOMALY = "BASELINE_ANOMALY_V1"
+RULE_ALIGNMENT_ANOMALY = "ALIGNMENT_ANOMALY_V1"
+RULE_AMENDMENT_TELL = "AMENDMENT_TELL_V1"
+RULE_HEARING_TESTIMONY = "HEARING_TESTIMONY_V1"
 RULE_REVOLVING_DOOR = "REVOLVING_DOOR_V1"
 
 COMMITTEE_SWEEP_MIN_OFFICIALS = 3
@@ -109,6 +118,29 @@ _GEO_ORG_DONOR_MARKERS: frozenset[str] = frozenset(
 
 DISBURSEMENT_LOOP_WINDOW_DAYS = 30
 DISBURSEMENT_LOOP_MIN_AMOUNT = 5000.0
+
+AMENDMENT_TELL_WINDOW_DAYS = 90
+AMENDMENT_TELL_MIN_SIGNAL_WEIGHT = 0.3
+_AMENDMENT_WEAKENING_KEYWORDS = (
+    "exempt",
+    "delay",
+    "reduce",
+    "limit",
+    "repeal",
+    "strike",
+    "waive",
+)
+
+BASELINE_ANOMALY_MIN_MULTIPLIER = 4.0
+BASELINE_ANOMALY_MIN_AGGREGATE = 5000.0
+BASELINE_ANOMALY_MIN_DATAPOINTS = 20
+
+ALIGNMENT_ANOMALY_MIN_VOTES = 5
+ALIGNMENT_ANOMALY_DEVIATION_THRESHOLD = 1.5
+ALIGNMENT_LDA_ACTIVE_DAYS = 90
+CHAMBER_BASELINE_MIN_SENATORS = 3
+
+HEARING_TESTIMONY_WINDOW_DAYS = 180
 
 REVOLVING_DOOR_MIN_MATCHED_DONORS = 1
 REVOLVING_DOOR_MIN_LDA_FILING_YEAR = 2024
@@ -294,12 +326,19 @@ ISSUE_CODE_TO_SECTOR: dict[str, str] = {
     "BNK": "finance",
     "HCR": "pharma",
     "PHR": "pharma",
+    "FDA": "pharma",
     "DEF": "defense",
+    "ARM": "defense",
     "ENV": "energy",
     "ENE": "energy",
+    "OIL": "energy",
     "AGR": "agriculture",
+    "FOO": "agriculture",
     "HOU": "real_estate",
+    "MOR": "real_estate",
     "TEC": "tech",
+    "INT": "tech",
+    "DAT": "tech",
 }
 
 # Longer role phrases first so "assistant secretary of defense" wins over "secretary of defense".
@@ -397,6 +436,7 @@ class PatternAlert:
     lda_filing_year: int | None = None
     lda_match_count: int | None = None
     diagnostics_json: str | None = None
+    payload_extra: dict[str, Any] | None = None
 
 
 def _utc_now() -> datetime:
@@ -1370,10 +1410,54 @@ def _vote_dates_for_case(db: Session, case_id: uuid.UUID) -> list[date]:
     return [d for (d,) in rows if d is not None]
 
 
+def _schedule_b_recipient_committee_id(raw: dict[str, Any]) -> str | None:
+    r = raw.get("recipient_committee_id") or raw.get("recipient_committee_fec_id")
+    if r:
+        s = str(r).strip().upper()
+        return s if s else None
+    rc = raw.get("recipient_committee")
+    if isinstance(rc, dict):
+        cid = rc.get("committee_id") or rc.get("fec_id")
+        if cid:
+            s = str(cid).strip().upper()
+            return s if s else None
+    return None
+
+
+def _schedule_b_spender_committee_id(raw: dict[str, Any]) -> str | None:
+    comm = raw.get("committee_id")
+    if isinstance(comm, dict):
+        s = str(comm.get("committee_id") or "").strip().upper()
+        return s if s else None
+    if raw.get("committee_id"):
+        s = str(raw.get("committee_id")).strip().upper()
+        return s if s else None
+    return None
+
+
 def _detect_disbursement_loop(db: Session, fired_at: datetime) -> list[PatternAlert]:
     disbursements = db.scalars(
         select(EvidenceEntry).where(EvidenceEntry.entry_type == "fec_disbursement")
     ).all()
+    sa_by_case: dict[uuid.UUID, int] = defaultdict(int)
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.entry_type == "financial_connection",
+            or_(EvidenceEntry.source_name == "FEC", EvidenceEntry.adapter_name == "FEC"),
+        )
+    ).all():
+        sa_by_case[ent.case_file_id] += 1
+    dis_by_case: dict[uuid.UUID, int] = defaultdict(int)
+    for ent in disbursements:
+        dis_by_case[ent.case_file_id] += 1
+    for cid, n in sorted(dis_by_case.items(), key=lambda x: str(x[0])):
+        logger.info(
+            "[DISBURSEMENT_LOOP] case=%s disbursement_entries=%s schedule_a_entries=%s",
+            cid,
+            n,
+            sa_by_case.get(cid, 0),
+        )
+
     alerts: list[PatternAlert] = []
     seen: set[tuple[str, str, str]] = set()
     for ent in disbursements:
@@ -1389,10 +1473,9 @@ def _detect_disbursement_loop(db: Session, fired_at: datetime) -> list[PatternAl
             amt = 0.0
         if amt < DISBURSEMENT_LOOP_MIN_AMOUNT:
             continue
-        rec_id = raw.get("recipient_committee_id") or raw.get("recipient_committee_fec_id")
+        rec_id = _schedule_b_recipient_committee_id(raw)
         if not rec_id:
             continue
-        rec_id = str(rec_id).strip().upper()
         raw_dd = raw.get("disbursement_date") or ""
         dd = str(raw_dd).strip()[:10]
         try:
@@ -1407,11 +1490,7 @@ def _detect_disbursement_loop(db: Session, fired_at: datetime) -> list[PatternAl
             continue
         contrib_ids = _schedule_a_contributor_committee_ids_for_case(db, cid)
         loop_ok = rec_id in contrib_ids
-        comm = raw.get("committee_id")
-        if isinstance(comm, dict):
-            disb_c = str(comm.get("committee_id") or "").strip().upper()
-        else:
-            disb_c = str(comm or raw.get("committee_id") or "").strip().upper()
+        disb_c = _schedule_b_spender_committee_id(raw) or ""
         rec_name = str(raw.get("recipient_name") or rec_id)
         dedupe_k = (str(cid), rec_id, dd)
         if dedupe_k in seen:
@@ -1437,6 +1516,705 @@ def _detect_disbursement_loop(db: Session, fired_at: datetime) -> list[PatternAl
                 suspicion_score=1.0 if loop_ok else 0.5,
             )
         )
+    return alerts
+
+
+def _case_ids_for_bioguide(db: Session, bioguide_id: str) -> list[uuid.UUID]:
+    rows = db.execute(
+        select(SubjectProfile.case_file_id).where(
+            SubjectProfile.bioguide_id == bioguide_id.strip()
+        )
+    ).all()
+    return [r[0] for r in rows if r[0] is not None]
+
+
+def _fec_receipt_date_amount_pairs_for_bioguide(
+    db: Session, bioguide_id: str
+) -> list[tuple[date, float]]:
+    pairs: list[tuple[date, float]] = []
+    for cid in _case_ids_for_bioguide(db, bioguide_id):
+        for ent in db.scalars(
+            select(EvidenceEntry).where(
+                EvidenceEntry.case_file_id == cid,
+                or_(
+                    EvidenceEntry.entry_type == "financial_connection",
+                    EvidenceEntry.entry_type == "fec_historical",
+                    EvidenceEntry.entry_type == "fec_jfc_donor",
+                ),
+            )
+        ).all():
+            if ent.entry_type == "financial_connection":
+                if (ent.source_name or "") != "FEC" and (ent.adapter_name or "") != "FEC":
+                    continue
+            try:
+                raw = json.loads(ent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            raw_d = raw.get("contribution_receipt_date") or ""
+            ds = str(raw_d).strip()[:10]
+            try:
+                d = date.fromisoformat(ds) if ds else None
+            except ValueError:
+                d = None
+            if d is None:
+                continue
+            try:
+                amt = float(raw.get("contribution_receipt_amount") or ent.amount or 0)
+            except (TypeError, ValueError):
+                amt = float(ent.amount or 0)
+            if amt > 0:
+                pairs.append((d, amt))
+    return pairs
+
+
+def _fec_cycles_present_for_bioguide(db: Session, bioguide_id: str) -> list[int]:
+    cycles: set[int] = set()
+    for cid in _case_ids_for_bioguide(db, bioguide_id):
+        for ent in db.scalars(
+            select(EvidenceEntry).where(
+                EvidenceEntry.case_file_id == cid,
+                or_(
+                    EvidenceEntry.entry_type == "fec_historical",
+                    EvidenceEntry.entry_type == "financial_connection",
+                ),
+            )
+        ).all():
+            try:
+                raw = json.loads(ent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            cy = raw.get("fec_cycle") or raw.get("two_year_transaction_period")
+            if cy is not None:
+                try:
+                    cycles.add(int(cy))
+                except (TypeError, ValueError):
+                    pass
+        cy2 = date.today().year
+        cycles.add(cy2 if cy2 % 2 == 0 else cy2 + 1)
+    return sorted(cycles)
+
+
+def _principal_committee_id_for_case(db: Session, case_id: uuid.UUID) -> str | None:
+    counts: dict[str, int] = defaultdict(int)
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            EvidenceEntry.entry_type == "financial_connection",
+        )
+    ).all():
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        comm = raw.get("committee") or {}
+        if isinstance(comm, dict):
+            cidv = str(comm.get("committee_id") or "").strip().upper()
+            if cidv:
+                counts[cidv] += 1
+    if not counts:
+        return None
+    return max(counts, key=counts.get)
+
+
+def _detect_joint_fundraising(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    alerts: list[PatternAlert] = []
+    seen: set[tuple[str, str, str]] = set()
+    for prof in db.scalars(select(SubjectProfile)).all():
+        cid = prof.case_file_id
+        case_row = db.get(CaseFile, cid)
+        subject = (case_row.subject_name if case_row else "Official").strip() or "Official"
+        principal = _principal_committee_id_for_case(db, cid)
+        if not principal:
+            continue
+        jfc_donors: dict[str, list[tuple[str, float]]] = defaultdict(list)
+        for ent in db.scalars(
+            select(EvidenceEntry).where(
+                EvidenceEntry.case_file_id == cid,
+                EvidenceEntry.entry_type == "fec_jfc_donor",
+            )
+        ).all():
+            try:
+                raw = json.loads(ent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            jfc_id = str(raw.get("jfc_committee_id") or "").strip().upper()
+            name = str(raw.get("contributor_name") or raw.get("matched_name") or "")
+            try:
+                amt = float(raw.get("contribution_receipt_amount") or ent.amount or 0)
+            except (TypeError, ValueError):
+                amt = 0.0
+            if jfc_id and name:
+                jfc_donors[jfc_id].append((name, amt))
+
+        for ent in db.scalars(
+            select(EvidenceEntry).where(
+                EvidenceEntry.case_file_id == cid,
+                EvidenceEntry.entry_type == "fec_disbursement",
+            )
+        ).all():
+            try:
+                raw = json.loads(ent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            rec = _schedule_b_recipient_committee_id(raw)
+            sp = _schedule_b_spender_committee_id(raw)
+            if not rec or not sp or rec != principal or sp == principal:
+                continue
+            try:
+                amt = float(raw.get("disbursement_amount") or 0)
+            except (TypeError, ValueError):
+                amt = 0.0
+            if amt < DISBURSEMENT_LOOP_MIN_AMOUNT:
+                continue
+            raw_dd = raw.get("disbursement_date") or ""
+            dd = str(raw_dd).strip()[:10]
+            dedupe_k = (str(cid), sp, dd)
+            if dedupe_k in seen:
+                continue
+            seen.add(dedupe_k)
+            upstream = jfc_donors.get(sp, [])
+            upstream_sorted = sorted(upstream, key=lambda x: -x[1])[:5]
+            alerts.append(
+                PatternAlert(
+                    rule_id=RULE_JOINT_FUNDRAISING,
+                    pattern_version=PATTERN_ENGINE_VERSION,
+                    donor_entity=f"JFC upstream — committee {sp}",
+                    matched_officials=[subject],
+                    matched_case_ids=[str(cid)],
+                    committee=sp,
+                    window_days=None,
+                    evidence_refs=[str(ent.id)],
+                    fired_at=fired_at,
+                    aggregate_amount=amt,
+                    disbursement_amount=amt,
+                    disbursement_date=dd or None,
+                    suspicion_score=min(1.0, 0.4 + 0.1 * min(len(upstream), 15)),
+                    payload_extra={
+                        "jfc_name": str(raw.get("recipient_name") or sp),
+                        "jfc_committee_id": sp,
+                        "disbursement_amount": amt,
+                        "disbursement_date": dd,
+                        "upstream_donor_count": len({u[0] for u in upstream}),
+                        "upstream_donors": [x[0] for x in upstream_sorted],
+                    },
+                )
+            )
+    return alerts
+
+
+def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    alerts: list[PatternAlert] = []
+    for prof in db.scalars(select(SubjectProfile)).all():
+        bg = (prof.bioguide_id or "").strip()
+        cid = prof.case_file_id
+        case_row = db.get(CaseFile, cid)
+        subject_lbl = (case_row.subject_name if case_row else "Official").strip() or "Official"
+        if not bg:
+            continue
+        pairs = _fec_receipt_date_amount_pairs_for_bioguide(db, bg)
+        if len(pairs) < BASELINE_ANOMALY_MIN_DATAPOINTS:
+            continue
+        median = _median_seven_day_intake_for_bioguide(db, bg)
+        if median is None or median <= 0:
+            continue
+        dates_sorted = sorted({d for d, _ in pairs})
+        seen_win: set[tuple[date, date]] = set()
+        for d0 in dates_sorted:
+            for d1 in dates_sorted:
+                if (d1 - d0).days > 7:
+                    continue
+                if (d0, d1) in seen_win:
+                    continue
+                tot = sum(amt for d, amt in pairs if d0 <= d <= d1)
+                if tot < BASELINE_ANOMALY_MIN_AGGREGATE:
+                    continue
+                mult = tot / median
+                if mult < BASELINE_ANOMALY_MIN_MULTIPLIER:
+                    continue
+                seen_win.add((d0, d1))
+                alerts.append(
+                    PatternAlert(
+                        rule_id=RULE_BASELINE_ANOMALY,
+                        pattern_version=PATTERN_ENGINE_VERSION,
+                        donor_entity=f"Baseline spike — {mult:.1f}× median 7-day intake",
+                        matched_officials=[subject_lbl],
+                        matched_case_ids=[str(cid)],
+                        committee="",
+                        window_days=int((d1 - d0).days),
+                        evidence_refs=[],
+                        fired_at=fired_at,
+                        donation_window_start=d0,
+                        donation_window_end=d1,
+                        aggregate_amount=float(tot),
+                        suspicion_score=min(1.0, mult / 8.0),
+                        payload_extra={
+                            "window_aggregate": float(tot),
+                            "senator_median_7day": float(median),
+                            "baseline_multiplier": float(mult),
+                            "baseline_datapoints": len(pairs),
+                            "cycles_included": _fec_cycles_present_for_bioguide(db, bg),
+                        },
+                    )
+                )
+    return alerts
+
+
+def _lda_active_for_sector_on_date(
+    db: Session, case_id: uuid.UUID, sector: str, vote_day: date
+) -> bool:
+    window_start = vote_day - timedelta(days=ALIGNMENT_LDA_ACTIVE_DAYS)
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            EvidenceEntry.entry_type == "lobbying_filing",
+        )
+    ).all():
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        codes = raw.get("issue_codes") or []
+        if not isinstance(codes, list):
+            continue
+        sectors: set[str] = set()
+        for c in codes:
+            sec = ISSUE_CODE_TO_SECTOR.get(str(c).strip().upper())
+            if sec:
+                sectors.add(sec)
+        if sector not in sectors:
+            continue
+        fy = raw.get("filing_year")
+        try:
+            y = int(fy) if fy is not None else None
+        except (TypeError, ValueError):
+            y = None
+        if y is None:
+            continue
+        if date(y, 1, 1) <= vote_day <= date(y, 12, 31):
+            return True
+    return False
+
+
+def _senator_vote_position_from_record(raw: dict[str, Any]) -> str | None:
+    for k in (
+        "member_vote",
+        "vote_position",
+        "position",
+        "cast_code_name",
+        "result_of_vote_position",
+    ):
+        v = raw.get(k)
+        if v and str(v).strip():
+            return str(v).strip().upper()
+    return None
+
+
+def _compute_case_sector_alignment_rates(
+    db: Session, case_id: uuid.UUID
+) -> dict[str, dict[str, Any]]:
+    votes = db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            EvidenceEntry.entry_type == "vote_record",
+            EvidenceEntry.date_of_event.isnot(None),
+        )
+    ).all()
+    buckets: dict[str, list[str]] = defaultdict(list)
+    for ent in votes:
+        d = ent.date_of_event
+        if d is None:
+            continue
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        pos = _senator_vote_position_from_record(raw)
+        if not pos:
+            continue
+        yn = "yea" if pos in ("YEA", "YES", "AYE") else ("nay" if pos in ("NAY", "NO") else "")
+        if yn not in ("yea", "nay"):
+            continue
+        for sector in SECTOR_KEYWORDS:
+            if _lda_active_for_sector_on_date(db, case_id, sector, d):
+                buckets[sector].append(yn)
+    out: dict[str, dict[str, Any]] = {}
+    for sector, vals in buckets.items():
+        yea = sum(1 for x in vals if x == "yea")
+        out[sector] = {
+            "alignment_rate": yea / len(vals) if vals else 0.0,
+            "vote_count": len(vals),
+            "lda_active_votes": len(vals),
+        }
+    return out
+
+
+def _chamber_sector_baseline(db: Session, sector: str) -> dict[str, Any] | None:
+    rates: list[float] = []
+    seen_bg: set[str] = set()
+    for prof in db.scalars(select(SubjectProfile)).all():
+        bg = (prof.bioguide_id or "").strip()
+        if not bg or bg in seen_bg:
+            continue
+        seen_bg.add(bg)
+        ar = _compute_case_sector_alignment_rates(db, prof.case_file_id)
+        if sector not in ar:
+            continue
+        if ar[sector]["vote_count"] < ALIGNMENT_ANOMALY_MIN_VOTES:
+            continue
+        rates.append(float(ar[sector]["alignment_rate"]))
+    if len(rates) < CHAMBER_BASELINE_MIN_SENATORS:
+        return None
+    mean = sum(rates) / len(rates)
+    var = sum((x - mean) ** 2 for x in rates) / max(len(rates) - 1, 1)
+    std = var**0.5
+    return {"mean": mean, "std_dev": std if std > 1e-9 else 1e-9, "n": len(rates)}
+
+
+def _detect_alignment_anomaly(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    alerts: list[PatternAlert] = []
+    for prof in db.scalars(select(SubjectProfile)).all():
+        bg = (prof.bioguide_id or "").strip()
+        cid = prof.case_file_id
+        if not bg:
+            continue
+        ar = _compute_case_sector_alignment_rates(db, cid)
+        for sector, data in ar.items():
+            if int(data["vote_count"]) < ALIGNMENT_ANOMALY_MIN_VOTES:
+                continue
+            base = _chamber_sector_baseline(db, sector)
+            if base is None:
+                continue
+            rate = float(data["alignment_rate"])
+            z = (rate - base["mean"]) / base["std_dev"]
+            if z < ALIGNMENT_ANOMALY_DEVIATION_THRESHOLD:
+                continue
+            case_row = db.get(CaseFile, cid)
+            subj = (case_row.subject_name if case_row else "Official").strip() or "Official"
+            alerts.append(
+                PatternAlert(
+                    rule_id=RULE_ALIGNMENT_ANOMALY,
+                    pattern_version=PATTERN_ENGINE_VERSION,
+                    donor_entity=f"Alignment anomaly — {sector} ({rate:.0%} vs chamber ~{base['mean']:.0%})",
+                    matched_officials=[subj],
+                    matched_case_ids=[str(cid)],
+                    committee="",
+                    window_days=None,
+                    evidence_refs=[],
+                    fired_at=fired_at,
+                    sector=sector,
+                    suspicion_score=min(1.0, z / 3.0),
+                    payload_extra={
+                        "senator_alignment_rate": rate,
+                        "chamber_mean_rate": base["mean"],
+                        "chamber_std_dev": base["std_dev"],
+                        "z_score": z,
+                        "sector_vote_count": int(data["vote_count"]),
+                        "sector_active_lda_count": int(data["lda_active_votes"]),
+                    },
+                )
+            )
+    return alerts
+
+
+def _amendment_text_is_weakening(description: str) -> bool:
+    low = (description or "").lower()
+    return any(kw in low for kw in _AMENDMENT_WEAKENING_KEYWORDS)
+
+
+def _final_passage_nay_for_bill(
+    db: Session, case_id: uuid.UUID, bill_number: str | None
+) -> tuple[bool, str | None]:
+    if not bill_number:
+        return False, None
+    bn = str(bill_number).strip().upper()
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            EvidenceEntry.entry_type == "vote_record",
+        )
+    ).all():
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        bill_blob = str(raw.get("bill_number") or raw.get("measure_number") or "")
+        if bn and bn not in bill_blob.upper():
+            title = str(raw.get("question") or raw.get("vote_question") or "")
+            if bn not in title.upper() and "PASSAGE" not in title.upper():
+                continue
+        title_u = str(raw.get("question") or raw.get("vote_question") or "").upper()
+        if "PASSAGE" not in title_u and "ON PASSAGE" not in title_u:
+            continue
+        pos = _senator_vote_position_from_record(raw)
+        if pos in ("NAY", "NO"):
+            return True, pos
+    return False, None
+
+
+def _amendment_donor_alignment(
+    db: Session, case_id: uuid.UUID, amendment_description: str
+) -> bool:
+    blob = (amendment_description or "").lower()
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            EvidenceEntry.entry_type == "lobbying_filing",
+        )
+    ).all():
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        codes = raw.get("issue_codes") or []
+        if not isinstance(codes, list):
+            continue
+        for c in codes:
+            sec = ISSUE_CODE_TO_SECTOR.get(str(c).strip().upper())
+            if not sec:
+                continue
+            if sec == "pharma" and any(
+                x in blob for x in ("drug", "pharma", "health", "fda")
+            ):
+                return True
+            if sec == "finance" and any(
+                x in blob for x in ("tax", "bank", "financial", "credit")
+            ):
+                return True
+            if sec == "defense" and "defense" in blob:
+                return True
+            if sec == "energy" and any(x in blob for x in ("energy", "oil", "gas", "climate")):
+                return True
+    return False
+
+
+def _detect_amendment_tell(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    alerts: list[PatternAlert] = []
+    rows = db.execute(
+        select(DonorFingerprint, Signal).join(Signal, DonorFingerprint.signal_id == Signal.id)
+    ).all()
+    for fp, sig in rows:
+        if float(sig.weight or 0) < AMENDMENT_TELL_MIN_SIGNAL_WEIGHT:
+            continue
+        bd = _signal_breakdown_json(sig)
+        if str(bd.get("kind") or "") != "donor_cluster":
+            continue
+        case_id = fp.case_file_id
+        donation_day = _donation_date_for_signal(sig)
+        if donation_day is None:
+            continue
+
+        for ent in db.scalars(
+            select(EvidenceEntry).where(
+                EvidenceEntry.case_file_id == case_id,
+                EvidenceEntry.entry_type == "amendment_vote",
+                EvidenceEntry.date_of_event.isnot(None),
+            )
+        ).all():
+            avd = ent.date_of_event
+            if avd is None:
+                continue
+            if abs((donation_day - avd).days) > AMENDMENT_TELL_WINDOW_DAYS:
+                continue
+            try:
+                raw = json.loads(ent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            desc = str(raw.get("amendment_description") or raw.get("description") or "")
+            pos = str(raw.get("vote_position") or raw.get("position") or "").upper()
+            if not _amendment_text_is_weakening(desc):
+                continue
+            if pos not in ("YEA", "YES", "Y"):
+                continue
+            bill = raw.get("bill_number") or raw.get("measure_number")
+            inc, final_pos = _final_passage_nay_for_bill(db, case_id, str(bill) if bill else None)
+            if not inc:
+                continue
+            donor_align = _amendment_donor_alignment(db, case_id, desc)
+            prof = proximity_to_vote_score_from_days(
+                abs((donation_day - avd).days)
+            )
+            dl_disc = (
+                0.6 if is_deadline_adjacent(max(donation_day, avd)) else 1.0
+            )
+            suspicion = (
+                float(prof)
+                * dl_disc
+                * (1.5 if inc else 1.0)
+                * (1.1 if donor_align else 1.0)
+            )
+            display = _donor_display_for_signal(
+                sig,
+                (fp.canonical_id or fp.normalized_donor_key or "").strip(),
+            )
+            alerts.append(
+                PatternAlert(
+                    rule_id=RULE_AMENDMENT_TELL,
+                    pattern_version=PATTERN_ENGINE_VERSION,
+                    donor_entity=f"Amendment tell — {display}",
+                    matched_officials=[(fp.official_name or sig.actor_b or "").strip() or "Official"],
+                    matched_case_ids=[str(case_id)],
+                    committee=str(bd.get("committee_label") or ""),
+                    window_days=AMENDMENT_TELL_WINDOW_DAYS,
+                    evidence_refs=sorted({str(sig.id), str(ent.id)}),
+                    fired_at=fired_at,
+                    aggregate_amount=float(sig.amount or 0.0),
+                    suspicion_score=min(1.0, suspicion),
+                    payload_extra={
+                        "amendment_number": str(raw.get("amendment_number") or ""),
+                        "amendment_description": desc[:500],
+                        "amendment_vote_position": pos,
+                        "final_passage_vote_position": final_pos or "",
+                        "inconsistent_record": inc,
+                        "donor_alignment": donor_align,
+                    },
+                )
+            )
+    return alerts
+
+
+def _normalize_substring_match(a: str, b: str, min_len: int = 6) -> bool:
+    aa = re.sub(r"[^a-z0-9]+", "", (a or "").lower())
+    bb = re.sub(r"[^a-z0-9]+", "", (b or "").lower())
+    if len(aa) < min_len or len(bb) < min_len:
+        return False
+    return aa in bb or bb in aa
+
+
+def _match_witness_to_donor_signals(
+    witness_name: str,
+    witness_org: str,
+    signals: list[Signal],
+    db: Session,
+) -> list[Signal]:
+    matched: list[Signal] = []
+    for sig in signals:
+        bd = _signal_breakdown_json(sig)
+        if str(bd.get("kind") or "") != "donor_cluster":
+            continue
+        dlab = str(bd.get("donor") or sig.actor_a or "")
+        emp, occ, _, __, ___ = _fec_fields_from_signal(db, sig)
+        blob = " ".join([dlab, emp, occ])
+        if _normalize_substring_match(witness_name, blob, REVOLVING_DOOR_MIN_NAME_SUBSTRING_LEN):
+            matched.append(sig)
+            continue
+        if witness_org and _normalize_substring_match(
+            witness_org, blob, REVOLVING_DOOR_MIN_NAME_SUBSTRING_LEN
+        ):
+            matched.append(sig)
+    return matched
+
+
+def _detect_hearing_testimony(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    from core.credentials import CredentialRegistry
+
+    try:
+        key = CredentialRegistry.get_credential("govinfo")
+    except Exception:
+        key = None
+    if not key:
+        logger.info("HEARING_TESTIMONY_V1 skipped — GOVINFO_API_KEY not configured")
+        return []
+
+    alerts: list[PatternAlert] = []
+    for ent in db.scalars(
+        select(EvidenceEntry).where(EvidenceEntry.entry_type == "hearing_witness")
+    ).all():
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        case_id = ent.case_file_id
+        matched_name = str(raw.get("matched_name") or "")
+        hearing_title = str(raw.get("hearing_title") or ent.title or "")
+        hid = str(raw.get("package_id") or "")
+        date_s = str(
+            raw.get("date_issued") or raw.get("dateIssued") or ent.date_of_event or ""
+        )[:10]
+        try:
+            hday = date.fromisoformat(date_s) if date_s else None
+        except ValueError:
+            hday = ent.date_of_event
+        if hday is None:
+            continue
+        sigs = db.scalars(
+            select(Signal).where(Signal.case_file_id == case_id)
+        ).all()
+        hits = _match_witness_to_donor_signals(
+            matched_name, "", list(sigs), db
+        )
+        for sig in hits:
+            dd = _donation_date_for_signal(sig)
+            if dd is None:
+                continue
+            gap = abs((dd - hday).days)
+            if gap > HEARING_TESTIMONY_WINDOW_DAYS:
+                continue
+            display = _donor_display_for_signal(sig, "")
+            amt = float(sig.amount or 0.0)
+            votes_by_case = _vote_evidence_by_case(db)
+            midpoint = _cluster_midpoint_date(min(dd, hday), max(dd, hday))
+            d_days, v_id, v_date, _prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
+                db, {case_id}, midpoint, votes_by_case
+            )
+            payload_ex: dict[str, Any] = {
+                "witness_name": matched_name,
+                "witness_organization": "",
+                "hearing_date": hday.isoformat(),
+                "hearing_title": hearing_title,
+                "matched_donor": display,
+                "donation_amount": amt,
+                "donation_date": dd.isoformat(),
+                "days_between_testimony_and_donation": gap,
+            }
+            ref_set = {str(sig.id), str(ent.id)}
+            if v_id:
+                ref_set.add(str(v_id))
+            refs = sorted(ref_set)
+            alerts.append(
+                PatternAlert(
+                    rule_id=RULE_HEARING_TESTIMONY,
+                    pattern_version=PATTERN_ENGINE_VERSION,
+                    donor_entity=f"Hearing testimony chain — {display}",
+                    matched_officials=[],
+                    matched_case_ids=[str(case_id)],
+                    committee=hid,
+                    window_days=HEARING_TESTIMONY_WINDOW_DAYS,
+                    evidence_refs=refs,
+                    fired_at=fired_at,
+                    aggregate_amount=amt,
+                    days_to_nearest_vote=d_days,
+                    nearest_vote_id=v_id,
+                    nearest_vote_date=v_date,
+                    nearest_vote_description=v_desc,
+                    nearest_vote_result=v_res,
+                    nearest_vote_question=v_q,
+                    suspicion_score=min(1.0, 0.35 + gap / 400.0),
+                    matched_donor=display,
+                    payload_extra=payload_ex,
+                )
+            )
     return alerts
 
 
@@ -1675,12 +2453,9 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
 
 
 def _median_seven_day_intake_for_bioguide(db: Session, bioguide_id: str) -> float | None:
-    events: list[tuple[date, float]] = []
-    for row in _load_soft_bundle_rows(db):
-        if row.bioguide_id != bioguide_id:
-            continue
-        events.append((row.d, row.amount))
-    if len(events) < 10:
+    """Median rolling 7-day FEC receipt totals (multi-cycle baseline), not soft-bundle heuristics."""
+    events = _fec_receipt_date_amount_pairs_for_bioguide(db, bioguide_id)
+    if len(events) < BASELINE_ANOMALY_MIN_DATAPOINTS:
         return None
     dates_sorted = sorted({d for d, _ in events})
     totals: list[float] = []
@@ -2089,13 +2864,18 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
     alerts.extend(_detect_sector_convergence(db, fired_at))
     alerts.extend(_detect_geo_mismatch(db, fired_at))
     alerts.extend(_detect_disbursement_loop(db, fired_at))
+    alerts.extend(_detect_joint_fundraising(db, fired_at))
+    alerts.extend(_detect_baseline_anomaly(db, fired_at))
+    alerts.extend(_detect_alignment_anomaly(db, fired_at))
+    alerts.extend(_detect_amendment_tell(db, fired_at))
+    alerts.extend(_detect_hearing_testimony(db, fired_at))
     alerts.extend(_detect_revolving_door(db, fired_at))
     alerts.sort(key=lambda x: (x.donor_entity.lower(), x.rule_id, x.committee or ""))
     return alerts
 
 
 def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "rule_id": a.rule_id,
         "pattern_version": a.pattern_version,
         "donor_entity": a.donor_entity,
@@ -2156,6 +2936,9 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         if a.diagnostics_json
         else None,
     }
+    if a.payload_extra:
+        payload["payload_extra"] = a.payload_extra
+    return payload
 
 
 def pattern_alerts_for_signing(alerts: list[PatternAlert]) -> list[dict[str, Any]]:
@@ -2167,6 +2950,21 @@ def sync_pattern_alert_records(db: Session, alerts: list[PatternAlert]) -> None:
     db.execute(delete(PatternAlertRecord))
     now = _utc_now()
     for a in alerts:
+        diag_obj: dict[str, Any] | None = None
+        if a.diagnostics_json:
+            try:
+                parsed = json.loads(a.diagnostics_json)
+                diag_obj = parsed if isinstance(parsed, dict) else {"diagnostics": parsed}
+            except json.JSONDecodeError:
+                diag_obj = {}
+        if a.payload_extra:
+            if diag_obj is None:
+                diag_obj = {}
+            diag_obj = {**diag_obj, "payload_extra": a.payload_extra}
+        if diag_obj is not None:
+            diag_store = json.dumps(diag_obj, separators=(",", ":"), default=str)
+        else:
+            diag_store = a.diagnostics_json
         db.add(
             PatternAlertRecord(
                 rule_id=a.rule_id,
@@ -2180,7 +2978,7 @@ def sync_pattern_alert_records(db: Session, alerts: list[PatternAlert]) -> None:
                 disclaimer=a.disclaimer,
                 fired_at=a.fired_at,
                 created_at=now,
-                diagnostics_json=a.diagnostics_json,
+                diagnostics_json=diag_store,
             )
         )
 

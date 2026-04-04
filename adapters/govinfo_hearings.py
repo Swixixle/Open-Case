@@ -157,3 +157,114 @@ async def search_hearing_witnesses(
     if result["searched"]:
         result["matched"] = False
     return result
+
+
+async def list_committee_hearing_witness_records(
+    committee_codes: list[str],
+    congress: int,
+    api_key: str | None,
+    *,
+    max_packages_per_code: int = 8,
+    max_granules_per_package: int = 35,
+) -> list[dict[str, Any]]:
+    """
+    Pull recent CHRG packages per committee code and extract witness-like granules.
+    Same HTTP patterns as search_hearing_witnesses; no donor filter.
+    Returns rows suitable for EvidenceEntry(entry_type=\"hearing_witness\").
+    """
+    if not api_key:
+        return []
+
+    codes = [str(c).strip() for c in (committee_codes or []) if str(c).strip()]
+    if not codes:
+        return []
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; OpenCase/1.0) "
+            "congressional-research"
+        )
+    }
+
+    out: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=45.0) as client:
+        for code in codes:
+            try:
+                r = await client.get(
+                    f"{GOVINFO_BASE}collections/CHRG",
+                    params={
+                        "api_key": api_key,
+                        "pageSize": max_packages_per_code + 4,
+                        "congress": str(congress),
+                        "committeeCode": code,
+                    },
+                )
+                r.raise_for_status()
+                coll = r.json()
+            except Exception as e:
+                logger.warning("[govinfo] committee witness list fetch failed %s: %s", code, e)
+                continue
+
+            if not isinstance(coll, dict):
+                continue
+            pids = _package_ids_from_collection(coll)[:max_packages_per_code]
+            for package_id in pids:
+                try:
+                    sr = await client.get(
+                        f"{GOVINFO_BASE}packages/{package_id}/summary",
+                        params={"api_key": api_key},
+                    )
+                    sr.raise_for_status()
+                    summary = sr.json()
+                except Exception as e:
+                    logger.warning("[govinfo] summary fetch failed %s: %s", package_id, e)
+                    continue
+
+                if not isinstance(summary, dict):
+                    continue
+                title = str(summary.get("title") or "")
+                date_issued = str(
+                    summary.get("dateIssued")
+                    or summary.get("issued")
+                    or summary.get("lastModified")
+                    or ""
+                )
+
+                try:
+                    gr = await client.get(
+                        f"{GOVINFO_BASE}packages/{package_id}/granules",
+                        params={"api_key": api_key, "pageSize": max_granules_per_package},
+                    )
+                    gr.raise_for_status()
+                    gdata = gr.json()
+                except Exception as e:
+                    logger.warning("[govinfo] granules fetch failed %s: %s", package_id, e)
+                    continue
+
+                granules = gdata.get("granules") or []
+                if isinstance(granules, dict):
+                    inner = granules.get("granule")
+                    granules = inner if isinstance(inner, list) else ([inner] if inner else [])
+                for g in granules:
+                    if not isinstance(g, dict):
+                        continue
+                    gt = str(g.get("title") or "")
+                    gtl = gt.lower()
+                    if "testimony of" not in gtl and "statement of" not in gtl:
+                        continue
+                    witness_guess = gt
+                    if " of " in gtl:
+                        witness_guess = gt.split(" of ", 1)[-1].strip()
+                    out.append(
+                        {
+                            "package_id": package_id,
+                            "hearing_title": title,
+                            "committee_code": code,
+                            "date_issued": date_issued,
+                            "matched_name": witness_guess[:512],
+                            "hearing_granule_title": gt[:2000],
+                            "source_url": f"https://www.govinfo.gov/app/details/{package_id}",
+                            "match_confidence": "list_ingest",
+                        }
+                    )
+    return out

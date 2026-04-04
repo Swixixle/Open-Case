@@ -105,6 +105,186 @@ def _congress_number_for_date(when: date | None = None) -> int:
     return (when.year - 1789) // 2 + 1
 
 
+_AMENDMENT_TEXT_MARKERS = (
+    "amendment",
+    "amdt",
+    "s.amdt",
+    "h.amdt",
+    "sa ",
+    "ha ",
+)
+
+
+def _is_amendment_congress_vote_payload(vote_blob: dict[str, Any]) -> bool:
+    q = str(vote_blob.get("question") or vote_blob.get("voteQuestion") or "").lower()
+    desc = str(vote_blob.get("description") or vote_blob.get("voteDescription") or "").lower()
+    if any(m in q or m in desc for m in _AMENDMENT_TEXT_MARKERS):
+        return True
+    am = vote_blob.get("amendment")
+    if isinstance(am, dict) and (am.get("number") or am.get("amendmentNumber")):
+        return True
+    am2 = vote_blob.get("amendments") or vote_blob.get("amendmentNumber")
+    if am2:
+        return True
+    lt = str(vote_blob.get("legislationType") or vote_blob.get("type") or "").upper()
+    if "AMDT" in lt or "AMENDMENT" in lt:
+        return True
+    return False
+
+
+def _normalize_amendment_vote_record(
+    item: dict[str, Any], bioguide_id: str, default_congress: int
+) -> dict[str, Any] | None:
+    vb = item.get("vote")
+    if isinstance(vb, dict):
+        vote_core = {**item, **vb}
+    else:
+        vote_core = dict(item)
+    if not _is_amendment_congress_vote_payload(vote_core):
+        return None
+
+    vd = (
+        vote_core.get("date")
+        or vote_core.get("voteDate")
+        or vote_core.get("updateDate")
+        or vote_core.get("startDate")
+        or ""
+    )
+    vote_date = str(vd).strip()[:10] if vd else ""
+
+    bill = vote_core.get("bill") or vote_core.get("legislation") or {}
+    if not isinstance(bill, dict):
+        bill = {}
+    parent_bill = bill.get("number") or bill.get("billNumber")
+    lt = bill.get("type") or bill.get("billType") or ""
+    ln = bill.get("number") or bill.get("legislationNumber")
+    bill_number = parent_bill
+    if not bill_number and (lt or ln):
+        bill_number = f"{lt} {ln}".strip()
+
+    am = vote_core.get("amendment")
+    if isinstance(am, dict):
+        amendment_number = am.get("number") or am.get("amendmentNumber")
+    else:
+        amendment_number = vote_core.get("amendmentNumber") or vote_core.get("rollCall")
+
+    description = (
+        vote_core.get("question")
+        or vote_core.get("voteQuestion")
+        or vote_core.get("description")
+        or vote_core.get("voteDescription")
+        or ""
+    )
+    pos = (
+        vote_core.get("position")
+        or vote_core.get("voteCast")
+        or vote_core.get("vote")
+        or vote_core.get("memberVote")
+        or ""
+    )
+    if isinstance(pos, dict):
+        pos = pos.get("vote") or pos.get("voteCast") or ""
+
+    ch = vote_core.get("chamber") or item.get("chamber") or ""
+    src_url = (
+        vote_core.get("url")
+        or vote_core.get("voteUrl")
+        or item.get("url")
+        or f"https://www.congress.gov/member/{bioguide_id}"
+    )
+
+    out = {
+        "vote_date": vote_date,
+        "congress": int(vote_core.get("congress") or item.get("congress") or default_congress),
+        "chamber": str(ch),
+        "amendment_number": str(amendment_number) if amendment_number is not None else "",
+        "bill_number": str(bill_number) if bill_number else "",
+        "amendment_description": str(description)[:4000],
+        "description": str(description)[:4000],
+        "vote_position": str(pos).strip(),
+        "position": str(pos).strip(),
+        "vote_result": str(vote_core.get("result") or vote_core.get("voteResult") or ""),
+        "source_url": str(src_url),
+        "member_bioguide_id": bioguide_id,
+        "entry_type": "amendment_vote",
+    }
+    if not vote_date:
+        return None
+    return out
+
+
+async def fetch_amendment_votes_for_member(
+    bioguide_id: str,
+    *,
+    congress: int = 119,
+    api_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Amendment-focused votes for a member via Congress.gov v3.
+    Returns normalized dicts suitable for EvidenceEntry.raw_data_json (pattern engine).
+    """
+    bg = (bioguide_id or "").strip()
+    if not bg:
+        return []
+    key = (api_key or "").strip() or None
+    if not key:
+        try:
+            key = CredentialRegistry.get_credential("congress")
+        except Exception:
+            key = None
+    if not key:
+        logger.info("fetch_amendment_votes_for_member: no congress API key, skipping")
+        return []
+
+    params: dict[str, str | int] = {
+        "api_key": key,
+        "format": "json",
+        "limit": 250,
+        "congress": congress,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": DEFAULT_UA}) as client:
+            r = await client.get(
+                f"https://api.congress.gov/v3/member/{bg}/votes",
+                params=params,
+            )
+        if r.status_code >= 400:
+            logger.warning(
+                "fetch_amendment_votes_for_member HTTP %s for %s", r.status_code, bg
+            )
+            return []
+        data = r.json()
+    except Exception as e:
+        logger.warning("fetch_amendment_votes_for_member request failed: %s", e)
+        return []
+
+    raw_list = data.get("votes") or data.get("memberVotes") or []
+    if isinstance(raw_list, dict):
+        inner = raw_list.get("vote") or raw_list.get("votes")
+        if isinstance(inner, list):
+            raw_list = inner
+        elif isinstance(inner, dict):
+            raw_list = [inner]
+        else:
+            raw_list = []
+    if isinstance(raw_list, dict):
+        raw_list = [raw_list]
+
+    out: list[dict[str, Any]] = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        norm = _normalize_amendment_vote_record(item, bg, congress)
+        if norm:
+            out.append(norm)
+    logger.info(
+        "fetch_amendment_votes_for_member: %s amendment-shaped votes for %s",
+        len(out),
+        bg,
+    )
+    return out
+
+
 def _senate_session_for_date(when: date | None = None) -> int:
     """First session in odd years, second in even years (simplified)."""
     when = when or date.today()

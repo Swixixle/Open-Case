@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -78,7 +79,7 @@ def test_fec_produces_financial_evidence_without_committee_id(
     handle = seeded_public_official_case["handle"]
     api_key = seeded_public_official_case["api_key"]
 
-    async def fec_search(query: str, query_type: str = "person"):
+    async def fec_search(query: str, query_type: str = "person", **_kw: Any):
         assert query_type == "committee"
         assert query == "C00459255"
         return _fec_financial_response(query)
@@ -135,7 +136,7 @@ def test_congress_produces_votes_for_known_bioguide(client, seeded_public_offici
     handle = seeded_public_official_case["handle"]
     api_key = seeded_public_official_case["api_key"]
 
-    async def fec_search(_query: str, query_type: str = "person"):
+    async def fec_search(_query: str, query_type: str = "person", **_kw: Any):
         return _fec_financial_response("C00459255")
 
     payload = {
@@ -199,7 +200,7 @@ def test_http_error_not_cached_for_congress(client, seeded_public_official_case)
     handle = seeded_public_official_case["handle"]
     api_key = seeded_public_official_case["api_key"]
 
-    async def fec_search(_query: str, query_type: str = "person"):
+    async def fec_search(_query: str, query_type: str = "person", **_kw: Any):
         return _fec_financial_response("C00459255")
 
     with (

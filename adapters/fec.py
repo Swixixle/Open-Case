@@ -262,7 +262,13 @@ class FECAdapter(BaseAdapter):
             tail = f"{n_items} schedule_a receipts"
         return f"credential_mode={cred_src} | {qctx} | {tail}"
 
-    async def search(self, query: str, query_type: str = "person") -> AdapterResponse:
+    async def search(
+        self,
+        query: str,
+        query_type: str = "person",
+        *,
+        two_year_transaction_period: int | None = None,
+    ) -> AdapterResponse:
         if query_type == "schedule_b":
             return await self.search_schedule_b(query)
         cred_src = _fec_key_source_label()
@@ -279,6 +285,8 @@ class FECAdapter(BaseAdapter):
                     "per_page": 100,
                     "api_key": api_key,
                 }
+                if two_year_transaction_period is not None:
+                    params["two_year_transaction_period"] = int(two_year_transaction_period)
                 source_url = (
                     f"https://www.fec.gov/data/receipts/?committee_id={query}"
                 )

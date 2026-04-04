@@ -98,7 +98,7 @@ def test_investigate_debug_query_param_gates_diagnostics(
     handle = seeded_public_official_case["handle"]
     api_key = seeded_public_official_case["api_key"]
 
-    async def fec_search(query: str, query_type: str = "person"):
+    async def fec_search(query: str, query_type: str = "person", **_kw):
         assert query_type == "committee"
         assert query == "C00459255"
         return _fec_financial_response(query)

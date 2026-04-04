@@ -147,7 +147,7 @@ def test_young_then_banks_cross_case_without_mutating_young(
             return "C00728156"
         return None
 
-    async def fec_search(query: str, query_type: str = "person"):
+    async def fec_search(query: str, query_type: str = "person", **_kw):
         assert query_type == "committee"
         return _fec_shared_pac(query)
 
