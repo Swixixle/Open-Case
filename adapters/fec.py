@@ -183,6 +183,32 @@ def fec_schedule_a_row_exclusion_reason(item: dict[str, Any]) -> str | None:
     return None
 
 
+def classify_donor_type(entity_type: str, committee_type: str | None) -> str:
+    """
+    Map OpenFEC Schedule A entity_type + recipient committee_type to a stable bucket.
+    Returns: individual | corporation | super_pac | pac | party | candidate_cmte | other_org
+    """
+    et = (entity_type or "").strip().upper()
+    ct = (committee_type or "").strip().upper()
+    if len(ct) > 1:
+        ct = ct[:1]
+
+    if et == "IND":
+        return "individual"
+    if et == "ORG":
+        return "corporation"
+    if et in ("COM", "CCM"):
+        if ct in {"U", "V", "W"}:
+            return "super_pac"
+        if ct in {"N", "Q"}:
+            return "pac"
+        if ct in {"X", "Y", "Z"}:
+            return "party"
+        if ct in {"H", "S", "P", "A", "B", "D"}:
+            return "candidate_cmte"
+    return "other_org"
+
+
 _UNAMBIGUOUS_NAME_MARKERS = (
     "PAC",
     "INC",
@@ -439,6 +465,15 @@ class FECAdapter(BaseAdapter):
                 # Full row (includes contribution_receipt_date) is stored on evidence;
                 # temporal proximity / signal_scorer copy receipt_date into donor_cluster
                 # weight_breakdown for calendar rules (e.g. SOFT_BUNDLE_V1).
+                committee_obj = item.get("committee") or {}
+                ct_val: str | None = None
+                if isinstance(committee_obj, dict):
+                    ct_val = committee_obj.get("committee_type")
+                    if ct_val is not None:
+                        ct_val = str(ct_val)
+                et_val = str(item.get("entity_type") or "")
+                row_data = dict(item)
+                row_data["donor_type"] = classify_donor_type(et_val, ct_val)
                 ar = AdapterResult(
                     source_name=self.source_name,
                     source_url=source_url,
@@ -453,7 +488,7 @@ class FECAdapter(BaseAdapter):
                     matched_name=str(contributor_name) or None,
                     collision_count=row_collision_count,
                     collision_set=row_collision_set,
-                    raw_data=dict(item),
+                    raw_data=row_data,
                 )
                 apply_collision_rule(ar)
                 results.append(ar)

@@ -1174,6 +1174,12 @@ def _ingest_adapter_results(
         if is_duplicate(db, case_id, eh):
             continue
 
+        donor_type_db: str | None = None
+        if isinstance(result.raw_data, dict):
+            dt_raw = result.raw_data.get("donor_type")
+            if dt_raw is not None and str(dt_raw).strip():
+                donor_type_db = str(dt_raw).strip()[:32]
+
         entry = EvidenceEntry(
             case_file_id=case_id,
             entry_type=result.entry_type,
@@ -1189,6 +1195,7 @@ def _ingest_adapter_results(
             flagged_for_review=flagged,
             amount=result.amount,
             matched_name=result.matched_name,
+            donor_type=donor_type_db,
             raw_data_json=json.dumps(result.raw_data, sort_keys=True, default=str),
             evidence_hash=eh,
         )

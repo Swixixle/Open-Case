@@ -89,6 +89,7 @@ class EvidenceEntry(Base):
     adapter_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     jurisdictional_match: Mapped[bool] = mapped_column(Boolean, default=False)
     matched_committees: Mapped[str] = mapped_column(Text, default="[]")
+    donor_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     case_file: Mapped["CaseFile"] = relationship("CaseFile", back_populates="evidence_entries")
 
@@ -339,3 +340,4 @@ class PatternAlertRecord(Base):
     disclaimer: Mapped[str] = mapped_column(Text)
     fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    diagnostics_json: Mapped[str | None] = mapped_column(Text, nullable=True)

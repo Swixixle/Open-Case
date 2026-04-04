@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from auth import generate_raw_key, hash_key
-from adapters.fec import fec_schedule_a_row_exclusion_reason
+from adapters.fec import classify_donor_type, fec_schedule_a_row_exclusion_reason
 from engines.pattern_engine import (
     COMMITTEE_SWEEP_MAX_WINDOW_DAYS,
     FINGERPRINT_BLOOM_MIN_RELEVANCE,
@@ -24,6 +24,7 @@ from engines.pattern_engine import (
     RULE_REVOLVING_DOOR,
     RULE_SECTOR_CONVERGENCE,
     RULE_SOFT_BUNDLE,
+    RULE_SOFT_BUNDLE_V2,
     SOFT_BUNDLE_MAX_SPAN_DAYS,
     _is_individual_donor,
     classify_donor_sector,
@@ -208,11 +209,13 @@ def _fec_receipt_entry(
     contributor_employer: str = "",
     contributor_occupation: str = "",
     contributor_committee_id: str | None = None,
+    donor_type: str | None = None,
 ) -> EvidenceEntry:
     raw: dict[str, Any] = {
         "contributor_name": contributor_name,
         "contribution_receipt_amount": amount,
         "contribution_receipt_date": receipt_date,
+        "entity_type": "IND",
     }
     if contributor_state:
         raw["contributor_state"] = contributor_state
@@ -222,6 +225,8 @@ def _fec_receipt_entry(
         raw["contributor_occupation"] = contributor_occupation
     if contributor_committee_id:
         raw["contributor_committee_id"] = contributor_committee_id
+    if donor_type:
+        raw["donor_type"] = donor_type
     ev = EvidenceEntry(
         case_file_id=case_id,
         entry_type="financial_connection",
@@ -235,6 +240,7 @@ def _fec_receipt_entry(
         confidence="confirmed",
         amount=amount,
         matched_name=contributor_name,
+        donor_type=donor_type,
         raw_data_json=json.dumps(raw, separators=(",", ":")),
     )
     db.add(ev)
@@ -1952,7 +1958,7 @@ def test_revolving_door_nomination_vote_not_relevant(test_engine) -> None:
     assert rev and rev[0].revolving_door_vote_relevant is False
 
 
-def test_geo_mismatch_dedup_maximal_window(test_engine) -> None:
+def test_geo_mismatch_calendar_merge(test_engine) -> None:
     Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     db = Session()
     _seed_investigator(db)
@@ -2045,6 +2051,53 @@ def test_geo_mismatch_dedup_maximal_window(test_engine) -> None:
     assert merged.donation_window_start == date(2026, 6, 1)
     assert merged.donation_window_end == date(2026, 6, 10)
     assert (merged.donation_window_end - merged.donation_window_start).days == 9
+
+
+def test_geo_mismatch_per_committee_cap(test_engine) -> None:
+    """At most 3 GEO_MISMATCH alerts per committee; keep highest suspicion_score."""
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"geo-cap-{uuid.uuid4().hex[:8]}", "Senator Cap")
+    db.flush()
+    comm = "Alaska Cap Committee"
+    month_states = [
+        ["TX", "FL", "NY", "CA", "WA"],
+        ["OH", "TX", "FL", "NY", "CA"],
+        ["WA", "OH", "TX", "FL", "NY"],
+        ["CA", "WA", "OH", "TX", "FL"],
+    ]
+    dk_ix_session = [0]
+    for mnum, states in enumerate(month_states, start=1):
+        for i, st in enumerate(states):
+            dk_ix_session[0] += 1
+            dk = f"capdk{dk_ix_session[0]}"
+            disp = f"Cap Person {dk_ix_session[0]}"
+            fd = f"2026-{mnum:02d}-{i + 1:02d}"
+            fe = _fec_receipt_entry(
+                db, c.id, contributor_name=disp, amount=600.0, receipt_date=fd, contributor_state=st
+            )
+            s = _signal_with_fec(
+                db,
+                c.id,
+                disp,
+                "Senator Cap",
+                fd,
+                0.5,
+                fe,
+                total_amount=600.0,
+                committee_label=comm,
+                donor_key=dk,
+            )
+            _fingerprint(db, dk, c.id, s.id, "Senator Cap", "S001198")
+    _vote_record(db, c.id, date(2026, 3, 10))
+    db.commit()
+    case_id_str = str(c.id)
+    geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
+    db.close()
+    assert len(geo) == 3
+    jan_alert = [a for a in geo if a.donation_window_start == date(2026, 1, 1)]
+    assert not jan_alert
 
 
 def test_revolving_door_filing_before_2024_skipped(test_engine) -> None:
@@ -2154,6 +2207,221 @@ def test_revolving_door_no_match(test_engine) -> None:
     rev = [a for a in run_pattern_engine(db) if a.rule_id == RULE_REVOLVING_DOOR and case_id_str in a.matched_case_ids]
     db.close()
     assert not rev
+
+
+def test_classify_donor_type_individual() -> None:
+    assert classify_donor_type("IND", None) == "individual"
+
+
+def test_classify_donor_type_super_pac() -> None:
+    assert classify_donor_type("COM", "U") == "super_pac"
+
+
+def test_classify_donor_type_pac() -> None:
+    assert classify_donor_type("COM", "N") == "pac"
+
+
+def test_soft_bundle_v2_individual_bonus(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb2-ib-{uuid.uuid4().hex[:8]}", "Senator V2IndivBonus")
+    db.flush()
+    committee = "V2 Indiv Committee"
+    donors = [
+        ("ib1", "Indiv Bonus A", "individual"),
+        ("ib2", "Indiv Bonus B", "individual"),
+        ("ib3", "Indiv Bonus C", "individual"),
+        ("ib4", "Indiv Bonus D", "individual"),
+        ("ib5", "PAC BONUS E", "pac"),
+    ]
+    for i, (dk, name, dt) in enumerate(donors):
+        fd = f"2026-04-{1 + i:02d}"
+        fe = _fec_receipt_entry(
+            db,
+            c.id,
+            contributor_name=name,
+            amount=400.0,
+            receipt_date=fd,
+            donor_type=dt,
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            name,
+            "Senator V2IndivBonus",
+            fd,
+            0.5,
+            fe,
+            total_amount=400.0,
+            committee_label=committee,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator V2IndivBonus", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    v2 = [
+        a
+        for a in run_pattern_engine(db)
+        if a.rule_id == RULE_SOFT_BUNDLE_V2 and case_id_str in a.matched_case_ids
+    ]
+    db.close()
+    assert v2
+    diag = json.loads(v2[0].diagnostics_json or "{}")
+    assert diag["individual_fraction"] >= 0.7
+    comps = {x.get("component") for x in diag.get("adjustments", [])}
+    assert "individual_bonus" in comps
+
+
+def test_soft_bundle_v2_org_penalty(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb2-op-{uuid.uuid4().hex[:8]}", "Senator V2OrgPen")
+    db.flush()
+    committee = "V2 Org Committee"
+    donors = [
+        ("op1", "Solo Indiv Person", "individual"),
+        ("op2", "PAC Zebra", "pac"),
+        ("op3", "PAC Yak", "pac"),
+        ("op4", "PAC Xray", "pac"),
+        ("op5", "PAC Walt", "pac"),
+    ]
+    for i, (dk, name, dt) in enumerate(donors):
+        fd = f"2026-05-{1 + i:02d}"
+        fe = _fec_receipt_entry(
+            db,
+            c.id,
+            contributor_name=name,
+            amount=400.0,
+            receipt_date=fd,
+            donor_type=dt,
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            name,
+            "Senator V2OrgPen",
+            fd,
+            0.5,
+            fe,
+            total_amount=400.0,
+            committee_label=committee,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator V2OrgPen", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    v2 = [
+        a
+        for a in run_pattern_engine(db)
+        if a.rule_id == RULE_SOFT_BUNDLE_V2 and case_id_str in a.matched_case_ids
+    ]
+    db.close()
+    assert v2
+    diag = json.loads(v2[0].diagnostics_json or "{}")
+    assert diag["individual_fraction"] <= 0.3
+    comps = {x.get("component") for x in diag.get("adjustments", [])}
+    assert "org_dominated_penalty" in comps
+
+
+def test_soft_bundle_v2_sector_bonus(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"sb2-sb-{uuid.uuid4().hex[:8]}", "Senator V2Sector")
+    db.flush()
+    committee = "V2 Sector Committee"
+    donors = [
+        ("sb1", "Sector A", "individual", "investment manager"),
+        ("sb2", "Sector B", "individual", "mortgage broker"),
+        ("sb3", "Sector C", "individual", "hedge fund analyst"),
+        ("sb4", "Sector D", "individual", "public school teacher"),
+    ]
+    for i, (dk, name, dt, occ) in enumerate(donors):
+        fd = f"2026-06-{1 + i:02d}"
+        fe = _fec_receipt_entry(
+            db,
+            c.id,
+            contributor_name=name,
+            amount=400.0,
+            receipt_date=fd,
+            donor_type=dt,
+            contributor_occupation=occ,
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            name,
+            "Senator V2Sector",
+            fd,
+            0.5,
+            fe,
+            total_amount=400.0,
+            committee_label=committee,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator V2Sector", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    v2 = [
+        a
+        for a in run_pattern_engine(db)
+        if a.rule_id == RULE_SOFT_BUNDLE_V2 and case_id_str in a.matched_case_ids
+    ]
+    db.close()
+    assert v2
+    diag = json.loads(v2[0].diagnostics_json or "{}")
+    assert diag["sector_similarity"] >= 0.6
+    comps = {x.get("component") for x in diag.get("adjustments", [])}
+    assert "sector_bonus" in comps
+
+
+def test_diagnostics_endpoint_returns_v2(client, test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"diag-v2-{uuid.uuid4().hex[:8]}", "Senator DiagV2")
+    db.flush()
+    committee = "Diag V2 Committee"
+    for i, (dk, name) in enumerate(
+        [
+            ("d1", "Diag Person A"),
+            ("d2", "Diag Person B"),
+            ("d3", "Diag Person C"),
+        ]
+    ):
+        fd = f"2026-07-{1 + i:02d}"
+        fe = _fec_receipt_entry(
+            db, c.id, contributor_name=name, amount=400.0, receipt_date=fd
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            name,
+            "Senator DiagV2",
+            fd,
+            0.5,
+            fe,
+            total_amount=400.0,
+            committee_label=committee,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator DiagV2", "S001198")
+    db.commit()
+    case_uuid = str(c.id)
+    db.close()
+    r = client.get(f"/api/v1/patterns/diagnostics?case_id={case_uuid}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] >= 1
+    assert any(a.get("rule_id") == RULE_SOFT_BUNDLE_V2 for a in data["alerts"])
+    first = next(a for a in data["alerts"] if a.get("rule_id") == RULE_SOFT_BUNDLE_V2)
+    assert first.get("diagnostics") is not None
+    assert "final_weight" in (first["diagnostics"] or {})
+    r2 = client.get(f"/api/v1/patterns?case_id={case_uuid}")
+    assert r2.status_code == 200
+    assert any(a.get("rule_id") == RULE_SOFT_BUNDLE_V2 for a in r2.json()["alerts"])
 
 
 def test_refund_rows_are_not_ingested_from_fec_schedule_a() -> None:

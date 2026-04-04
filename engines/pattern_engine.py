@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from collections import Counter, defaultdict
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from signals.dedup import _parse_evidence_id_list
 
+from adapters.fec import classify_donor_type
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -30,12 +31,13 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "1.5"
+PATTERN_ENGINE_VERSION = "1.6"
 
 # Rule IDs — increment when logic changes, never reuse
 RULE_COMMITTEE_SWEEP = "COMMITTEE_SWEEP_V1"
 RULE_FINGERPRINT_BLOOM = "FINGERPRINT_BLOOM_V1"
 RULE_SOFT_BUNDLE = "SOFT_BUNDLE_V1"
+RULE_SOFT_BUNDLE_V2 = "SOFT_BUNDLE_V2"
 RULE_SECTOR_CONVERGENCE = "SECTOR_CONVERGENCE_V1"
 RULE_GEO_MISMATCH = "GEO_MISMATCH_V1"
 RULE_DISBURSEMENT_LOOP = "DISBURSEMENT_LOOP_V1"
@@ -50,6 +52,19 @@ SOFT_BUNDLE_MIN_UNIQUE_DONORS = 3
 SOFT_BUNDLE_MAX_SPAN_DAYS = 7
 SOFT_BUNDLE_MIN_AGGREGATE = 1000.0
 
+SOFT_BUNDLE_V2_MIN_DONORS = 3
+SOFT_BUNDLE_V2_WINDOW_DAYS = 7
+SOFT_BUNDLE_V2_MIN_AGGREGATE = 1000.0
+SOFT_BUNDLE_V2_SECTOR_THRESHOLD = 0.60
+SOFT_BUNDLE_V2_BASELINE_MULTIPLIER = 3.0
+SOFT_BUNDLE_V2_HEARING_WINDOW_DAYS = 14
+SOFT_BUNDLE_V2_INDIVIDUAL_WEIGHT_BONUS = 0.15
+SOFT_BUNDLE_V2_SECTOR_WEIGHT_BONUS = 0.10
+SOFT_BUNDLE_V2_HEARING_WEIGHT_BONUS = 0.20
+SOFT_BUNDLE_V2_ORG_DOMINATED_PENALTY = -0.10
+
+_HEARING_V2_ENTRY_TYPES = frozenset({"hearing_witness"})
+
 SECTOR_CONVERGENCE_MIN_DONORS = 3
 SECTOR_CONVERGENCE_WINDOW_DAYS = 14
 SECTOR_CONVERGENCE_MIN_AGGREGATE = 5000.0
@@ -58,7 +73,7 @@ GEO_MISMATCH_MIN_DONORS = 5
 GEO_MISMATCH_WINDOW_DAYS = 14
 GEO_MISMATCH_OUT_OF_STATE_THRESHOLD = 0.75
 GEO_MISMATCH_MIN_AGGREGATE = 1000.0
-GEO_MISMATCH_WINDOW_DONOR_OVERLAP = 0.8
+GEO_MISMATCH_MAX_ALERTS_PER_COMMITTEE = 3
 
 # DC + org-style name → unknown (not out-of-state); see _geo_bucket
 _GEO_DC_UNKNOWN_NAME_MARKERS = ("PAC", "COMMITTEE", "ASSOCIATION", "COUNCIL", "INSTITUTE")
@@ -381,6 +396,7 @@ class PatternAlert:
     revolving_door_vote_relevant: bool | None = None
     lda_filing_year: int | None = None
     lda_match_count: int | None = None
+    diagnostics_json: str | None = None
 
 
 def _utc_now() -> datetime:
@@ -435,6 +451,18 @@ def classify_donor_sector(donor_name: str, employer: str = "", occupation: str =
     return None
 
 
+def occupation_to_sector(occupation: str) -> str:
+    """Map free-text FEC occupation to a SECTOR_KEYWORDS bucket; no match → other."""
+    occ = (occupation or "").strip().lower()
+    if not occ:
+        return "other"
+    for sector, keywords in SECTOR_KEYWORDS.items():
+        for kw in keywords:
+            if kw in occ:
+                return sector
+    return "other"
+
+
 def vote_matches_sector(vote_description: str, sector: str) -> bool:
     if not vote_description or sector not in VOTE_SECTOR_KEYWORDS:
         return False
@@ -481,15 +509,6 @@ def _revolving_door_vote_relevant(
         if nom_sec and nom_sec in lda_sectors:
             return True
     return False
-
-
-def _donor_sets_jaccard(a: frozenset[str], b: frozenset[str]) -> float:
-    if not a and not b:
-        return 1.0
-    union = len(a | b)
-    if union == 0:
-        return 1.0
-    return len(a & b) / union
 
 
 def _normalize_match_token(s: str) -> str:
@@ -607,10 +626,13 @@ def match_donor_to_lda(
     return matches
 
 
-def _fec_fields_from_signal(db: Session, sig: Signal) -> tuple[str, str, str | None, str | None]:
+def _fec_fields_from_signal(
+    db: Session, sig: Signal
+) -> tuple[str, str, str | None, str | None, str]:
     employer, occupation = "", ""
     c_state: str | None = None
     c_zip: str | None = None
+    donor_type = "individual"
     for sid in _parse_evidence_id_list(sig.evidence_ids):
         try:
             eid = uuid.UUID(str(sid))
@@ -632,8 +654,22 @@ def _fec_fields_from_signal(db: Session, sig: Signal) -> tuple[str, str, str | N
         c_state = _nonempty_str(raw.get("contributor_state"))
         z = raw.get("contributor_zip") or raw.get("contributor_zip_code")
         c_zip = str(z).strip() if z else None
+        col_dt = getattr(entry, "donor_type", None)
+        if col_dt and str(col_dt).strip():
+            donor_type = str(col_dt).strip()
+        else:
+            raw_dt = _nonempty_str(raw.get("donor_type"))
+            if raw_dt:
+                donor_type = raw_dt
+            else:
+                committee = raw.get("committee") if isinstance(raw.get("committee"), dict) else {}
+                ct_raw = committee.get("committee_type") if isinstance(committee, dict) else None
+                donor_type = classify_donor_type(
+                    str(raw.get("entity_type") or ""),
+                    str(ct_raw) if ct_raw is not None else None,
+                )
         break
-    return employer, occupation, c_state, c_zip
+    return employer, occupation, c_state, c_zip, donor_type
 
 
 def _is_individual_donor(donor_name: str) -> bool:
@@ -812,6 +848,10 @@ class _SoftBundleRow:
     case_file_id: uuid.UUID
     signal_id: uuid.UUID
     official_name: str
+    bioguide_id: str | None = None
+    donor_type: str = "individual"
+    employer: str = ""
+    occupation: str = ""
 
 
 def _load_soft_bundle_rows(db: Session) -> list[_SoftBundleRow]:
@@ -819,6 +859,7 @@ def _load_soft_bundle_rows(db: Session) -> list[_SoftBundleRow]:
     rows = db.execute(
         select(DonorFingerprint, Signal).join(Signal, DonorFingerprint.signal_id == Signal.id)
     ).all()
+    case_cache: dict[uuid.UUID, str | None] = {}
     out: list[_SoftBundleRow] = []
     for fp, sig in rows:
         bd = _signal_breakdown_json(sig)
@@ -843,6 +884,8 @@ def _load_soft_bundle_rows(db: Session) -> list[_SoftBundleRow]:
         if not dk:
             continue
         ck = cl.lower()
+        emp, occ, _, __, dnt = _fec_fields_from_signal(db, sig)
+        bg = _resolve_bioguide(db, fp, case_cache)
         out.append(
             _SoftBundleRow(
                 donor_key=dk,
@@ -854,6 +897,10 @@ def _load_soft_bundle_rows(db: Session) -> list[_SoftBundleRow]:
                 case_file_id=fp.case_file_id,
                 signal_id=sig.id,
                 official_name=(fp.official_name or sig.actor_b or "").strip() or "Unknown official",
+                bioguide_id=bg,
+                donor_type=dnt,
+                employer=emp,
+                occupation=occ,
             )
         )
     return out
@@ -878,11 +925,9 @@ class _EnrichedClusterRow:
     has_lda_filing: bool
 
 
-@dataclass
-class _GeoCand:
-    d0: date
-    d1: date
-    donors: frozenset[str]
+def _geo_donation_ranges_overlap(a0: date, a1: date, b0: date, b1: date) -> bool:
+    """Inclusive calendar overlap (same committee alerts to merge)."""
+    return a0 <= b1 and b0 <= a1
 
 
 def _geo_build_alert_if_qualified(
@@ -1006,7 +1051,7 @@ def _load_enriched_cluster_rows(db: Session) -> list[_EnrichedClusterRow]:
         dk = cid_key if cid_key else leg
         if not dk:
             continue
-        emp, occ, st, zzip = _fec_fields_from_signal(db, sig)
+        emp, occ, st, zzip, _dnt_unused = _fec_fields_from_signal(db, sig)
         bg = _resolve_bioguide(db, fp, case_cache)
         has_lda = bool(bd.get("has_lda_filing"))
         out.append(
@@ -1177,11 +1222,11 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
         by_committee[ck][1].append(row)
 
     alerts: list[PatternAlert] = []
-    for _disp, events in by_committee.values():
+    for _committee_key, (_disp, events) in by_committee.items():
         if len(events) < GEO_MISMATCH_MIN_DONORS:
             continue
         dates_sorted = sorted({e.d for e in events})
-        candidates: list[_GeoCand] = []
+        raw_alerts: list[PatternAlert] = []
         for d0 in dates_sorted:
             for d1 in dates_sorted:
                 if (d1 - d0).days > GEO_MISMATCH_WINDOW_DAYS:
@@ -1214,65 +1259,83 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 ratio = out_n / classified if classified else 0.0
                 if ratio < GEO_MISMATCH_OUT_OF_STATE_THRESHOLD:
                     continue
-                donors = frozenset(ind_keys)
-                candidates.append(_GeoCand(d0=d0, d1=d1, donors=donors))
+                built = _geo_build_alert_if_qualified(
+                    db, votes_by_case, fired_at, window, d0, d1
+                )
+                if built is not None:
+                    raw_alerts.append(built)
 
-        if not candidates:
+        if not raw_alerts:
             continue
 
-        n_c = len(candidates)
-        parent = list(range(n_c))
+        n_raw = len(raw_alerts)
+        g_parent = list(range(n_raw))
 
-        def _find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
+        def _g_find(x: int) -> int:
+            while g_parent[x] != x:
+                g_parent[x] = g_parent[g_parent[x]]
+                x = g_parent[x]
             return x
 
-        def _union(ai: int, bi: int) -> None:
-            ra, rb = _find(ai), _find(bi)
+        def _g_union(ai: int, bi: int) -> None:
+            ra, rb = _g_find(ai), _g_find(bi)
             if ra != rb:
-                parent[rb] = ra
+                g_parent[rb] = ra
 
-        for i in range(n_c):
-            for j in range(i + 1, n_c):
-                if _donor_sets_jaccard(candidates[i].donors, candidates[j].donors) < (
-                    GEO_MISMATCH_WINDOW_DONOR_OVERLAP
-                ):
+        for i in range(n_raw):
+            for j in range(i + 1, n_raw):
+                ai, aj = raw_alerts[i], raw_alerts[j]
+                if (ai.out_of_state_ratio or 0.0) < GEO_MISMATCH_OUT_OF_STATE_THRESHOLD:
                     continue
-                d0m = min(candidates[i].d0, candidates[j].d0)
-                d1m = max(candidates[i].d1, candidates[j].d1)
-                if (d1m - d0m).days > GEO_MISMATCH_WINDOW_DAYS:
+                if (aj.out_of_state_ratio or 0.0) < GEO_MISMATCH_OUT_OF_STATE_THRESHOLD:
                     continue
-                _union(i, j)
+                s_i, e_i = ai.donation_window_start, ai.donation_window_end
+                s_j, e_j = aj.donation_window_start, aj.donation_window_end
+                if s_i is None or e_i is None or s_j is None or e_j is None:
+                    continue
+                if not _geo_donation_ranges_overlap(s_i, e_i, s_j, e_j):
+                    continue
+                _g_union(i, j)
 
-        comp_members: dict[int, list[int]] = defaultdict(list)
-        for i in range(n_c):
-            comp_members[_find(i)].append(i)
+        comp_indices: dict[int, list[int]] = defaultdict(list)
+        for i in range(n_raw):
+            comp_indices[_g_find(i)].append(i)
 
-        final_windows: list[tuple[date, date]] = []
-        for _root, idxs in comp_members.items():
-            idxs_sorted = sorted(idxs)
-            d0m = min(candidates[i].d0 for i in idxs_sorted)
-            d1m = max(candidates[i].d1 for i in idxs_sorted)
-            if len(idxs_sorted) > 1 and (d1m - d0m).days > GEO_MISMATCH_WINDOW_DAYS:
-                for i in idxs_sorted:
-                    final_windows.append((candidates[i].d0, candidates[i].d1))
-            else:
-                final_windows.append((d0m, d1m))
-
-        seen_bounds: set[tuple[date, date]] = set()
-        for d0, d1 in final_windows:
-            key = (d0, d1)
-            if key in seen_bounds:
-                continue
-            seen_bounds.add(key)
-            merged = [e for e in events if d0 <= e.d <= d1]
-            alert = _geo_build_alert_if_qualified(
-                db, votes_by_case, fired_at, merged, d0, d1
+        committee_merged: list[PatternAlert] = []
+        for _root, idxs in comp_indices.items():
+            group = [raw_alerts[i] for i in idxs]
+            d0m = min(a.donation_window_start for a in group if a.donation_window_start)
+            d1m = max(a.donation_window_end for a in group if a.donation_window_end)
+            rep = max(
+                group,
+                key=lambda a: (
+                    (a.individual_donor_count or 0),
+                    (a.suspicion_score or 0.0),
+                ),
             )
-            if alert is not None:
-                alerts.append(alert)
+            ev_union: set[str] = set()
+            for a in group:
+                ev_union.update(a.evidence_refs)
+            merged_window = [e for e in events if d0m <= e.d <= d1m]
+            rebuilt = _geo_build_alert_if_qualified(
+                db, votes_by_case, fired_at, merged_window, d0m, d1m
+            )
+            if rebuilt is None:
+                merged_alert = replace(
+                    rep,
+                    donation_window_start=d0m,
+                    donation_window_end=d1m,
+                    window_days=int((d1m - d0m).days),
+                    evidence_refs=sorted(ev_union),
+                )
+            else:
+                merged_alert = replace(rebuilt, evidence_refs=sorted(ev_union))
+                if (rep.individual_donor_count or 0) > (rebuilt.individual_donor_count or 0):
+                    merged_alert = replace(merged_alert, donor_entity=rep.donor_entity)
+            committee_merged.append(merged_alert)
+
+        committee_merged.sort(key=lambda a: -(a.suspicion_score or 0.0))
+        alerts.extend(committee_merged[:GEO_MISMATCH_MAX_ALERTS_PER_COMMITTEE])
     return alerts
 
 
@@ -1412,7 +1475,7 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
         display = _donor_display_for_signal(sig0, dk)
         if _revolving_door_donor_blocked(display):
             continue
-        emp, _, _, __ = _fec_fields_from_signal(db, sig0)
+        emp, _, _, __, ___ = _fec_fields_from_signal(db, sig0)
         matches = match_donor_to_lda(display, emp, lda_list)
         if len(matches) < REVOLVING_DOOR_MIN_MATCHED_DONORS:
             continue
@@ -1611,6 +1674,238 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
     return alerts
 
 
+def _median_seven_day_intake_for_bioguide(db: Session, bioguide_id: str) -> float | None:
+    events: list[tuple[date, float]] = []
+    for row in _load_soft_bundle_rows(db):
+        if row.bioguide_id != bioguide_id:
+            continue
+        events.append((row.d, row.amount))
+    if len(events) < 10:
+        return None
+    dates_sorted = sorted({d for d, _ in events})
+    totals: list[float] = []
+    for d0 in dates_sorted:
+        d_end = d0 + timedelta(days=6)
+        tot = sum(amt for d, amt in events if d0 <= d <= d_end)
+        totals.append(tot)
+    if len(totals) < 3:
+        return None
+    totals.sort()
+    n = len(totals)
+    mid = n // 2
+    if n % 2:
+        return float(totals[mid])
+    return float(totals[mid - 1] + totals[mid]) / 2.0
+
+
+def _hearing_within_days_of_midpoint(
+    db: Session,
+    case_ids: set[uuid.UUID],
+    midpoint: date,
+    half_span: int,
+) -> bool:
+    lo = midpoint - timedelta(days=half_span)
+    hi = midpoint + timedelta(days=half_span)
+    for cid in case_ids:
+        hit = db.execute(
+            select(EvidenceEntry.id).where(
+                EvidenceEntry.case_file_id == cid,
+                EvidenceEntry.entry_type.in_(_HEARING_V2_ENTRY_TYPES),
+                EvidenceEntry.date_of_event.isnot(None),
+                EvidenceEntry.date_of_event >= lo,
+                EvidenceEntry.date_of_event <= hi,
+            ).limit(1)
+        ).first()
+        if hit:
+            return True
+    return False
+
+
+def _detect_soft_bundle_v2(db: Session, fired_at: datetime) -> list[PatternAlert]:
+    votes_by_case = _vote_evidence_by_case(db)
+    by_committee: dict[str, tuple[str, list[_SoftBundleRow]]] = {}
+    for row in _load_soft_bundle_rows(db):
+        ck = row.committee_key
+        if ck not in by_committee:
+            by_committee[ck] = (row.committee_display, [])
+        by_committee[ck][1].append(row)
+
+    median_cache: dict[str, float | None] = {}
+
+    qualifying: list[
+        tuple[frozenset[uuid.UUID], list[_SoftBundleRow], date, date, int, float]
+    ] = []
+    for _committee_display, events in by_committee.values():
+        if len(events) < SOFT_BUNDLE_V2_MIN_DONORS:
+            continue
+        dates_sorted = sorted({e.d for e in events})
+        for d0 in dates_sorted:
+            for d1 in dates_sorted:
+                if (d1 - d0).days > SOFT_BUNDLE_V2_WINDOW_DAYS:
+                    continue
+                window = [e for e in events if d0 <= e.d <= d1]
+                donors = {e.donor_key for e in window}
+                if len(donors) < SOFT_BUNDLE_V2_MIN_DONORS:
+                    continue
+                total = sum(e.amount for e in window)
+                if total < SOFT_BUNDLE_V2_MIN_AGGREGATE:
+                    continue
+                fs = frozenset(e.signal_id for e in window)
+                qualifying.append((fs, window, d0, d1, len(donors), total))
+
+    by_sig_set: dict[frozenset[uuid.UUID], tuple] = {}
+    for tup in qualifying:
+        fs0 = tup[0]
+        if fs0 not in by_sig_set:
+            by_sig_set[fs0] = tup
+    deduped = list(by_sig_set.values())
+
+    maximal_sets: set[frozenset[uuid.UUID]] = set()
+    for tup in sorted(deduped, key=lambda t: -len(t[0])):
+        fs = tup[0]
+        if fs in maximal_sets:
+            continue
+        if any(fs < k for k in maximal_sets):
+            continue
+        subsumed = {k for k in maximal_sets if k < fs}
+        maximal_sets -= subsumed
+        maximal_sets.add(fs)
+
+    alerts: list[PatternAlert] = []
+    for tup in deduped:
+        fs, window, d0, d1, n_donors, total = tup
+        if fs not in maximal_sets:
+            continue
+        donor_labels = sorted({e.donor_display for e in window})
+        preview = ", ".join(donor_labels[:5])
+        if len(donor_labels) > 5:
+            preview = f"{preview}, +{len(donor_labels) - 5} more"
+        sample_row = window[0]
+        span_days = (d1 - d0).days
+        case_uuids = {e.case_file_id for e in window}
+        midpoint = _cluster_midpoint_date(d0, d1)
+
+        donor_keys = {e.donor_key for e in window}
+        n_total = len(donor_keys)
+        n_indiv = len({e.donor_key for e in window if e.donor_type == "individual"})
+        individual_fraction = n_indiv / n_total if n_total else 0.0
+
+        occ_by_dk: dict[str, str] = {}
+        for e in window:
+            if e.donor_key not in occ_by_dk:
+                occ_by_dk[e.donor_key] = e.occupation or ""
+        sector_by_dk = {dk: occupation_to_sector(occ) for dk, occ in occ_by_dk.items()}
+        sec_counts = Counter(sector_by_dk.values())
+        sector_similarity = 0.0
+        if sector_by_dk:
+            top_ct = sec_counts.most_common(1)[0][1]
+            sector_similarity = top_ct / len(sector_by_dk)
+
+        bg = next((e.bioguide_id for e in window if e.bioguide_id), None)
+        baseline_ratio: float | None = None
+        median_intake: float | None = None
+        if bg:
+            if bg not in median_cache:
+                median_cache[bg] = _median_seven_day_intake_for_bioguide(db, bg)
+            median_intake = median_cache[bg]
+            if median_intake and median_intake > 0:
+                baseline_ratio = float(total) / float(median_intake)
+
+        hearing_nearby = _hearing_within_days_of_midpoint(
+            db, case_uuids, midpoint, SOFT_BUNDLE_V2_HEARING_WINDOW_DAYS
+        )
+
+        base_weight = min(1.0, float(total) / 50000.0)
+        adjustments: list[dict[str, Any]] = []
+        w = base_weight
+        if individual_fraction >= 0.7:
+            w += SOFT_BUNDLE_V2_INDIVIDUAL_WEIGHT_BONUS
+            adjustments.append(
+                {"component": "individual_bonus", "delta": SOFT_BUNDLE_V2_INDIVIDUAL_WEIGHT_BONUS}
+            )
+        if individual_fraction <= 0.3:
+            w += SOFT_BUNDLE_V2_ORG_DOMINATED_PENALTY
+            adjustments.append(
+                {"component": "org_dominated_penalty", "delta": SOFT_BUNDLE_V2_ORG_DOMINATED_PENALTY}
+            )
+        if sector_similarity >= SOFT_BUNDLE_V2_SECTOR_THRESHOLD:
+            w += SOFT_BUNDLE_V2_SECTOR_WEIGHT_BONUS
+            adjustments.append(
+                {"component": "sector_bonus", "delta": SOFT_BUNDLE_V2_SECTOR_WEIGHT_BONUS}
+            )
+        if hearing_nearby:
+            w += SOFT_BUNDLE_V2_HEARING_WEIGHT_BONUS
+            adjustments.append(
+                {"component": "hearing_proximity_bonus", "delta": SOFT_BUNDLE_V2_HEARING_WEIGHT_BONUS}
+            )
+        if baseline_ratio is not None and baseline_ratio >= SOFT_BUNDLE_V2_BASELINE_MULTIPLIER:
+            w += 0.10
+            adjustments.append({"component": "baseline_spike_bonus", "delta": 0.10})
+
+        final_weight = max(0.0, min(1.0, w))
+
+        d_days, v_id, v_date, prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
+            db, case_uuids, midpoint, votes_by_case
+        )
+        dl_adj = False
+        dl_discount = 1.0
+        dl_note: str | None = None
+        if is_deadline_adjacent(d1):
+            dl_adj = True
+            dl_discount = 0.6
+            dl_note = "Bundle window overlaps FEC quarterly deadline — reduced weight"
+
+        plurality = sec_counts.most_common(1)[0][0] if sec_counts else None
+        diagnostics: dict[str, Any] = {
+            "rule_id": RULE_SOFT_BUNDLE_V2,
+            "individual_fraction": individual_fraction,
+            "sector_similarity": sector_similarity,
+            "plurality_sector": plurality,
+            "baseline_ratio": baseline_ratio,
+            "median_seven_day_intake": median_intake,
+            "hearing_nearby": hearing_nearby,
+            "base_weight": base_weight,
+            "adjustments": adjustments,
+            "final_weight": final_weight,
+            "aggregate_amount": float(total),
+            "donor_count": n_donors,
+            "window_start": d0.isoformat(),
+            "window_end": d1.isoformat(),
+            "bioguide_id": bg,
+        }
+
+        alerts.append(
+            PatternAlert(
+                rule_id=RULE_SOFT_BUNDLE_V2,
+                pattern_version=PATTERN_ENGINE_VERSION,
+                donor_entity=f"Soft bundle V2 — {n_donors} donors ({preview})",
+                matched_officials=sorted({e.official_name for e in window}),
+                matched_case_ids=sorted({str(e.case_file_id) for e in window}),
+                committee=sample_row.committee_display,
+                window_days=int(span_days),
+                evidence_refs=sorted({str(e.signal_id) for e in window}),
+                fired_at=fired_at,
+                donation_window_start=d0,
+                donation_window_end=d1,
+                aggregate_amount=float(total),
+                cluster_size=int(n_donors),
+                days_to_nearest_vote=d_days,
+                nearest_vote_id=v_id,
+                nearest_vote_date=v_date,
+                nearest_vote_description=v_desc,
+                nearest_vote_result=v_res,
+                nearest_vote_question=v_q,
+                proximity_to_vote_score=prof,
+                deadline_adjacent=dl_adj,
+                deadline_discount=dl_discount,
+                deadline_note=dl_note,
+                suspicion_score=final_weight,
+                diagnostics_json=json.dumps(diagnostics, separators=(",", ":"), default=str),
+            )
+        )
+    return alerts
+
+
 def _committees_by_bioguide(db: Session) -> dict[str, set[str]]:
     rows = db.execute(
         select(SenatorCommittee.bioguide_id, SenatorCommittee.committee_name)
@@ -1790,6 +2085,7 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
     alerts.extend(_detect_committee_sweep(by_donor, committees_map, fired_at))
     alerts.extend(_detect_fingerprint_bloom(by_donor, fired_at))
     alerts.extend(_detect_soft_bundles(db, fired_at))
+    alerts.extend(_detect_soft_bundle_v2(db, fired_at))
     alerts.extend(_detect_sector_convergence(db, fired_at))
     alerts.extend(_detect_geo_mismatch(db, fired_at))
     alerts.extend(_detect_disbursement_loop(db, fired_at))
@@ -1856,6 +2152,9 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         "revolving_door_vote_relevant": a.revolving_door_vote_relevant,
         "lda_filing_year": a.lda_filing_year,
         "lda_match_count": a.lda_match_count,
+        "diagnostics": json.loads(a.diagnostics_json)
+        if a.diagnostics_json
+        else None,
     }
 
 
@@ -1881,6 +2180,7 @@ def sync_pattern_alert_records(db: Session, alerts: list[PatternAlert]) -> None:
                 disclaimer=a.disclaimer,
                 fired_at=a.fired_at,
                 created_at=now,
+                diagnostics_json=a.diagnostics_json,
             )
         )
 
