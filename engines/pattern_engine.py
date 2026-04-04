@@ -33,7 +33,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "2.0"
+PATTERN_ENGINE_VERSION = "2.1"
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,7 @@ _AMENDMENT_WEAKENING_KEYWORDS = (
 BASELINE_ANOMALY_MIN_MULTIPLIER = 4.0
 BASELINE_ANOMALY_MIN_AGGREGATE = 5000.0
 BASELINE_ANOMALY_MIN_DATAPOINTS = 20
+BASELINE_ANOMALY_MAX_ALERTS_PER_CASE = 5
 
 ALIGNMENT_ANOMALY_MIN_VOTES = 5
 ALIGNMENT_ANOMALY_DEVIATION_THRESHOLD = 1.5
@@ -475,10 +476,16 @@ def proximity_to_vote_score_from_days(days_to_nearest: int | None) -> float:
 
 
 def is_deadline_adjacent(window_end_date: date) -> bool:
-    for month, day in FEC_FUNDRAISING_DEADLINES:
-        deadline = date(window_end_date.year, month, day)
-        if abs((window_end_date - deadline).days) <= DEADLINE_WINDOW_DAYS:
-            return True
+    """True if window end is within DEADLINE_WINDOW_DAYS of any quarterly FEC deadline."""
+    for ydelta in (-1, 0, 1):
+        y = window_end_date.year + ydelta
+        for month, day in FEC_FUNDRAISING_DEADLINES:
+            try:
+                deadline = date(y, month, day)
+            except ValueError:
+                continue
+            if abs((window_end_date - deadline).days) <= DEADLINE_WINDOW_DAYS:
+                return True
     return False
 
 
@@ -1569,6 +1576,49 @@ def _fec_receipt_date_amount_pairs_for_bioguide(
     return pairs
 
 
+def _fec_receipt_evidence_ids_for_case_window(
+    db: Session, case_id: uuid.UUID, d0: date, d1: date
+) -> list[str]:
+    """Evidence entry IDs on this case whose receipt date falls in [d0, d1] (FEC-style rows)."""
+    ids: set[str] = set()
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            or_(
+                EvidenceEntry.entry_type == "financial_connection",
+                EvidenceEntry.entry_type == "fec_historical",
+                EvidenceEntry.entry_type == "fec_jfc_donor",
+            ),
+        )
+    ).all():
+        if ent.entry_type == "financial_connection":
+            if (ent.source_name or "") != "FEC" and (ent.adapter_name or "") != "FEC":
+                continue
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        raw_d = raw.get("contribution_receipt_date") or ""
+        ds = str(raw_d).strip()[:10]
+        try:
+            d = date.fromisoformat(ds) if ds else None
+        except ValueError:
+            d = ent.date_of_event
+        if d is None:
+            continue
+        if not (d0 <= d <= d1):
+            continue
+        try:
+            amt = float(raw.get("contribution_receipt_amount") or ent.amount or 0)
+        except (TypeError, ValueError):
+            amt = float(ent.amount or 0)
+        if amt > 0:
+            ids.add(str(ent.id))
+    return sorted(ids)
+
+
 def _fec_cycles_present_for_bioguide(db: Session, bioguide_id: str) -> list[int]:
     cycles: set[int] = set()
     for cid in _case_ids_for_bioguide(db, bioguide_id):
@@ -1714,6 +1764,7 @@ def _detect_joint_fundraising(db: Session, fired_at: datetime) -> list[PatternAl
 
 def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAlert]:
     alerts: list[PatternAlert] = []
+    votes_by_case = _vote_evidence_by_case(db)
     for prof in db.scalars(select(SubjectProfile)).all():
         bg = (prof.bioguide_id or "").strip()
         cid = prof.case_file_id
@@ -1729,6 +1780,8 @@ def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAle
             continue
         dates_sorted = sorted({d for d, _ in pairs})
         seen_win: set[tuple[date, date]] = set()
+        case_alerts: list[PatternAlert] = []
+        principal = _principal_committee_id_for_case(db, cid) or ""
         for d0 in dates_sorted:
             for d1 in dates_sorted:
                 if (d1 - d0).days > 7:
@@ -1742,30 +1795,58 @@ def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAle
                 if mult < BASELINE_ANOMALY_MIN_MULTIPLIER:
                     continue
                 seen_win.add((d0, d1))
-                alerts.append(
+                dl_adj = is_deadline_adjacent(d1)
+                dl_discount = 0.6 if dl_adj else 1.0
+                dl_note: str | None = None
+                if dl_adj:
+                    dl_note = (
+                        "Donation window overlaps FEC quarterly deadline — reduced weight"
+                    )
+                base_suspicion = min(1.0, mult / 8.0)
+                suspicion = base_suspicion * dl_discount
+                midpoint = _cluster_midpoint_date(d0, d1)
+                d_days, v_id, v_date, v_prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
+                    db, {cid}, midpoint, votes_by_case
+                )
+                ev_ids = _fec_receipt_evidence_ids_for_case_window(db, cid, d0, d1)
+                pe = {
+                    "window_aggregate": float(tot),
+                    "senator_median_7day": float(median),
+                    "baseline_multiplier": float(mult),
+                    "baseline_datapoints": len(pairs),
+                    "cycles_included": _fec_cycles_present_for_bioguide(db, bg),
+                    "base_suspicion_before_deadline": float(base_suspicion),
+                }
+                case_alerts.append(
                     PatternAlert(
                         rule_id=RULE_BASELINE_ANOMALY,
                         pattern_version=PATTERN_ENGINE_VERSION,
                         donor_entity=f"Baseline spike — {mult:.1f}× median 7-day intake",
                         matched_officials=[subject_lbl],
                         matched_case_ids=[str(cid)],
-                        committee="",
+                        committee=principal,
                         window_days=int((d1 - d0).days),
-                        evidence_refs=[],
+                        evidence_refs=ev_ids,
                         fired_at=fired_at,
                         donation_window_start=d0,
                         donation_window_end=d1,
                         aggregate_amount=float(tot),
-                        suspicion_score=min(1.0, mult / 8.0),
-                        payload_extra={
-                            "window_aggregate": float(tot),
-                            "senator_median_7day": float(median),
-                            "baseline_multiplier": float(mult),
-                            "baseline_datapoints": len(pairs),
-                            "cycles_included": _fec_cycles_present_for_bioguide(db, bg),
-                        },
+                        suspicion_score=suspicion,
+                        deadline_adjacent=dl_adj,
+                        deadline_discount=dl_discount,
+                        deadline_note=dl_note,
+                        days_to_nearest_vote=d_days,
+                        nearest_vote_id=v_id,
+                        nearest_vote_date=v_date,
+                        nearest_vote_description=v_desc,
+                        nearest_vote_result=v_res,
+                        nearest_vote_question=v_q,
+                        proximity_to_vote_score=v_prof,
+                        payload_extra=pe,
                     )
                 )
+        case_alerts.sort(key=lambda a: -(a.suspicion_score or 0.0))
+        alerts.extend(case_alerts[:BASELINE_ANOMALY_MAX_ALERTS_PER_CASE])
     return alerts
 
 

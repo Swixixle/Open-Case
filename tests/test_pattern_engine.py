@@ -775,6 +775,8 @@ def test_proximity_to_vote_score_tiers() -> None:
     assert proximity_to_vote_score_from_days(61) == 0.1
     assert is_deadline_adjacent(date(2026, 12, 31)) is True
     assert is_deadline_adjacent(date(2026, 2, 11)) is False
+    # Year boundary: window end early Jan still within 5 days of prior Dec 31 deadline.
+    assert is_deadline_adjacent(date(2023, 1, 2)) is True
 
 
 def test_suspicion_score_computed(test_engine) -> None:
