@@ -267,6 +267,22 @@ class SubjectProfile(Base):
     updated_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
+class PoliticalEvent(Base):
+    """Dated political / fundraising calendar entries (FEC, elections, primaries)."""
+
+    __tablename__ = "political_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_name: Mapped[str] = mapped_column(String(200))
+    event_type: Mapped[str] = mapped_column(String(50))
+    event_date: Mapped[date] = mapped_column(Date, index=True)
+    state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    buffer_days_pre: Mapped[int] = mapped_column(Integer, default=7)
+    buffer_days_post: Mapped[int] = mapped_column(Integer, default=3)
+    discount_factor: Mapped[float] = mapped_column(Float, default=0.4)
+    congress: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class SenatorCommittee(Base):
     """Senate.gov committee assignment rows (cached per senator)."""
 

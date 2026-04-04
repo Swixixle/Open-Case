@@ -28,13 +28,13 @@ from engines.pattern_engine import (
     SOFT_BUNDLE_MAX_SPAN_DAYS,
     _is_individual_donor,
     classify_donor_sector,
-    is_deadline_adjacent,
     pattern_alert_to_payload,
     proximity_to_vote_score_from_days,
     match_donor_to_lda,
     run_pattern_engine,
     vote_matches_sector,
 )
+from engines.political_calendar import get_calendar_discount
 from models import (
     CaseContributor,
     CaseFile,
@@ -544,6 +544,7 @@ def test_soft_bundle_fires_at_threshold(test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"sb-{uuid.uuid4().hex[:8]}", "Senator Softbundle")
     db.flush()
+    _vote_record(db, c.id, date(2025, 3, 3), raw_data={"congress": "119"})
     committee = "Friends of X"
     specs = [
         ("donor a", "DONOR A", "2025-03-01", 400.0),
@@ -664,6 +665,7 @@ def test_soft_bundle_fires_when_only_receipt_date_in_breakdown(test_engine) -> N
     _seed_investigator(db)
     c = _case(db, f"sbrec-{uuid.uuid4().hex[:8]}", "Senator ReceiptOnly")
     db.flush()
+    _vote_record(db, c.id, date(2025, 3, 3), raw_data={"congress": "119"})
     committee = "Friends of X"
     specs = [
         ("r1", "R1", "2025-03-01", 400.0),
@@ -697,6 +699,7 @@ def test_deadline_discount_applied(test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"sb-dl-{uuid.uuid4().hex[:8]}", "Senator YearEnd")
     db.flush()
+    _vote_record(db, c.id, date(2026, 12, 28), raw_data={"congress": "119"})
     committee = "Friends of YearEnd"
     specs = [
         ("y1", "Y1", "2026-12-26", 400.0),
@@ -721,11 +724,13 @@ def test_deadline_discount_applied(test_engine) -> None:
     db.close()
     assert len(sb) == 1
     assert sb[0].deadline_adjacent is True
-    assert sb[0].deadline_discount == 0.6
-    assert sb[0].deadline_note == "Bundle window overlaps FEC quarterly deadline — reduced weight"
+    assert sb[0].deadline_discount == 0.3
+    assert sb[0].deadline_note == "2026 Year-End FEC Deadline (FEC_DEADLINE)"
     pl = pattern_alert_to_payload(sb[0])
     assert pl["deadline_adjacent"] is True
-    assert pl["deadline_discount"] == 0.6
+    assert pl["calendar_explained"] is True
+    assert pl["deadline_discount"] == 0.3
+    assert pl["calendar_discount_factor"] == 0.3
 
 
 def test_no_deadline_discount_february(test_engine) -> None:
@@ -734,6 +739,7 @@ def test_no_deadline_discount_february(test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"sb-feb-{uuid.uuid4().hex[:8]}", "Senator CottonFeb")
     db.flush()
+    _vote_record(db, c.id, date(2026, 2, 10), raw_data={"congress": "119"})
     committee = "Cotton Committee"
     specs = [
         ("f1", "F1", "2026-02-08", 400.0),
@@ -773,10 +779,18 @@ def test_proximity_to_vote_score_tiers() -> None:
     assert proximity_to_vote_score_from_days(31) == 0.25
     assert proximity_to_vote_score_from_days(60) == 0.25
     assert proximity_to_vote_score_from_days(61) == 0.1
-    assert is_deadline_adjacent(date(2026, 12, 31)) is True
-    assert is_deadline_adjacent(date(2026, 2, 11)) is False
-    # Year boundary: window end early Jan still within 5 days of prior Dec 31 deadline.
-    assert is_deadline_adjacent(date(2023, 1, 2)) is True
+
+
+def test_calendar_discount_via_embedded_calendar(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    d, _, _ = get_calendar_discount(db, date(2026, 12, 31), date(2026, 12, 31), None)
+    assert d < 1.0
+    d2, _, _ = get_calendar_discount(db, date(2026, 2, 11), date(2026, 2, 11), None)
+    assert d2 == 1.0
+    d3, _, _ = get_calendar_discount(db, date(2023, 1, 2), date(2023, 1, 2), None)
+    assert d3 < 1.0
+    db.close()
 
 
 def test_suspicion_score_computed(test_engine) -> None:
@@ -787,7 +801,7 @@ def test_suspicion_score_computed(test_engine) -> None:
     db.flush()
     committee = "Friends of Score"
     # Cluster midpoint for 2026-02-08 .. 2026-02-11 is 2026-02-09 (ordinal average).
-    _vote_record(db, c.id, date(2026, 2, 9))
+    _vote_record(db, c.id, date(2026, 2, 9), raw_data={"congress": "119"})
     specs = [
         ("s1", "S1", "2026-02-08", 400.0),
         ("s2", "S2", "2026-02-09", 400.0),
@@ -1019,7 +1033,7 @@ def test_nearest_vote_description_none_when_missing(test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"sb-vnone-{uuid.uuid4().hex[:8]}", "Senator Vnone")
     db.flush()
-    _vote_record(db, c.id, date(2026, 2, 9), raw_data={})
+    _vote_record(db, c.id, date(2026, 2, 9), raw_data={"congress": "119"})
     committee = "Friends of Vnone"
     for dk, ddisplay, fd, amt in [
         ("n1", "N1", "2026-02-08", 400.0),
@@ -2229,6 +2243,7 @@ def test_soft_bundle_v2_individual_bonus(test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"sb2-ib-{uuid.uuid4().hex[:8]}", "Senator V2IndivBonus")
     db.flush()
+    _vote_record(db, c.id, date(2026, 4, 4), raw_data={"congress": "119"})
     committee = "V2 Indiv Committee"
     donors = [
         ("ib1", "Indiv Bonus A", "individual"),
@@ -2281,6 +2296,7 @@ def test_soft_bundle_v2_org_penalty(test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"sb2-op-{uuid.uuid4().hex[:8]}", "Senator V2OrgPen")
     db.flush()
+    _vote_record(db, c.id, date(2026, 5, 3), raw_data={"congress": "119"})
     committee = "V2 Org Committee"
     donors = [
         ("op1", "Solo Indiv Person", "individual"),
@@ -2333,6 +2349,7 @@ def test_soft_bundle_v2_sector_bonus(test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"sb2-sb-{uuid.uuid4().hex[:8]}", "Senator V2Sector")
     db.flush()
+    _vote_record(db, c.id, date(2026, 6, 3), raw_data={"congress": "119"})
     committee = "V2 Sector Committee"
     donors = [
         ("sb1", "Sector A", "individual", "investment manager"),
@@ -2385,6 +2402,7 @@ def test_diagnostics_endpoint_returns_v2(client, test_engine) -> None:
     _seed_investigator(db)
     c = _case(db, f"diag-v2-{uuid.uuid4().hex[:8]}", "Senator DiagV2")
     db.flush()
+    _vote_record(db, c.id, date(2026, 7, 2), raw_data={"congress": "119"})
     committee = "Diag V2 Committee"
     for i, (dk, name) in enumerate(
         [

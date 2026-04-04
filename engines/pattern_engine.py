@@ -20,6 +20,7 @@ from typing import Any
 from signals.dedup import _parse_evidence_id_list
 
 from adapters.fec import classify_donor_type
+from engines.political_calendar import get_calendar_discount
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
@@ -33,7 +34,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "2.1"
+PATTERN_ENGINE_VERSION = "2.2"
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,8 @@ _AMENDMENT_WEAKENING_KEYWORDS = (
     "waive",
 )
 
-BASELINE_ANOMALY_MIN_MULTIPLIER = 4.0
+BASELINE_ANOMALY_MIN_MULTIPLIER = 6.0
+BASELINE_ANOMALY_CALENDAR_ADJACENT_MIN_MULTIPLIER = 10.0
 BASELINE_ANOMALY_MIN_AGGREGATE = 5000.0
 BASELINE_ANOMALY_MIN_DATAPOINTS = 20
 BASELINE_ANOMALY_MAX_ALERTS_PER_CASE = 5
@@ -370,13 +372,7 @@ SENATOR_HOME_STATE: dict[str, str] = {
     "B001306": "IN",
 }
 
-FEC_FUNDRAISING_DEADLINES: list[tuple[int, int]] = [
-    (3, 31),
-    (6, 30),
-    (9, 30),
-    (12, 31),
-]
-DEADLINE_WINDOW_DAYS = 5
+CURRENT_CONGRESS_FOR_VOTE_CONTEXT = 119
 
 PATTERN_ALERT_DISCLAIMER = (
     "This alert documents donor appearance across public records. "
@@ -411,6 +407,9 @@ class PatternAlert:
     deadline_adjacent: bool = False
     deadline_discount: float = 1.0
     deadline_note: str | None = None
+    calendar_event_type: str | None = None
+    calendar_event_name: str | None = None
+    vote_context_available: bool | None = None
     suspicion_score: float | None = None
     sector: str | None = None
     sector_donor_count: int | None = None
@@ -475,18 +474,69 @@ def proximity_to_vote_score_from_days(days_to_nearest: int | None) -> float:
     return 0.1
 
 
-def is_deadline_adjacent(window_end_date: date) -> bool:
-    """True if window end is within DEADLINE_WINDOW_DAYS of any quarterly FEC deadline."""
-    for ydelta in (-1, 0, 1):
-        y = window_end_date.year + ydelta
-        for month, day in FEC_FUNDRAISING_DEADLINES:
-            try:
-                deadline = date(y, month, day)
-            except ValueError:
-                continue
-            if abs((window_end_date - deadline).days) <= DEADLINE_WINDOW_DAYS:
-                return True
-    return False
+def _vote_raw_congress_number(raw: dict[str, Any]) -> int | None:
+    c = raw.get("congress")
+    if c is None:
+        bill = raw.get("bill")
+        if isinstance(bill, dict):
+            c = bill.get("congress")
+    if c is None:
+        return None
+    if isinstance(c, int):
+        return c
+    s = str(c).strip()
+    if s.isdigit():
+        return int(s)
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return int(digits) if digits else None
+
+
+def _case_ids_with_current_congress_votes(db: Session) -> set[uuid.UUID]:
+    out: set[uuid.UUID] = set()
+    for ent in db.scalars(
+        select(EvidenceEntry).where(EvidenceEntry.entry_type == "vote_record")
+    ).all():
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        if _vote_raw_congress_number(raw) == CURRENT_CONGRESS_FOR_VOTE_CONTEXT:
+            out.add(ent.case_file_id)
+    return out
+
+
+def _all_cases_have_vote_context(
+    matched_case_ids: list[str], cases_with_votes: set[uuid.UUID]
+) -> bool:
+    for sid in matched_case_ids:
+        try:
+            cid = uuid.UUID(sid)
+        except ValueError:
+            return False
+        if cid not in cases_with_votes:
+            return False
+    return True
+
+
+def _calendar_for_window(
+    db: Session, d0: date, d1: date, state_code: str | None
+) -> tuple[bool, float, str | None, str | None, str | None]:
+    disc, et, en = get_calendar_discount(db, d0, d1, state_code)
+    adjacent = disc < 1.0
+    note = f"{en} ({et})" if en and et else None
+    return adjacent, float(disc), note, et, en
+
+
+def _senator_state_for_calendar(bg: str | None, profile_state: str | None) -> str | None:
+    st = (profile_state or "").strip().upper()[:2]
+    if len(st) == 2:
+        return st
+    b = (bg or "").strip()
+    if b in SENATOR_HOME_STATE:
+        return SENATOR_HOME_STATE[b]
+    return None
 
 
 def classify_donor_sector(donor_name: str, employer: str = "", occupation: str = "") -> str | None:
@@ -1023,12 +1073,7 @@ def _geo_build_alert_if_qualified(
     d_days, v_id, v_date, prof, vdesc, vres, vq = _nearest_vote_for_cases(
         db, case_uuids, midpoint, votes_by_case
     )
-    if is_deadline_adjacent(d1):
-        dl_adj, dl_disc, dl_note = True, 0.6, (
-            "Bundle window overlaps FEC quarterly deadline — reduced weight"
-        )
-    else:
-        dl_adj, dl_disc, dl_note = False, 1.0, None
+    dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(db, d0, d1, home)
     suspicion = ratio * float(prof) * dl_disc
     donor_labels = sorted({e.donor_display for e in window})
     preview = ", ".join(donor_labels[:5])
@@ -1060,6 +1105,8 @@ def _geo_build_alert_if_qualified(
         deadline_adjacent=dl_adj,
         deadline_discount=dl_disc,
         deadline_note=dl_note,
+        calendar_event_type=cet,
+        calendar_event_name=cen,
         suspicion_score=suspicion,
         senator_state=home,
         out_of_state_ratio=float(ratio),
@@ -1211,12 +1258,11 @@ def _detect_sector_convergence(db: Session, fired_at: datetime) -> list[PatternA
         d_days, v_id, v_date, prof, vdesc, vres, vq = _nearest_vote_for_cases(
             db, case_uuids, midpoint, votes_by_case
         )
-        if is_deadline_adjacent(d1):
-            dl_adj, dl_disc, dl_note = True, 0.6, (
-                "Bundle window overlaps FEC quarterly deadline — reduced weight"
-            )
-        else:
-            dl_adj, dl_disc, dl_note = False, 1.0, None
+        st_cal = _senator_state_for_calendar(
+            next((e.bioguide_id for e in sector_rows if e.bioguide_id), None),
+            None,
+        )
+        dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(db, d0, d1, st_cal)
         mult = 1.5 if vm else 1.0
         suspicion = conc * float(prof) * dl_disc * mult
         donor_labels = sorted({e.donor_display for e in sector_rows})
@@ -1248,6 +1294,8 @@ def _detect_sector_convergence(db: Session, fired_at: datetime) -> list[PatternA
                 deadline_adjacent=dl_adj,
                 deadline_discount=dl_disc,
                 deadline_note=dl_note,
+                calendar_event_type=cet,
+                calendar_event_name=cen,
                 suspicion_score=suspicion,
                 sector=sector_key,
                 sector_donor_count=int(s_n),
@@ -1762,7 +1810,9 @@ def _detect_joint_fundraising(db: Session, fired_at: datetime) -> list[PatternAl
     return alerts
 
 
-def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAlert]:
+def _detect_baseline_anomaly(
+    db: Session, fired_at: datetime, cases_with_votes: set[uuid.UUID]
+) -> list[PatternAlert]:
     alerts: list[PatternAlert] = []
     votes_by_case = _vote_evidence_by_case(db)
     for prof in db.scalars(select(SubjectProfile)).all():
@@ -1771,6 +1821,8 @@ def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAle
         case_row = db.get(CaseFile, cid)
         subject_lbl = (case_row.subject_name if case_row else "Official").strip() or "Official"
         if not bg:
+            continue
+        if cid not in cases_with_votes:
             continue
         pairs = _fec_receipt_date_amount_pairs_for_bioguide(db, bg)
         if len(pairs) < BASELINE_ANOMALY_MIN_DATAPOINTS:
@@ -1792,18 +1844,20 @@ def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAle
                 if tot < BASELINE_ANOMALY_MIN_AGGREGATE:
                     continue
                 mult = tot / median
-                if mult < BASELINE_ANOMALY_MIN_MULTIPLIER:
+                state_cal = _senator_state_for_calendar(bg, prof.state)
+                dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(
+                    db, d0, d1, state_cal
+                )
+                min_mult = (
+                    BASELINE_ANOMALY_CALENDAR_ADJACENT_MIN_MULTIPLIER
+                    if dl_adj
+                    else BASELINE_ANOMALY_MIN_MULTIPLIER
+                )
+                if mult < min_mult:
                     continue
                 seen_win.add((d0, d1))
-                dl_adj = is_deadline_adjacent(d1)
-                dl_discount = 0.6 if dl_adj else 1.0
-                dl_note: str | None = None
-                if dl_adj:
-                    dl_note = (
-                        "Donation window overlaps FEC quarterly deadline — reduced weight"
-                    )
                 base_suspicion = min(1.0, mult / 8.0)
-                suspicion = base_suspicion * dl_discount
+                suspicion = base_suspicion * dl_discount if dl_adj else base_suspicion
                 midpoint = _cluster_midpoint_date(d0, d1)
                 d_days, v_id, v_date, v_prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
                     db, {cid}, midpoint, votes_by_case
@@ -1843,6 +1897,9 @@ def _detect_baseline_anomaly(db: Session, fired_at: datetime) -> list[PatternAle
                         nearest_vote_question=v_q,
                         proximity_to_vote_score=v_prof,
                         payload_extra=pe,
+                        calendar_event_type=cet,
+                        calendar_event_name=cen,
+                        vote_context_available=True,
                     )
                 )
         case_alerts.sort(key=lambda a: -(a.suspicion_score or 0.0))
@@ -1965,12 +2022,16 @@ def _chamber_sector_baseline(db: Session, sector: str) -> dict[str, Any] | None:
     return {"mean": mean, "std_dev": std if std > 1e-9 else 1e-9, "n": len(rates)}
 
 
-def _detect_alignment_anomaly(db: Session, fired_at: datetime) -> list[PatternAlert]:
+def _detect_alignment_anomaly(
+    db: Session, fired_at: datetime, cases_with_votes: set[uuid.UUID]
+) -> list[PatternAlert]:
     alerts: list[PatternAlert] = []
     for prof in db.scalars(select(SubjectProfile)).all():
         bg = (prof.bioguide_id or "").strip()
         cid = prof.case_file_id
         if not bg:
+            continue
+        if cid not in cases_with_votes:
             continue
         ar = _compute_case_sector_alignment_rates(db, cid)
         for sector, data in ar.items():
@@ -1998,6 +2059,7 @@ def _detect_alignment_anomaly(db: Session, fired_at: datetime) -> list[PatternAl
                     fired_at=fired_at,
                     sector=sector,
                     suspicion_score=min(1.0, z / 3.0),
+                    vote_context_available=True,
                     payload_extra={
                         "senator_alignment_rate": rate,
                         "chamber_mean_rate": base["mean"],
@@ -2086,7 +2148,9 @@ def _amendment_donor_alignment(
     return False
 
 
-def _detect_amendment_tell(db: Session, fired_at: datetime) -> list[PatternAlert]:
+def _detect_amendment_tell(
+    db: Session, fired_at: datetime, cases_with_votes: set[uuid.UUID]
+) -> list[PatternAlert]:
     alerts: list[PatternAlert] = []
     rows = db.execute(
         select(DonorFingerprint, Signal).join(Signal, DonorFingerprint.signal_id == Signal.id)
@@ -2098,6 +2162,8 @@ def _detect_amendment_tell(db: Session, fired_at: datetime) -> list[PatternAlert
         if str(bd.get("kind") or "") != "donor_cluster":
             continue
         case_id = fp.case_file_id
+        if case_id not in cases_with_votes:
+            continue
         donation_day = _donation_date_for_signal(sig)
         if donation_day is None:
             continue
@@ -2134,8 +2200,11 @@ def _detect_amendment_tell(db: Session, fired_at: datetime) -> list[PatternAlert
             prof = proximity_to_vote_score_from_days(
                 abs((donation_day - avd).days)
             )
-            dl_disc = (
-                0.6 if is_deadline_adjacent(max(donation_day, avd)) else 1.0
+            bg_am = (fp.bioguide_id or "").strip() or None
+            st_cal = _senator_state_for_calendar(bg_am, None)
+            d0c, d1c = min(donation_day, avd), max(donation_day, avd)
+            dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(
+                db, d0c, d1c, st_cal
             )
             suspicion = (
                 float(prof)
@@ -2160,6 +2229,12 @@ def _detect_amendment_tell(db: Session, fired_at: datetime) -> list[PatternAlert
                     fired_at=fired_at,
                     aggregate_amount=float(sig.amount or 0.0),
                     suspicion_score=min(1.0, suspicion),
+                    deadline_adjacent=dl_adj,
+                    deadline_discount=dl_disc,
+                    deadline_note=dl_note,
+                    calendar_event_type=cet,
+                    calendar_event_name=cen,
+                    vote_context_available=True,
                     payload_extra={
                         "amendment_number": str(raw.get("amendment_number") or ""),
                         "amendment_description": desc[:500],
@@ -2418,7 +2493,9 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
     return alerts
 
 
-def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
+def _detect_soft_bundles(
+    db: Session, fired_at: datetime, cases_with_votes: set[uuid.UUID]
+) -> list[PatternAlert]:
     votes_by_case = _vote_evidence_by_case(db)
     by_committee: dict[str, tuple[str, list[_SoftBundleRow]]] = {}
     for row in _load_soft_bundle_rows(db):
@@ -2479,6 +2556,9 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
         fs, window, d0, d1, n_donors, total, div = tup
         if fs not in maximal_sets:
             continue
+        case_uids = {e.case_file_id for e in window}
+        if not case_uids.issubset(cases_with_votes):
+            continue
         sample_row = window[0]
         donor_labels = sorted({e.donor_display for e in window})
         preview = ", ".join(donor_labels[:5])
@@ -2490,14 +2570,8 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
         d_days, v_id, v_date, prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
             db, case_uuids, midpoint, votes_by_case
         )
-        if is_deadline_adjacent(d1):
-            dl_adj = True
-            dl_discount = 0.6
-            dl_note = "Bundle window overlaps FEC quarterly deadline — reduced weight"
-        else:
-            dl_adj = False
-            dl_discount = 1.0
-            dl_note = None
+        st_cal = _senator_state_for_calendar(sample_row.bioguide_id, None)
+        dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(db, d0, d1, st_cal)
         div_f = float(div) if div is not None else 0.0
         size_factor = min(int(n_donors) / 10.0, 1.0)
         suspicion = div_f * prof * dl_discount * size_factor
@@ -2527,6 +2601,9 @@ def _detect_soft_bundles(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 deadline_adjacent=dl_adj,
                 deadline_discount=dl_discount,
                 deadline_note=dl_note,
+                calendar_event_type=cet,
+                calendar_event_name=cen,
+                vote_context_available=True,
                 suspicion_score=suspicion,
             )
         )
@@ -2577,7 +2654,9 @@ def _hearing_within_days_of_midpoint(
     return False
 
 
-def _detect_soft_bundle_v2(db: Session, fired_at: datetime) -> list[PatternAlert]:
+def _detect_soft_bundle_v2(
+    db: Session, fired_at: datetime, cases_with_votes: set[uuid.UUID]
+) -> list[PatternAlert]:
     votes_by_case = _vote_evidence_by_case(db)
     by_committee: dict[str, tuple[str, list[_SoftBundleRow]]] = {}
     for row in _load_soft_bundle_rows(db):
@@ -2631,6 +2710,9 @@ def _detect_soft_bundle_v2(db: Session, fired_at: datetime) -> list[PatternAlert
     for tup in deduped:
         fs, window, d0, d1, n_donors, total = tup
         if fs not in maximal_sets:
+            continue
+        case_uids_v2 = {e.case_file_id for e in window}
+        if not case_uids_v2.issubset(cases_with_votes):
             continue
         donor_labels = sorted({e.donor_display for e in window})
         preview = ", ".join(donor_labels[:5])
@@ -2703,13 +2785,8 @@ def _detect_soft_bundle_v2(db: Session, fired_at: datetime) -> list[PatternAlert
         d_days, v_id, v_date, prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
             db, case_uuids, midpoint, votes_by_case
         )
-        dl_adj = False
-        dl_discount = 1.0
-        dl_note: str | None = None
-        if is_deadline_adjacent(d1):
-            dl_adj = True
-            dl_discount = 0.6
-            dl_note = "Bundle window overlaps FEC quarterly deadline — reduced weight"
+        st_cal = _senator_state_for_calendar(bg, None)
+        dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(db, d0, d1, st_cal)
 
         plurality = sec_counts.most_common(1)[0][0] if sec_counts else None
         diagnostics: dict[str, Any] = {
@@ -2755,6 +2832,9 @@ def _detect_soft_bundle_v2(db: Session, fired_at: datetime) -> list[PatternAlert
                 deadline_adjacent=dl_adj,
                 deadline_discount=dl_discount,
                 deadline_note=dl_note,
+                calendar_event_type=cet,
+                calendar_event_name=cen,
+                vote_context_available=True,
                 suspicion_score=final_weight,
                 diagnostics_json=json.dumps(diagnostics, separators=(",", ":"), default=str),
             )
@@ -2931,6 +3011,7 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
     Returns a list of PatternAlert objects. Never mutates case state.
     """
     fired_at = _utc_now()
+    cases_with_votes = _case_ids_with_current_congress_votes(db)
     appearances = _load_appearances(db)
     by_donor: dict[str, list[_Appearance]] = {}
     for a in appearances:
@@ -2940,17 +3021,22 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
     alerts: list[PatternAlert] = []
     alerts.extend(_detect_committee_sweep(by_donor, committees_map, fired_at))
     alerts.extend(_detect_fingerprint_bloom(by_donor, fired_at))
-    alerts.extend(_detect_soft_bundles(db, fired_at))
-    alerts.extend(_detect_soft_bundle_v2(db, fired_at))
+    alerts.extend(_detect_soft_bundles(db, fired_at, cases_with_votes))
+    alerts.extend(_detect_soft_bundle_v2(db, fired_at, cases_with_votes))
     alerts.extend(_detect_sector_convergence(db, fired_at))
     alerts.extend(_detect_geo_mismatch(db, fired_at))
     alerts.extend(_detect_disbursement_loop(db, fired_at))
     alerts.extend(_detect_joint_fundraising(db, fired_at))
-    alerts.extend(_detect_baseline_anomaly(db, fired_at))
-    alerts.extend(_detect_alignment_anomaly(db, fired_at))
-    alerts.extend(_detect_amendment_tell(db, fired_at))
+    alerts.extend(_detect_baseline_anomaly(db, fired_at, cases_with_votes))
+    alerts.extend(_detect_alignment_anomaly(db, fired_at, cases_with_votes))
+    alerts.extend(_detect_amendment_tell(db, fired_at, cases_with_votes))
     alerts.extend(_detect_hearing_testimony(db, fired_at))
     alerts.extend(_detect_revolving_door(db, fired_at))
+    for a in alerts:
+        if a.vote_context_available is None:
+            a.vote_context_available = _all_cases_have_vote_context(
+                a.matched_case_ids, cases_with_votes
+            )
     alerts.sort(key=lambda x: (x.donor_entity.lower(), x.rule_id, x.committee or ""))
     return alerts
 
@@ -2986,6 +3072,11 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         "deadline_adjacent": a.deadline_adjacent,
         "deadline_discount": a.deadline_discount,
         "deadline_note": a.deadline_note,
+        "calendar_explained": a.deadline_adjacent,
+        "calendar_event_type": a.calendar_event_type,
+        "calendar_event_name": a.calendar_event_name,
+        "calendar_discount_factor": a.deadline_discount,
+        "vote_context_available": a.vote_context_available,
         "suspicion_score": a.suspicion_score,
         "sector": a.sector,
         "sector_donor_count": a.sector_donor_count,

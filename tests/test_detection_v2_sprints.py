@@ -213,6 +213,7 @@ def _vote_pharma_day(db, case_id: uuid.UUID, day: date, pos: str) -> None:
     raw = {
         "member_vote": pos,
         "question": "Motion on pharmaceutical pricing reform bill",
+        "congress": 119,
     }
     db.add(
         EvidenceEntry(
@@ -357,12 +358,25 @@ def test_baseline_anomaly_fires_on_spike(test_engine) -> None:
             amount=5000.0,
             receipt_date=f"2024-04-{j + 1:02d}",
         )
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="vote_record",
+            title="Roll",
+            body="test",
+            source_url="https://www.senate.gov/",
+            entered_by="v2_tester",
+            confidence="confirmed",
+            date_of_event=date(2024, 4, 10),
+            raw_data_json=json.dumps({"congress": 119}, separators=(",", ":")),
+        )
+    )
     db.commit()
     hits = [a for a in run_pattern_engine(db) if a.rule_id == RULE_BASELINE_ANOMALY]
     db.close()
     assert any(str(c.id) in a.matched_case_ids for a in hits)
     b = next(a for a in hits if str(c.id) in a.matched_case_ids)
-    assert b.payload_extra and b.payload_extra.get("baseline_multiplier", 0) >= 4.0
+    assert b.payload_extra and b.payload_extra.get("baseline_multiplier", 0) >= 6.0
 
 
 def test_alignment_anomaly_high_pharma_yea_rate(test_engine) -> None:
@@ -427,6 +441,7 @@ def test_amendment_tell_weakening_yea_vs_final_passage_nay(test_engine) -> None:
         "bill_number": "S. 100",
         "question": "On Passage of the Bill",
         "member_vote": "NAY",
+        "congress": 119,
     }
     db.add(
         EvidenceEntry(
@@ -584,8 +599,8 @@ def test_hearing_testimony_skipped_without_govinfo(test_engine) -> None:
     assert hits == []
 
 
-def test_pattern_engine_version_is_2_1() -> None:
-    assert PATTERN_ENGINE_VERSION == "2.1"
+def test_pattern_engine_version_is_2_2() -> None:
+    assert PATTERN_ENGINE_VERSION == "2.2"
 
 
 def test_joint_fundraising_not_fired_without_principal_committee(test_engine) -> None:
@@ -650,6 +665,19 @@ def test_baseline_anomaly_not_fired_when_spike_below_multiplier(test_engine) -> 
         _fec_historical(db, c.id, amount=250.0, receipt_date=f"2024-05-{i + 1:02d}")
     _fec_historical(db, c.id, amount=2000.0, receipt_date="2024-06-01")
     _fec_historical(db, c.id, amount=2000.0, receipt_date="2024-06-02")
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="vote_record",
+            title="Roll",
+            body="test",
+            source_url="https://www.senate.gov/",
+            entered_by="v2_tester",
+            confidence="confirmed",
+            date_of_event=date(2024, 6, 3),
+            raw_data_json=json.dumps({"congress": 119}, separators=(",", ":")),
+        )
+    )
     db.commit()
     case_uuid = str(c.id)
     hits = [a for a in run_pattern_engine(db) if a.rule_id == RULE_BASELINE_ANOMALY]
