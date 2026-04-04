@@ -59,8 +59,6 @@ def disambiguate_evidence(
             "Congress.gov",
             "USASpending",
             "Indiana Campaign Finance",
-            "IndyGIS / MapIndy",
-            "Marion County Assessor",
         ],
     )
 

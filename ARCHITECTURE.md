@@ -21,7 +21,7 @@ How Open Case is built and why the pieces are shaped the way they are.
 │  Adapters, detection engines, signing, reporting            │
 ├─────────────────────────────────────────────────────────────┤
 │  LAYER 1: DATABASE AGGREGATION                              │
-│  FEC, USASpending, Congress.gov, Marion, IndyGIS, Indiana CF │
+│  FEC, USASpending, Congress.gov, Indiana CF, optional Regulations/GovInfo │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -45,9 +45,9 @@ HTTP Request → FastAPI Route
     │  ┌────────┐  ┌──────────────┐   │
     │  │  FEC   │  │ USASpending  │   │
     │  └────────┘  └──────────────┘   │
-    │  ┌────────────────┐  ┌───────┐  │
-    │  │ Congress Votes │  │IndyGIS│  │
-    │  └────────────────┘  └───────┘  │
+    │  ┌────────────────┐              │
+    │  │ Congress Votes │              │
+    │  └────────────────┘              │
     └──────────────────────────────────┘
                     ↓
     For each result:
@@ -404,10 +404,8 @@ fields exist on clustered evidence.
 The collision detection system flags these ambiguities but cannot resolve them.
 Human disambiguation is required.
 
-**Local data is patchy.** The national federal databases (FEC, USASpending,
-Congress.gov) are well-covered. State and local data varies enormously by
-jurisdiction. The Indianapolis V0 scope has good local data. Most other
-cities do not yet.
+**Local data is patchy.** Federal sources (FEC, USASpending, Congress.gov) are
+well-covered. State and local coverage varies by jurisdiction.
 
 **Vote relevance is not filtered.** The temporal proximity engine finds
 donations that precede votes without checking whether the vote topic is
@@ -421,7 +419,58 @@ not enforced by any access control.
 
 **Investigation is synchronous.** Running all adapters in a single HTTP
 request works for development but will time out under load. BullMQ async
-queuing is planned.
+queuing is planned (`jobs.py` placeholder).
+
+---
+
+## Pattern Engine (current, v1.6)
+
+The pattern engine (`engines/pattern_engine.py`) is **read-only**: it scans
+`DonorFingerprint` + `Signal` + `EvidenceEntry` and returns `PatternAlert`
+dataclass instances. It never mutates cases. `PATTERN_ENGINE_VERSION` is
+incremented when rule logic changes.
+
+**API:** `GET /api/v1/patterns` returns all alerts (optional `donor`, `rule`, `case_id` query params). `GET /api/v1/patterns/diagnostics?case_id=<uuid>` returns only **`SOFT_BUNDLE_V2`** alerts for that case, each with a parsed **`diagnostics`** object (from `diagnostics_json`).
+
+Persisted snapshots (`PatternAlertRecord`) are refreshed when cases are sealed (see `payloads.sync_pattern_alert_records`).
+
+### Rules, constants, suspicion / weight
+
+Below, `prof` = `proximity_to_vote_score_from_days(days_to_nearest_vote)` (tiers 0.1–1.0). `dl_disc` = `deadline_discount` (0.6 if the donation window end is within ±5 days of an FEC quarterly deadline, else 1.0), when the rule applies deadline logic.
+
+| Rule ID | Role | Key constants | `suspicion_score` (or equivalent) |
+|---------|------|---------------|-----------------------------------|
+| `COMMITTEE_SWEEP_V1` | Same donor → 3+ senators who share a committee, within 14 days | `COMMITTEE_SWEEP_MIN_OFFICIALS=3`, `COMMITTEE_SWEEP_MAX_WINDOW_DAYS=14` | *`None`* (not scored) |
+| `FINGERPRINT_BLOOM_V1` | Same donor in 4+ cases with relevance ≥ 0.3 | `FINGERPRINT_BLOOM_MIN_CASES=4`, `FINGERPRINT_BLOOM_MIN_RELEVANCE=0.3` | *`None`* |
+| `SOFT_BUNDLE_V1` | 3+ distinct donors, same committee, window ≤7 days, aggregate ≥ $1k | `SOFT_BUNDLE_*` | `amount_diversification × prof × dl_disc × min(n_donors/10, 1)` (`amount_diversification` = 1 − HHI of donor amount shares) |
+| `SOFT_BUNDLE_V2` | Same qualifying windows as V1 (7d / 3 donors / $1k) | `SOFT_BUNDLE_V2_*` | **`suspicion_score` = `final_weight`** after clamping — see below |
+| `SECTOR_CONVERGENCE_V1` | Sector-tagged donors (name/employer/occupation), 14d window, ≥3 donors, sector aggregate ≥ $5k | `SECTOR_CONVERGENCE_*` | `sector_concentration × prof × dl_disc × (1.5 if vote text matches sector else 1.0)` |
+| `GEO_MISMATCH_V1` | ≥5 **individual** donors (name heuristics), ≥75% of classified individuals out-of-state vs senator home state, $1k+ individual aggregate, 14d | `GEO_MISMATCH_*`, `GEO_MISMATCH_MAX_ALERTS_PER_COMMITTEE=3` | `out_of_state_ratio × prof × dl_disc` (then overlapping windows merged + top 3 per committee) |
+| `DISBURSEMENT_LOOP_V1` | Schedule B style disbursement ↔ receipt loop heuristic | `DISBURSEMENT_LOOP_*` | `1.0` if loop confirmed else `0.5` |
+| `REVOLVING_DOOR_V1` | Donor cluster + LDA registrant match, filing year ≥ 2024 | `REVOLVING_DOOR_*` | `1.0` if vote–issue relevance heuristic else `0.6` |
+
+**SOFT_BUNDLE_V2 weighting**
+
+1. `base_weight = min(1.0, aggregate_amount / 50000)`.
+2. Adjustments (additive):  
+   - `+0.15` if `individual_fraction ≥ 0.7`  
+   - `−0.10` if `individual_fraction ≤ 0.3`  
+   - `+0.10` if `sector_similarity ≥ 0.60` (share of donors with the plurality `occupation_to_sector` bucket)  
+   - `+0.20` if a `hearing_witness` evidence date falls within ±14 days of the cluster midpoint  
+   - `+0.10` if `baseline_ratio ≥ 3.0` where `baseline_ratio = window_aggregate / median(7-day receipt totals for that bioguide)` (median requires sufficient history; else skipped).
+3. `final_weight = clamp(adjusted, 0, 1)`. Stored as `suspicion_score` and broken out in diagnostics.
+
+**`SOFT_BUNDLE_V2` diagnostics JSON** (serialized on `PatternAlert.diagnostics_json`; API exposes as `diagnostics` dict):
+
+- `rule_id`, `individual_fraction`, `sector_similarity`, `plurality_sector`
+- `baseline_ratio`, `median_seven_day_intake` (may be `null`)
+- `hearing_nearby` (bool)
+- `base_weight`, `adjustments` (list of `{component, delta}`), `final_weight`
+- `aggregate_amount`, `donor_count`, `window_start`, `window_end`, `bioguide_id`
+
+### PatternAlert fields (common)
+
+Alerts always carry: `rule_id`, `pattern_version`, `donor_entity`, `matched_officials`, `matched_case_ids`, `committee`, `window_days`, `evidence_refs`, `fired_at`, `disclaimer`. Optional fields include donation window dates, vote proximity fields, sector / geo / LDA / disbursement fields, and **`diagnostics_json`** (V2 only).
 
 ---
 

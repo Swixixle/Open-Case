@@ -1,5 +1,9 @@
 __pycache__/
+.pytest_cache/
 .venv/
 *.pyc
+*.pyo
+*.db
 open_case.db
 .env
+.env.local

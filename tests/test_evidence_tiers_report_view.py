@@ -1,4 +1,4 @@
-"""Phase 10A — evidence tiers, report journalist copy, temporal counts."""
+"""Evidence tiers, investigate signal JSON, report view invariants."""
 
 from __future__ import annotations
 

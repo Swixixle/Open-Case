@@ -1,4 +1,4 @@
-"""Phase 8.3 — temporal proximity emits at least one cluster for a known-good window."""
+"""Temporal proximity emits at least one cluster for a known-good window."""
 from __future__ import annotations
 
 import uuid

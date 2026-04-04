@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Investigator credibility increments — used by routes after evidence actions."""
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

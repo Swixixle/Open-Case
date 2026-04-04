@@ -29,7 +29,7 @@ from models import (
     Signal,
 )
 
-from tests.test_phase86_regression import _stub_empty
+from tests.test_fec_congress_adapter_fixtures import _stub_empty
 
 
 def _fec_shared_pac(committee_id: str) -> AdapterResponse:

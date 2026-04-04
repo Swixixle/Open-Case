@@ -1,4 +1,4 @@
-"""Phase 8.6 — FEC committee resolution path and Congress cache/diagnostics."""
+"""Shared FEC/Congress adapter stubs and committee-resolution investigate path."""
 from __future__ import annotations
 
 from contextlib import ExitStack

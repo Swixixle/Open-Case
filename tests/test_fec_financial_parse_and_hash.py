@@ -1,4 +1,4 @@
-"""Phase 8.5 — FEC financial rows must parse and pair (date + entry_type + absence)."""
+"""FEC financial row date parsing, entry types, and evidence hashing."""
 from __future__ import annotations
 
 import uuid
@@ -26,7 +26,7 @@ def test_fec_donation_row_is_pairable(db_session) -> None:
     handle = "phase85inv"
     case = CaseFile(
         slug=f"slug-{uuid.uuid4().hex[:12]}",
-        title="Phase 8.5 case",
+        title="FEC parse case",
         subject_name="Test Subject",
         subject_type="public_official",
         jurisdiction="US",

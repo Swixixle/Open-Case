@@ -28,8 +28,6 @@ from adapters.govinfo_hearings import current_congress_number, search_hearing_wi
 from adapters.lda import fetch_lda_filings
 from adapters.regulations import fetch_docket_comments
 from adapters.indiana_cf import IndianaCFAdapter
-from adapters.indy_gis import IndyGISAdapter
-from adapters.marion_assessor import MarionCountyAssessorAdapter
 from adapters.usa_spending import USASpendingAdapter
 from database import get_db
 from engines.contract_anomaly import detect_contract_anomalies
@@ -373,10 +371,6 @@ def _adapter_registry_key(adapter: BaseAdapter) -> str:
         return "fec"
     if isinstance(adapter, CongressVotesAdapter):
         return "congress"
-    if isinstance(adapter, IndyGISAdapter):
-        return "indy_gis"
-    if isinstance(adapter, MarionCountyAssessorAdapter):
-        return "marion_assessor"
     if isinstance(adapter, USASpendingAdapter):
         return "usaspending"
     if isinstance(adapter, IndianaCFAdapter):
@@ -1758,57 +1752,6 @@ async def _run_investigation_adapters(
             created_entries,
             source_check_tracker,
         )
-
-    if request.address:
-        indy = IndyGISAdapter()
-        try:
-            indy_resp, indy_cached = await get_adapter_response(
-                indy, request.address, "address"
-            )
-        except Exception as e:
-            errors.append(f"{indy.source_name}: {e!s}")
-            source_statuses.append(
-                {
-                    "adapter": "indy_gis",
-                    "display_name": indy.source_name,
-                    "status": "credential_unavailable",
-                    "detail": str(e),
-                }
-            )
-            _add_source_log(
-                db,
-                case_id,
-                indy.source_name,
-                request.address,
-                0,
-                request.investigator_handle,
-                "",
-                source_check_tracker,
-            )
-        else:
-            _append_source_status(source_statuses, "indy_gis", indy_resp, indy_cached)
-            if indy_cached:
-                cache_hits.append(indy.source_name)
-            if not indy_resp.found:
-                errors.append(f"{indy.source_name}: {indy_resp.error or 'request failed'}")
-            _ingest_adapter_results(
-                db,
-                case_id,
-                request.investigator_handle,
-                indy,
-                indy_resp,
-                request.address,
-                created_entries,
-                source_check_tracker,
-            )
-            pins: list[str] = []
-            if indy_resp.found and indy_resp.results:
-                for r in indy_resp.results:
-                    pin = (r.raw_data or {}).get("PARCEL_NUM")
-                    if pin:
-                        pins.append(str(pin))
-            for pin in list(dict.fromkeys(pins))[:3]:
-                await run_cached(MarionCountyAssessorAdapter(), pin, "pin")
 
     if request.fec_committee_id:
         cid = request.fec_committee_id.strip().upper()

@@ -1,3 +1,6 @@
 """
-BullMQ / Redis job workers — wire in later. Phase 0: no queue processing.
+Background job workers (e.g. BullMQ / Redis) — not wired yet.
+
+Investigations run synchronously in the FastAPI request; this module is a placeholder
+for future async processing if HTTP timeouts become a bottleneck.
 """

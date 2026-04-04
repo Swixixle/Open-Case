@@ -55,14 +55,14 @@ cp .env.example .env
 uvicorn main:app --reload
 ```
 
-Run the end-to-end test to confirm your environment works:
+Run the automated test suite:
 
 ```bash
-python -m scripts.test_todd_young
+PYTHONPATH=. pytest tests/
 ```
 
-If that exits 0, you're good. If it fails, check the diagnostic output
-and see the README troubleshooting section.
+All tests should pass before you open a PR. Use `/docs` locally to exercise
+investigations against your own credentials when you need live-API checks.
 
 ### 3. Make your changes
 

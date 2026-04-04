@@ -4,7 +4,7 @@
 
 - `adapters/regulations.py` — Regulations.gov v4 client, token/Jaccard entity match, `fetch_docket_comments`.
 - `adapters/govinfo_hearings.py` — GovInfo CHRG collection + package summary witness search, `search_hearing_witnesses`, `current_congress_number`.
-- `tests/test_phase8_confirmation.py` — confirmation rule tests (two relevance indicators, collision gate).
+- `tests/test_signal_confirmation.py` — confirmation rule tests (two relevance indicators, collision gate).
 
 ## 2. Files modified (summary)
 
@@ -44,7 +44,7 @@
 ## 6. Test count
 
 - **Before:** 3 tests (`test_temporal_clusters.py`).
-- **After:** 5 tests (+2 in `test_phase8_confirmation.py`).
+- **After:** 5 tests (+2 in `test_signal_confirmation.py`).
 
 ## 7. Confirmed signals & Todd Young (plain English)
 

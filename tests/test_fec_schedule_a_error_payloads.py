@@ -1,4 +1,4 @@
-"""Phase 8.7 — FEC API error payloads must not masquerade as clean empty runs."""
+"""FEC Schedule A HTTP errors must not look like clean empty runs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from adapters.congress_votes import CongressVotesAdapter
 from adapters.fec import FECAdapter
 from adapters.indiana_cf import IndianaCFAdapter
 from adapters.usa_spending import USASpendingAdapter
-from tests.test_phase86_regression import (
+from tests.test_fec_congress_adapter_fixtures import (
     _congress_vote_response,
     _fec_financial_response,
     _stub_empty,

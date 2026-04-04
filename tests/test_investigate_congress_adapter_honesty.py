@@ -1,4 +1,4 @@
-"""Phase 8.4 — Congress status honesty and core-run durability."""
+"""Congress adapter status handling and core investigate durability."""
 from __future__ import annotations
 
 import uuid
