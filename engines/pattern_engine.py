@@ -30,7 +30,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "1.4"
+PATTERN_ENGINE_VERSION = "1.5"
 
 # Rule IDs — increment when logic changes, never reuse
 RULE_COMMITTEE_SWEEP = "COMMITTEE_SWEEP_V1"
@@ -62,6 +62,35 @@ GEO_MISMATCH_WINDOW_DONOR_OVERLAP = 0.8
 
 # DC + org-style name → unknown (not out-of-state); see _geo_bucket
 _GEO_DC_UNKNOWN_NAME_MARKERS = ("PAC", "COMMITTEE", "ASSOCIATION", "COUNCIL", "INSTITUTE")
+
+# GEO mismatch ratio uses individual donors only; org markers = structural non-person entities.
+_GEO_ORG_DONOR_MARKERS: frozenset[str] = frozenset(
+    {
+        "PAC",
+        "COMMITTEE",
+        "CORPORATION",
+        "CORP",
+        "INC",
+        "LLC",
+        "LLP",
+        "ASSOCIATION",
+        "ASSOC",
+        "COUNCIL",
+        "INSTITUTE",
+        "FUND",
+        "GROUP",
+        "FOUNDATION",
+        "TRUST",
+        "BANK",
+        "UNION",
+        "COALITION",
+        "ALLIANCE",
+        "NETWORK",
+        "SOCIETY",
+        "FEDERATION",
+        "BUREAU",
+    }
+)
 
 DISBURSEMENT_LOOP_WINDOW_DAYS = 30
 DISBURSEMENT_LOOP_MIN_AMOUNT = 5000.0
@@ -339,6 +368,8 @@ class PatternAlert:
     in_state_count: int | None = None
     unknown_state_count: int | None = None
     top_donor_states: list[str] | None = None
+    individual_donor_count: int | None = None
+    org_donor_count: int | None = None
     disbursing_committee: str | None = None
     recipient_committee: str | None = None
     disbursement_amount: float | None = None
@@ -605,6 +636,15 @@ def _fec_fields_from_signal(db: Session, sig: Signal) -> tuple[str, str, str | N
     return employer, occupation, c_state, c_zip
 
 
+def _is_individual_donor(donor_name: str) -> bool:
+    """False if name resembles an org / committee / PAC — excluded from GEO in/out ratio."""
+    up = (donor_name or "").upper()
+    for marker in _GEO_ORG_DONOR_MARKERS:
+        if re.search(rf"(?<![A-Z0-9]){re.escape(marker)}(?![A-Z0-9])", up):
+            return False
+    return True
+
+
 def _geo_bucket(
     donor_display: str,
     contributor_state: str | None,
@@ -853,9 +893,11 @@ def _geo_build_alert_if_qualified(
     d0: date,
     d1: date,
 ) -> PatternAlert | None:
-    if len({e.donor_key for e in window}) < GEO_MISMATCH_MIN_DONORS:
+    individual_keys = {e.donor_key for e in window if _is_individual_donor(e.donor_display)}
+    org_keys = {e.donor_key for e in window if not _is_individual_donor(e.donor_display)}
+    if len(individual_keys) < GEO_MISMATCH_MIN_DONORS:
         return None
-    total_amt = sum(e.amount for e in window)
+    total_amt = sum(e.amount for e in window if _is_individual_donor(e.donor_display))
     if total_amt < GEO_MISMATCH_MIN_AGGREGATE:
         return None
     bg = next((e.bioguide_id for e in window if e.bioguide_id), None)
@@ -865,6 +907,8 @@ def _geo_build_alert_if_qualified(
     in_n = out_n = unk_n = 0
     state_counts: dict[str, int] = {}
     for e in window:
+        if not _is_individual_donor(e.donor_display):
+            continue
         b = _geo_bucket(e.donor_display, e.contributor_state, home)
         if b == "in":
             in_n += 1
@@ -912,6 +956,8 @@ def _geo_build_alert_if_qualified(
         donation_window_end=d1,
         aggregate_amount=float(total_amt),
         cluster_size=len({e.donor_key for e in window}),
+        individual_donor_count=len(individual_keys),
+        org_donor_count=len(org_keys),
         days_to_nearest_vote=d_days,
         nearest_vote_id=v_id,
         nearest_vote_date=v_date,
@@ -1141,10 +1187,11 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 if (d1 - d0).days > GEO_MISMATCH_WINDOW_DAYS:
                     continue
                 window = [e for e in events if d0 <= e.d <= d1]
-                if len({e.donor_key for e in window}) < GEO_MISMATCH_MIN_DONORS:
+                ind_keys = {e.donor_key for e in window if _is_individual_donor(e.donor_display)}
+                if len(ind_keys) < GEO_MISMATCH_MIN_DONORS:
                     continue
-                total_amt = sum(e.amount for e in window)
-                if total_amt < GEO_MISMATCH_MIN_AGGREGATE:
+                ind_amt = sum(e.amount for e in window if _is_individual_donor(e.donor_display))
+                if ind_amt < GEO_MISMATCH_MIN_AGGREGATE:
                     continue
                 bg = next((e.bioguide_id for e in window if e.bioguide_id), None)
                 if not bg or bg not in SENATOR_HOME_STATE:
@@ -1152,6 +1199,8 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 home = SENATOR_HOME_STATE[bg]
                 in_n = out_n = unk_n = 0
                 for e in window:
+                    if not _is_individual_donor(e.donor_display):
+                        continue
                     b = _geo_bucket(e.donor_display, e.contributor_state, home)
                     if b == "in":
                         in_n += 1
@@ -1165,7 +1214,7 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 ratio = out_n / classified if classified else 0.0
                 if ratio < GEO_MISMATCH_OUT_OF_STATE_THRESHOLD:
                     continue
-                donors = frozenset({e.donor_key for e in window})
+                donors = frozenset(ind_keys)
                 candidates.append(_GeoCand(d0=d0, d1=d1, donors=donors))
 
         if not candidates:
@@ -1792,6 +1841,8 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         "in_state_count": a.in_state_count,
         "unknown_state_count": a.unknown_state_count,
         "top_donor_states": list(a.top_donor_states) if a.top_donor_states else None,
+        "individual_donor_count": a.individual_donor_count,
+        "org_donor_count": a.org_donor_count,
         "disbursing_committee": a.disbursing_committee,
         "recipient_committee": a.recipient_committee,
         "disbursement_amount": a.disbursement_amount,

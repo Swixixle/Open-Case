@@ -25,6 +25,7 @@ from engines.pattern_engine import (
     RULE_SECTOR_CONVERGENCE,
     RULE_SOFT_BUNDLE,
     SOFT_BUNDLE_MAX_SPAN_DAYS,
+    _is_individual_donor,
     classify_donor_sector,
     is_deadline_adjacent,
     pattern_alert_to_payload,
@@ -1156,6 +1157,13 @@ def test_sector_convergence_no_match_still_fires(test_engine) -> None:
     assert hit.sector_vote_match is False
 
 
+def test_is_individual_donor_flags_orgs() -> None:
+    assert _is_individual_donor("Samuel Okonkwo")
+    assert _is_individual_donor("Vincent Price")
+    assert not _is_individual_donor("ACME INDUSTRIAL LLC")
+    assert not _is_individual_donor("MIDSTATE BANK")
+
+
 def test_geo_mismatch_fires(test_engine) -> None:
     Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     db = Session()
@@ -1164,9 +1172,16 @@ def test_geo_mismatch_fires(test_engine) -> None:
     db.flush()
     comm = "Alaska PAC"
     states = ["TX", "FL", "NY", "CA", "WA"]
+    donor_names = [
+        "Elena Marks",
+        "Frank O Brien",
+        "Gina Parekh",
+        "Henry Quist",
+        "Iris Romero",
+    ]
     for i, st in enumerate(states):
         dk = f"out{i}"
-        disp = f"OUT OF STATE PAC {i}"
+        disp = donor_names[i]
         fd = f"2026-06-{i+1:02d}"
         amt = 500.0
         fe = _fec_receipt_entry(
@@ -1194,6 +1209,43 @@ def test_geo_mismatch_fires(test_engine) -> None:
     assert hit.senator_state == "AK"
     assert hit.out_of_state_ratio >= 0.75
     assert len(hit.top_donor_states or []) >= 1
+    assert (hit.individual_donor_count or 0) >= 5
+    assert hit.org_donor_count == 0
+
+
+def test_geo_mismatch_no_fire_org_only_pacs(test_engine) -> None:
+    """PAC/org-only window: no classifiable individuals — must not fire GEO_MISMATCH."""
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"geo-onlypac-{uuid.uuid4().hex[:8]}", "Senator PACOnly")
+    db.flush()
+    comm = "Alaska Org Only"
+    for i, st in enumerate(["TX", "FL", "NY", "CA", "OH"]):
+        dk = f"po{i}"
+        disp = f"VOTERS BLUE PAC {i}"
+        fd = f"2026-09-{i+1:02d}"
+        fe = _fec_receipt_entry(
+            db, c.id, contributor_name=disp, amount=800.0, receipt_date=fd, contributor_state=st
+        )
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator PACOnly",
+            fd,
+            0.5,
+            fe,
+            total_amount=800.0,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator PACOnly", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
+    db.close()
+    assert not geo
 
 
 def test_geo_mismatch_no_fire_mostly_instate(test_engine) -> None:
@@ -1242,11 +1294,11 @@ def test_geo_mismatch_dc_pac_excluded(test_engine) -> None:
         [
             ("TRADE ASSOCIATION PAC", "DC"),
             ("LOBBY COMMITTEE PAC", "DC"),
-            ("TEXAS OIL PAC", "TX"),
-            ("FLORIDA GROWERS PAC", "FL"),
-            ("NEVADA MINING PAC", "NV"),
-            ("CALIFORNIA GRID COUNCIL PAC", "CA"),
-            ("HEARTLAND POLICY INSTITUTE PAC", "WA"),
+            ("Mara Okoye", "TX"),
+            ("Niles Perry", "FL"),
+            ("Oona Quade", "NV"),
+            ("Pete Rhodes", "CA"),
+            ("Quinn Santos", "WA"),
         ]
     ):
         dk = f"dc{i}"
@@ -1273,6 +1325,46 @@ def test_geo_mismatch_dc_pac_excluded(test_engine) -> None:
     geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
     db.close()
     assert any(a.out_of_state_ratio >= 0.75 for a in geo)
+
+
+def test_geo_mismatch_mixed_includes_org_counts(test_engine) -> None:
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"geo-mix-{uuid.uuid4().hex[:8]}", "Senator Mix")
+    db.flush()
+    comm = "Alaska Mix"
+    rows = [
+        ("HEAVY PAC ONE", "TX", "m0"),
+        ("Elena Marks Solo", "FL", "m1"),
+        ("Frank O Brien Solo", "NY", "m2"),
+        ("Gina Parekh Solo", "CA", "m3"),
+        ("Henry Quist Solo", "WA", "m4"),
+        ("Iris Romero Solo", "OH", "m5"),
+    ]
+    for i, (disp, st, dk) in enumerate(rows):
+        fd = f"2026-11-{i + 1:02d}"
+        fe = _fec_receipt_entry(db, c.id, contributor_name=disp, amount=500.0, receipt_date=fd, contributor_state=st)
+        s = _signal_with_fec(
+            db,
+            c.id,
+            disp,
+            "Senator Mix",
+            fd,
+            0.5,
+            fe,
+            total_amount=500.0,
+            committee_label=comm,
+            donor_key=dk,
+        )
+        _fingerprint(db, dk, c.id, s.id, "Senator Mix", "S001198")
+    db.commit()
+    case_id_str = str(c.id)
+    geo = [a for a in run_pattern_engine(db) if a.rule_id == RULE_GEO_MISMATCH and case_id_str in a.matched_case_ids]
+    db.close()
+    assert geo
+    assert (geo[0].individual_donor_count or 0) >= 5
+    assert (geo[0].org_donor_count or 0) >= 1
 
 
 def test_disbursement_loop_fires(test_engine) -> None:
@@ -1875,9 +1967,17 @@ def test_geo_mismatch_dedup_maximal_window(test_engine) -> None:
         ("WA", "2026-06-05"),
         ("OH", "2026-06-08"),
     ]
+    dedup_people = [
+        "Geo Dedup Adams",
+        "Geo Dedup Bell",
+        "Geo Dedup Cabot",
+        "Geo Dedup Diaz",
+        "Geo Dedup Ellis",
+        "Geo Dedup Ford",
+    ]
     for i, (st, fd) in enumerate(states_and_days):
         dk = f"gm{i}"
-        disp = f"OUT PAC {i}"
+        disp = dedup_people[i]
         amt = 500.0
         fe = _fec_receipt_entry(
             db, c.id, contributor_name=disp, amount=amt, receipt_date=fd, contributor_state=st
@@ -1898,7 +1998,7 @@ def test_geo_mismatch_dedup_maximal_window(test_engine) -> None:
     fe2 = _fec_receipt_entry(
         db,
         c.id,
-        contributor_name="OUT PAC 2",
+        contributor_name="Geo Dedup Cabot",
         amount=500.0,
         receipt_date="2026-06-06",
         contributor_state="NY",
@@ -1906,7 +2006,7 @@ def test_geo_mismatch_dedup_maximal_window(test_engine) -> None:
     s2 = _signal_with_fec(
         db,
         c.id,
-        "OUT PAC 2",
+        "Geo Dedup Cabot",
         "Senator Sullivan",
         "2026-06-06",
         0.5,
@@ -1917,8 +2017,8 @@ def test_geo_mismatch_dedup_maximal_window(test_engine) -> None:
     )
     _fingerprint(db, "gm2", c.id, s2.id, "Senator Sullivan", "S001198")
     for dk, disp, fd, st in [
-        ("gm0", "OUT PAC 0", "2026-06-09", "TX"),
-        ("gm1", "OUT PAC 1", "2026-06-10", "FL"),
+        ("gm0", "Geo Dedup Adams", "2026-06-09", "TX"),
+        ("gm1", "Geo Dedup Bell", "2026-06-10", "FL"),
     ]:
         fe = _fec_receipt_entry(
             db, c.id, contributor_name=disp, amount=500.0, receipt_date=fd, contributor_state=st
