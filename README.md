@@ -7,7 +7,7 @@
 
 It does not assert conclusions. It produces receipts.
 
-> Open Case applies the Nikodemus Systems epistemological standard to public figures and institutions. Every score is a documented signal, not a verdict. Every absence is measured and labeled. The reader draws the conclusion.
+> Open Case applies our epistemological standard to public figures and institutions. Every score is a documented signal, not a verdict. Every absence is measured and labeled. The reader draws the conclusion.
 
 That standard is spelled out in **[CONSTITUTION.md](CONSTITUTION.md)** (voice, confidence, sourcing, and absence as signal — shared across Nikodemus products). In sister tools such as Frame / PUBLIC EYE, the **DNCS (Did Not Confirm Score)** is a concrete example of commitment #2: most accountability tech measures what a figure did; DNCS measures what they did **not** put on the record in response — absence surfaced as a measurable signal, not hidden.
 
@@ -149,4 +149,4 @@ PYTHONPATH=. pytest tests/
 
 ---
 
-*Built by Alex Maksimovich / Nikodemus Systems. Findings are grounded in public records; the platform does not produce legal conclusions.*
+*Built by Alex Maksimovich / Findings are grounded in public records; the platform does not produce legal conclusions.*
