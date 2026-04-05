@@ -129,7 +129,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for adapters, engines, and pattern-rule d
 
 ## Documentation index
 
-Project narratives and phase notes live under **[docs/](docs/README.md)** (mostly internal).
+Technical overview: [ARCHITECTURE.md](ARCHITECTURE.md). Internal design notes (optional second read): [docs/internal/PHASE11_VISION.md](docs/internal/PHASE11_VISION.md), [docs/internal/cursor_new_case_types.md](docs/internal/cursor_new_case_types.md).
 
 ---
 

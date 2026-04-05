@@ -41,7 +41,7 @@ HTTP Request → FastAPI Route
       SubjectProfile loaded (bioguide_id etc.)
                     ↓
     ┌──────────────────────────────────┐
-    │   Adapter Layer (concurrent)     │
+    │   Adapter Layer (sequential)      │
     │  ┌────────┐  ┌──────────────┐   │
     │  │  FEC   │  │ USASpending  │   │
     │  └────────┘  └──────────────┘   │
@@ -119,22 +119,16 @@ running the investigation five times would produce five copies of every signal.
 The solution: a signal identity hash that uniquely identifies a correlation
 regardless of when it was detected.
 
-```python
-def make_signal_identity_hash(
-    case_file_id: str,
-    signal_type: str,
-    actor_a: str,
-    actor_b: str,
-    event_date_a: str,
-    event_date_b: str
-) -> str:
-    payload = ":".join([
-        case_file_id, signal_type,
-        actor_a or "", actor_b or "",
-        event_date_a or "", event_date_b or ""
-    ])
-    return sha256(payload.encode()).hexdigest()
-```
+Implementation: `signals/dedup.make_signal_identity_hash` — SHA-256 of pipe-separated,
+normalized fields `(case_id, signal_type, evidence_id, donor_name, vote_id,
+contractor_name?, anomaly_subtype?)`. Missing values are normalized to empty string;
+UUIDs and strings are lower-cased/stripped as appropriate.
+
+`engines/signal_scorer.py` supplies the tuple per signal kind — for example
+`temporal_proximity` uses the donor key and a synthetic `cluster|{official_key}` as
+`vote_id`; `contract_proximity` passes the donation evidence id, donor label, contract
+evidence id, and contractor label; `contract_anomaly` keys on the contract evidence id
+and `anomaly_subtype`.
 
 The upsert behavior:
 - If no signal with this hash exists for this case: INSERT
@@ -218,8 +212,10 @@ projects. The pattern:
 Keys are stored as base64-encoded DER format in environment variables.
 On first boot, keys are auto-generated and written to `.env`.
 
-Verification: anyone with the public key can verify any receipt.
-The public key is included in the API response at `GET /api/v1/verify/public-key`.
+Verification: anyone with the public key can verify any receipt. There is no HTTP
+endpoint that publishes the key; use `OPEN_CASE_PUBLIC_KEY` from the environment (or
+`signing.py`) and `signature_check` / embedded seal fields on case and evidence
+responses for offline verification.
 
 ---
 
@@ -495,6 +491,95 @@ Alembic migrations run automatically on startup via `database.init_db()`.
 lifecycle creates a race condition when multiple instances restart simultaneously.
 For single-instance deployments (current target), this is acceptable.
 For multi-instance production, migrations should be run as a pre-deploy step.
+
+---
+
+## Historical Engineering Notes
+
+Migrated from the former long-form engineering report. These details supplement the
+sections above; prefer the current codebase when they disagree.
+
+### HTTP route layout
+
+Routers use two URL styles. Case CRUD, raw case payloads (with evidence), and
+snapshots typically live under **`/cases`**. Investigation, signals, reporting
+helpers, subjects, patterns, auth, admin, entity resolution, evidence
+disambiguation, and system utilities use **`/api/v1/...`** — see `main.py` for the
+full router list. Signals are not embedded on `GET /cases/{id}`; list them with
+`GET /api/v1/cases/{id}/signals`. There is no `GET /api/v1/evidence/{id}`; read
+evidence via the case payload or a report response.
+
+### Live-data smoke test (Todd Young harness)
+
+`python -m scripts.test_todd_young` (with `CONGRESS_API_KEY`, optional `FEC_API_KEY`,
+`BASE_URL`) exercises the end-to-end path: FEC + votes + temporal signals +
+readable `weight_explanation`. Assertions live in `scripts/todd_young_assertions.py`;
+on Category 3 failure the script prints per-row `source_name` / `entry_type` /
+title diagnostics. Treat a recorded `RESULT: PASS` log as the ground truth that
+this gate has been run on live APIs — “implemented” and “verified on live data” are
+different bars.
+
+### Canonical `entry_type` strings
+
+Do not invent new `entry_type` values without updating the Todd Young sets (and
+any dependent queries). The assertion module defines:
+
+- **Financial:** `financial_connection`
+- **Decision:** `vote_record`, `decision_event`, `congressional_vote`
+- **Other:** `property_record`, `court_record`, `disclosure`, `timeline_event`,
+  `gap_documented`
+
+FEC rows must use **`source_name` exactly `"FEC"`** or Category 3–style checks can
+fail. Congress votes use `vote_record` and **`source_name` `"Congress.gov"`**; if the
+API response shape changes, the adapter may return empty results with a
+`parse_warning` rather than raising.
+
+### Investigation pipeline (transactional outline)
+
+`POST /api/v1/cases/{id}/investigate` runs inside one DB transaction: load case and
+subject profile; build an adapter list (FEC committee vs name mode, USASpending,
+Indiana CF; optional address-driven local property adapters; **Congress votes only**
+when `subject_type == "public_official"`); run adapters **sequentially** (each
+catches errors and returns `found=False` instead of aborting the whole run); for each
+result compute `evidence_hash` via `adapters/dedup.make_evidence_hash`, skip
+duplicates, sign new rows, always write `SourceCheckLog`, add `gap_documented` when
+`found=True` and `results=[]`; load all case evidence; run detection engines; upsert
+signals via `signal_identity_hash`; re-sign the case file; single `commit()`.
+
+### Evidence vs signal deduplication
+
+**Evidence:** colon-delimited payload in `make_evidence_hash` — case id, source name,
+URL, event date, rounded amount, lower-cased matched name. **Signals:** see
+`signals/dedup.py` and the Signal Deduplication section above — distinct hash
+spaces; do not conflate them.
+
+### Receipt card and Open Graph (Phase 5 choices)
+
+`GET /api/v1/cases/{id}/report/card` sets text Open Graph tags (`og:url`, `og:type`,
+`og:title`, `og:description`). **`og:image` was removed by design** — no bundled static
+preview asset or `/static` receipt PNG in `main.py`. Crawlers get text-only previews;
+`twitter:card` may still request large-image layout without an image.
+
+### `is_featured` and confirmation rules
+
+**`is_featured`** is computed as **`weight >= 0.5`** in response builders (not a DB
+column) — see `routes/investigate.py` and `routes/reporting.py`; the HTML report
+template filters on the boolean from the payload. **`PATCH /api/v1/signals/{id}/expose`**
+must return **400** with **`UNCONFIRMED_SIGNAL`** when `confirmed` is false — enforced
+in `routes/reporting.py`.
+
+### Architectural rules (do not violate casually)
+
+1. **Confirm-before-expose** — unconfirmed signals must not reach published receipts.
+2. **Collision handling** — `collision_count > 1` → `confidence="unverified"` and
+   `flagged_for_review=True`; resolve via `PATCH /api/v1/evidence/{id}/disambiguate`.
+3. **Adapters never raise** — failures become `AdapterResponse(found=False, error=...)`.
+4. **Documented absence** — empty search with `found=True` must yield `gap_documented`
+   plus source logging.
+5. **Receipt tone** — describe records, not legal verdicts.
+6. **Scope** — subjects are public officials, corporations, and organizations only.
+7. **Key rotation** — regenerating `OPEN_CASE_PRIVATE_KEY` invalidates prior seals
+   unless you run a full re-signing migration.
 
 ---
 
