@@ -145,12 +145,12 @@ def full_case_signing_payload(
     }
 
 
-def seal_case_bundle(
+def seal_case_bundle_v3(
     case: CaseFile,
     entries: list[EvidenceEntry],
     pattern_alerts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Canonical case seal including methodology (open-case-full-3)."""
+    """Legacy digest (open-case-full-3) for verifying older seals without case_signals."""
     ordered = sorted(entries, key=lambda x: str(x.id))
     pal = pattern_alerts if pattern_alerts is not None else []
     return {
@@ -158,6 +158,27 @@ def seal_case_bundle(
         "case": case_semantic_dict(case),
         "evidence": [evidence_semantic_dict(x) for x in ordered],
         "pattern_alerts": pal,
+        "methodology_note": METHODOLOGY_NOTE_TEXT,
+        "methodology_note_version": METHODOLOGY_NOTE_VERSION,
+    }
+
+
+def seal_case_bundle(
+    case: CaseFile,
+    entries: list[EvidenceEntry],
+    pattern_alerts: list[dict[str, Any]] | None = None,
+    case_signals: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Canonical case seal including methodology and per-signal proportionality (open-case-full-4)."""
+    ordered = sorted(entries, key=lambda x: str(x.id))
+    pal = pattern_alerts if pattern_alerts is not None else []
+    cs = case_signals if case_signals is not None else []
+    return {
+        "schema_version": "open-case-full-4",
+        "case": case_semantic_dict(case),
+        "evidence": [evidence_semantic_dict(x) for x in ordered],
+        "pattern_alerts": pal,
+        "case_signals": cs,
         "methodology_note": METHODOLOGY_NOTE_TEXT,
         "methodology_note_version": METHODOLOGY_NOTE_VERSION,
     }
@@ -186,11 +207,15 @@ def verify_case_file_seal(
         return r
     if db is not None:
         from engines.pattern_engine import pattern_alerts_for_signing, run_pattern_engine
+        from services.proportionality import case_signals_for_signing
 
         pal = pattern_alerts_for_signing(run_pattern_engine(db))
+        case_sig = case_signals_for_signing(db, case.id)
         for candidate in (
-            seal_case_bundle(case, entries, pal),
-            seal_case_bundle(case, entries, []),
+            seal_case_bundle(case, entries, pal, case_sig),
+            seal_case_bundle(case, entries, [], case_sig),
+            seal_case_bundle_v3(case, entries, pal),
+            seal_case_bundle_v3(case, entries, []),
             full_case_signing_payload(case, entries, pal),
             full_case_signing_payload(case, entries, []),
         ):
@@ -221,7 +246,10 @@ def apply_case_file_signature(
         pattern_payload = pattern_alerts_for_signing(raw)
         sync_pattern_alert_records(db, raw)
 
-    payload = seal_case_bundle(case, entries, pattern_payload)
+    from services.proportionality import case_signals_for_signing
+
+    case_sig = case_signals_for_signing(db, case.id) if db is not None else []
+    payload = seal_case_bundle(case, entries, pattern_payload, case_sig)
     signed = sign_payload(payload)
     case.signed_hash = pack_signed_hash(
         signed["content_hash"], signed["signature"], payload

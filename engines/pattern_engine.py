@@ -437,6 +437,7 @@ class PatternAlert:
     lda_match_count: int | None = None
     diagnostics_json: str | None = None
     payload_extra: dict[str, Any] | None = None
+    proportionality_context: list[dict[str, Any]] | None = None
 
 
 def _utc_now() -> datetime:
@@ -3038,6 +3039,9 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
                 a.matched_case_ids, cases_with_votes
             )
     alerts.sort(key=lambda x: (x.donor_entity.lower(), x.rule_id, x.committee or ""))
+    from services.proportionality import attach_proportionality_to_pattern_alerts
+
+    attach_proportionality_to_pattern_alerts(db, alerts)
     return alerts
 
 
@@ -3110,6 +3114,8 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
     }
     if a.payload_extra:
         payload["payload_extra"] = a.payload_extra
+    if a.proportionality_context:
+        payload["proportionality_context"] = list(a.proportionality_context)
     return payload
 
 
@@ -3133,6 +3139,10 @@ def sync_pattern_alert_records(db: Session, alerts: list[PatternAlert]) -> None:
             if diag_obj is None:
                 diag_obj = {}
             diag_obj = {**diag_obj, "payload_extra": a.payload_extra}
+        if a.proportionality_context:
+            if diag_obj is None:
+                diag_obj = {}
+            diag_obj["proportionality_context"] = a.proportionality_context
         if diag_obj is not None:
             diag_store = json.dumps(diag_obj, separators=(",", ":"), default=str)
         else:
@@ -3193,7 +3203,7 @@ def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
         window_phrase = f"{ws}–{we} ({a.window_days} days)"
     elif a.window_days is not None:
         window_phrase = f"{a.window_days} days"
-    return {
+    row: dict[str, Any] = {
         "badge": badge,
         "rule_line": rule_line,
         "donor_entity": a.donor_entity,
@@ -3204,6 +3214,9 @@ def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
         "disclaimer": a.disclaimer,
         "rule_id": a.rule_id,
     }
+    if a.proportionality_context:
+        row["proportionality_context"] = list(a.proportionality_context)
+    return row
 
 
 def filter_pattern_alerts(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -15,6 +16,10 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from auth import require_api_key, require_matching_handle
+from services.proportionality import (
+    proportionality_packet_for_signal,
+    proportionality_packet_for_signal_sync,
+)
 from adapters.base import AdapterResponse, BaseAdapter
 from adapters.cache import get_cached_response, response_from_cache_dict, store_cached_response
 from adapters.congress_votes import CongressVotesAdapter, fetch_amendment_votes_for_member
@@ -766,7 +771,7 @@ def _signal_official_label(s: Signal, bd: dict[str, Any]) -> str:
     return str(s.actor_b or "").strip()
 
 
-def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
+def _signal_to_response_dict_core(s: Signal) -> dict[str, Any]:
     bd = _signal_breakdown_local(s)
     featured = (s.weight or 0) >= 0.5 and s.exposure_state != "unresolved"
     conf_checks: dict[str, Any] = {}
@@ -866,6 +871,19 @@ def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
     if official_api is not None and str(official_api).strip():
         out["official_name"] = str(official_api).strip()
     out["evidence_tier"] = evidence_tier_from_checks(conf_checks if conf_checks else None)
+    return out
+
+
+async def _signal_to_response_dict_async(s: Signal) -> dict[str, Any]:
+    out = _signal_to_response_dict_core(s)
+    pkt = await proportionality_packet_for_signal(s)
+    out["proportionality_packet"] = pkt
+    return out
+
+
+def _signal_to_response_dict(s: Signal) -> dict[str, Any]:
+    out = _signal_to_response_dict_core(s)
+    out["proportionality_packet"] = proportionality_packet_for_signal_sync(s)
     return out
 
 
@@ -1523,17 +1541,21 @@ async def run_investigation(
         signals_detected_total = len(resolved_signals)
         signals_unresolved_total = len(unresolved_signals)
 
-        signal_payloads_response = [
-            _signal_to_response_dict(s)
-            for s in resolved_signals[:INVESTIGATE_SIGNALS_RESPONSE_LIMIT]
-        ]
-        if include_unresolved and unresolved_signals:
-            unresolved_payload = [
-                _signal_to_response_dict(s)
-                for s in sorted(
-                    unresolved_signals, key=lambda x: x.weight or 0.0, reverse=True
-                )[:25]
+        signal_payloads_response = await asyncio.gather(
+            *[
+                _signal_to_response_dict_async(s)
+                for s in resolved_signals[:INVESTIGATE_SIGNALS_RESPONSE_LIMIT]
             ]
+        )
+        if include_unresolved and unresolved_signals:
+            unresolved_payload = await asyncio.gather(
+                *[
+                    _signal_to_response_dict_async(s)
+                    for s in sorted(
+                        unresolved_signals, key=lambda x: x.weight or 0.0, reverse=True
+                    )[:25]
+                ]
+            )
 
         temporal_for_run = [
             s

@@ -20,6 +20,7 @@ from auth import require_api_key, require_matching_handle
 from database import get_db
 from engines.entity_resolution import resolve
 from engines.pattern_engine import pattern_alerts_for_case, run_pattern_engine
+from services.proportionality import proportionality_packet_for_signal_sync
 from engines.signal_scorer import evidence_tier_from_checks
 from models import (
     CaseContributor,
@@ -373,6 +374,7 @@ def _signal_to_report_row(
         "chronology_line": chron,
         "source_links": links,
         "temporal_class": (s.temporal_class or "").strip(),
+        "proportionality_packet": proportionality_packet_for_signal_sync(s),
     }
 
 

@@ -1,0 +1,49 @@
+{# EthicalAlt /proportionality JSON shape may vary — read defensively. #}
+{% macro signal_legal_context(pkt, amount_val) %}
+{% if pkt %}
+<div class="legal-context" style="margin-top:0.75rem;padding:0.75rem 0.9rem;border:1px solid var(--rule);background:rgba(255,255,255,0.92);font-size:0.84rem;line-height:1.4;">
+  <h4 style="margin:0 0 0.4rem;font-family:system-ui,sans-serif;font-size:0.68rem;letter-spacing:0.1em;color:var(--accent);">LEGAL CONTEXT</h4>
+  <p style="margin:0.2rem 0;"><strong>{{ pkt.get('code') or pkt.get('statute_code') or pkt.get('statute') or '—' }}</strong> — {{ pkt.get('description') or pkt.get('title') or pkt.get('summary') or '—' }}</p>
+  <p style="margin:0.2rem 0;">Maximum penalty: <strong>{{ pkt.get('maximum_penalty_years') or pkt.get('max_penalty_years_per_count') or pkt.get('max_years_per_count') or '—' }}</strong> years per count
+    {% set u = pkt.get('uscode_url') or pkt.get('uscode_href') or pkt.get('statute_url') %}
+    {% if u %}<a href="{{ u }}" target="_blank" rel="noopener" style="color:#1a5276;">uscode.house.gov ↗</a>{% endif %}
+  </p>
+  <p style="margin:0.45rem 0 0.2rem;font-weight:600;">FOR CONTEXT</p>
+  <p style="margin:0.2rem 0;">Median federal sentence for campaign finance violations: <strong>{{ pkt.get('median_sentence_months') or pkt.get('median_federal_sentence_months') or pkt.get('medianSentenceMonths') or '—' }}</strong> months — U.S. Sentencing Commission</p>
+  <p style="margin:0.45rem 0 0.2rem;font-weight:600;">AMOUNT IN RECORD</p>
+  <p style="margin:0.2rem 0;">Donation amount: <strong>${{ "{:,.0f}".format(amount_val or 0) }}</strong></p>
+  {% set med_amt = pkt.get('median_amount_involved') or pkt.get('median_amount') or pkt.get('medianAmountInvolved') %}
+  {% if med_amt is not none %}<p style="margin:0.2rem 0;">Median amount in comparable federal cases: <strong>${{ "{:,.0f}".format(med_amt|float) }}</strong></p>{% endif %}
+  {% set mult = pkt.get('multiple_of_median') or pkt.get('multipleOfMedian') %}
+  {% if mult is not none %}<p style="margin:0.2rem 0;">≈ <strong>{{ mult }}</strong>x the median</p>{% endif %}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro pattern_record_context(alert, alert_idx) %}
+{% set ctx = alert.proportionality_context %}
+{% if ctx and ctx|length > 0 %}
+<div class="record-context" style="margin-top:0.85rem;padding-top:0.65rem;border-top:1px dashed var(--rule);">
+  <p class="mono-muted" style="font-family:ui-monospace,monospace;font-size:0.72rem;color:var(--muted);margin:0 0 0.5rem;">Public record — not a charge or verdict</p>
+  <h4 style="margin:0 0 0.35rem;font-family:system-ui,sans-serif;font-size:0.68rem;letter-spacing:0.1em;color:var(--accent);">RECORD CONTEXT</h4>
+  <p style="margin:0 0 0.5rem;font-size:0.82rem;color:var(--muted);">{{ ctx|length }} signal{{ 's' if ctx|length != 1 else '' }} carry documented proportionality data</p>
+  {% for row in ctx %}
+  {% set pkt = row.packet %}
+  <div style="margin:0.65rem 0;padding:0.55rem 0.65rem;background:rgba(255,255,255,0.85);border:1px solid #c9c3b8;font-size:0.82rem;">
+    <p style="margin:0 0 0.35rem;"><strong>{{ row.official }}</strong> ← {{ row.donor }} · ${{ "{:,.0f}".format(row.amount or 0) }}</p>
+    {% if pkt %}
+    <p style="margin:0.2rem 0;">{{ pkt.get('code') or pkt.get('statute_code') or '—' }} · max <strong>{{ pkt.get('maximum_penalty_years') or pkt.get('max_penalty_years_per_count') or '—' }}</strong> yrs · median comparable sentence: <strong>{{ pkt.get('median_sentence_months') or pkt.get('median_federal_sentence_months') or '—' }}</strong> months</p>
+    {% set mult = pkt.get('multiple_of_median') or pkt.get('multipleOfMedian') %}
+    {% if mult is not none %}<p style="margin:0.2rem 0;">≈ <strong>{{ mult }}</strong>x median federal case amount</p>{% endif %}
+    {% endif %}
+  </div>
+  {% endfor %}
+  <p style="margin:0.65rem 0 0.25rem;font-size:0.72rem;color:var(--muted);">
+    <button type="button" class="geo-opt-btn" data-prox-facility-btn="1" data-alert-idx="{{ alert_idx }}" style="background:none;border:none;padding:0;color:#1a5276;text-decoration:underline;cursor:pointer;font:inherit;">
+      Use my location to load nearest federal facility (optional)
+    </button>
+  </p>
+  <div id="facility-slot-{{ alert_idx }}" style="margin-top:0.5rem;font-size:0.8rem;"></div>
+</div>
+{% endif %}
+{% endmacro %}

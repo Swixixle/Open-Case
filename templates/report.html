@@ -46,6 +46,7 @@
   </style>
 </head>
 <body>
+{% from "proportionality_macros.html" import signal_legal_context, pattern_record_context %}
   <header>
     <h1>{{ report.title }}</h1>
     <div class="meta">
@@ -128,6 +129,7 @@
             Source warning: {{ s.parse_warning[:300] }}
           </div>
           {% endif %}
+          {{ signal_legal_context(s.proportionality_packet, s.total_amount) }}
         </article>
         {% endfor %}
         <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
@@ -195,6 +197,7 @@
             Source warning: {{ s.parse_warning[:300] }}
           </div>
           {% endif %}
+          {{ signal_legal_context(s.proportionality_packet, s.total_amount) }}
         </article>
         {% endfor %}
         <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
@@ -232,6 +235,7 @@
           {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
           <div class="footnote" style="color:#8b4513;">Cross-case: {{ s.cross_case_appearances }} other official(s)</div>
           {% endif %}
+          {{ signal_legal_context(s.proportionality_packet, s.total_amount) }}
         </div>
         {% endfor %}
         <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
@@ -262,6 +266,7 @@
           {% if s.cross_case_appearances and s.cross_case_appearances > 0 %}
           <div class="footnote" style="color:#8b4513;">Cross-case: {{ s.cross_case_appearances }} other official(s)</div>
           {% endif %}
+          {{ signal_legal_context(s.proportionality_packet, s.total_amount) }}
         </div>
         {% endfor %}
         <p class="temporal-note">Temporal relation is documented for chronology only. It does not establish motive, coordination, or influence.</p>
@@ -306,6 +311,7 @@
         <p class="footnote" style="margin:0.35rem 0;"><strong>Window:</strong> {{ p.window_phrase }}</p>
         {% endif %}
         <p class="footnote" style="margin-top:0.65rem;font-style:italic;color:var(--muted);">{{ p.disclaimer }}</p>
+        {{ pattern_record_context(p, loop.index0) }}
       </div>
       {% endfor %}
     </section>
@@ -351,7 +357,7 @@
         <p class="footnote" style="margin:0.75rem 0 0;">No cryptographic seal stored for this case yet (signing keys may still be bootstrapping on first deploy).</p>
         {% else %}
         <p class="footnote" style="margin:0.75rem 0 0;">
-          <strong>Verification</strong> — This receipt is cryptographically signed. The seal covers the canonical bundle (case fields, evidence entries, <code>pattern_alerts</code>, and the methodology note when using <code>open-case-full-3</code>) from the last signing run. Any change to signed content would invalidate the digest.
+          <strong>Verification</strong> — This receipt is cryptographically signed. The seal covers the canonical bundle (case fields, evidence entries, <code>pattern_alerts</code>, <code>case_signals</code> (including proportionality receipts where present), and the methodology note when using <code>open-case-full-4</code>) from the last signing run. Any change to signed content would invalidate the digest.
         </p>
         {% endif %}
       </div>
@@ -371,5 +377,58 @@
       <p class="footnote" style="margin-top:0.75rem;"><strong>Request for comment:</strong> Not sent</p>
     </section>
   </main>
+<script>
+(function () {
+  function renderFacility(target, pkt) {
+    if (!target || !pkt) return;
+    var f = pkt.nearest_facility || pkt.nearestFederalFacility || pkt.facility || null;
+    if (!f || typeof f !== "object") {
+      target.textContent = "No facility data returned for this location.";
+      return;
+    }
+    var name = f.facility_name || f.name || "—";
+    var dist = f.distance_miles != null ? f.distance_miles : f.distanceMiles;
+    var sec = f.security_level || f.securityLevel || "—";
+    var pop = f.population_total != null ? f.population_total : f.populationTotal;
+    var html = '<div style="margin-top:0.35rem;padding:0.55rem 0.65rem;border:1px solid var(--rule);background:rgba(255,255,255,0.9)"><strong>NEAREST FEDERAL FACILITY</strong><br/>'
+      + String(name) + (dist != null ? " · " + String(dist) + " miles" : "") + "<br/>"
+      + "Security level: <strong>" + String(sec) + "</strong>"
+      + (pop != null ? " &nbsp; Population: <strong>" + String(pop) + "</strong>" : "")
+      + '<br/><a href="https://www.bop.gov/" target="_blank" rel="noopener" style="color:#1a5276;">Bureau of Prisons ↗</a></div>';
+    target.innerHTML = html;
+  }
+  document.querySelectorAll("[data-prox-facility-btn]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var idx = btn.getAttribute("data-alert-idx");
+      var slot = document.getElementById("facility-slot-" + idx);
+      if (!slot) return;
+      slot.textContent = "Locating…";
+      if (!navigator.geolocation) {
+        slot.textContent = "Geolocation not available in this browser.";
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          var lat = pos.coords.latitude;
+          var lng = pos.coords.longitude;
+          var url = "/api/v1/proportionality/facility-preview?lat=" + encodeURIComponent(lat) + "&lng=" + encodeURIComponent(lng) + "&category=political";
+          fetch(url)
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              renderFacility(slot, data.proportionality || null);
+            })
+            .catch(function () {
+              slot.textContent = "Could not load facility preview.";
+            });
+        },
+        function () {
+          slot.textContent = "Location permission denied or unavailable.";
+        },
+        { timeout: 15000, maximumAge: 600000 }
+      );
+    });
+  });
+})();
+</script>
 </body>
 </html>
