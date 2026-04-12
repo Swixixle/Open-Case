@@ -98,7 +98,14 @@ async def lifespan(app: FastAPI):
             id="enrichment_refresh",
             replace_existing=True,
         )
-        scheduler.start()
+        try:
+            scheduler.start()
+            logger.info("Scheduler started")
+        except Exception as e:
+            logger.warning(
+                "Scheduler failed to start, continuing without it: %s",
+                e,
+            )
         logger.info("Application startup complete.")
     except Exception:
         logger.exception("Application startup failed")
@@ -106,7 +113,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        scheduler.shutdown(wait=False)
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            logger.debug("Scheduler shutdown skipped or failed", exc_info=True)
 
 
 app = FastAPI(title="OPEN CASE", version="0.2.0", lifespan=lifespan)
