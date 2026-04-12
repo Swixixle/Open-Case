@@ -81,6 +81,7 @@ from engines.pattern_engine import _schedule_b_recipient_committee_id, _schedule
 from core.datetime_utils import coerce_utc
 from scoring import add_credibility
 from services.enrichment_service import run_enrichment
+from services.gap_analysis import GAP_ANALYSIS_DISCLAIMER, generate_gap_sentences
 
 logger = logging.getLogger(__name__)
 
@@ -1706,6 +1707,24 @@ def get_case_enrichment(
             }
             for r in rows
         ],
+    }
+
+
+@router.get("/cases/{case_id}/gap-analysis")
+def get_gap_analysis(
+    case_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
+) -> dict[str, Any]:
+    """Plain-English FEC + vote gap sentences for journalists (no causation claims)."""
+    case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    gaps = generate_gap_sentences(str(case_id), db)
+    return {
+        "case_id": str(case_id),
+        "disclaimer": GAP_ANALYSIS_DISCLAIMER,
+        "gaps": gaps,
     }
 
 
