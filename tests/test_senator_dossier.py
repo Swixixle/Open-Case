@@ -27,7 +27,11 @@ from models import (
 from services.enrichment_service import validate_narrative
 from services.senator_dossier import build_senator_dossier
 from signing import generate_keypair, pack_signed_hash, verify_signed_hash_string
-from adapters.staff_network import _donor_overlap_for_clients, extract_senior_staff_from_propublica_member
+from adapters.staff_network import (
+    _donor_overlap_for_clients,
+    extract_subject_meta_from_congress_gov_member,
+    parse_staff_from_sonar_assistant_text,
+)
 from adapters.amendment_fingerprint import analyze_amendment_votes
 from adapters.senator_deep_research import (
     fetch_senator_deep_research_category,
@@ -180,19 +184,30 @@ def _fec_and_vote_gap_fixture(db, case_id: uuid.UUID, handle: str) -> None:
     db.commit()
 
 
-def test_staff_network_schema_from_propublica_shape() -> None:
+def test_staff_network_subject_meta_from_congress_gov_shape() -> None:
     member = {
-        "first_name": "Test",
-        "last_name": "Senator",
-        "staff": [
-            {"name": "Alex Aide", "title": "Chief of Staff", "start_date": "2020-01-01", "end_date": None}
+        "firstName": "Test",
+        "lastName": "Senator",
+        "directOrderName": "Test Senator",
+        "state": "Texas",
+        "partyHistory": [{"partyAbbreviation": "D", "partyName": "Democratic"}],
+        "terms": [
+            {"chamber": "Senate", "startYear": 2015, "stateName": "Texas"},
         ],
     }
-    staff = extract_senior_staff_from_propublica_member(member)
+    meta = extract_subject_meta_from_congress_gov_member(member)
+    assert meta["name"] == "Test Senator"
+    assert meta["state"] == "Texas"
+    assert meta["party"] == "D"
+    assert meta["years_in_office"] >= 1
+
+
+def test_parse_staff_from_sonar_assistant_text_json() -> None:
+    text = '[{"name": "Alex Aide", "role": "Chief of Staff"}]'
+    staff = parse_staff_from_sonar_assistant_text(text)
     assert len(staff) == 1
     assert staff[0]["name"] == "Alex Aide"
     assert staff[0]["role_at_office"] == "Chief of Staff"
-    assert staff[0]["start_date"] == "2020-01-01"
 
 
 def test_donor_overlap_lobbying_client_matches_fec_entity() -> None:

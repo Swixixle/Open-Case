@@ -1,8 +1,9 @@
 """
-Senior staff + LDA lobbying cross-reference (ProPublica member + Senate LDA API).
+Senior staff + LDA lobbying cross-reference (Congress.gov member + bioguide + Perplexity sonar + LDA).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -18,27 +19,46 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from adapters.cache import get_cached_raw_json, store_cached_raw_json
+from core.credentials import CredentialRegistry
 from models import EvidenceEntry
-from utils.http_retry import async_http_request_with_retry
+from utils.http_retry import async_http_request_with_retry, http_request_with_retry
 
 logger = logging.getLogger(__name__)
 
-PROPUBLICA_MEMBER_URL = "https://api.propublica.org/congress/v1/members/{bioguide_id}.json"
+CONGRESS_MEMBER_URL = "https://api.congress.gov/v3/member/{bioguide_id}"
 LDA_LOBBYIST_SEARCH = "https://lda.senate.gov/api/v1/lobbyists/"
 LDA_FILINGS_URL = "https://lda.senate.gov/api/v1/filings/"
+PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions"
 
 CACHE_ADAPTER = "senator_staff_network"
 CACHE_TTL_HOURS = 7 * 24
 
-HEADERS_LDA = {
+HEADERS_HTTP = {
     "User-Agent": (
         "Mozilla/5.0 (compatible; OpenCase/1.0; +https://github.com/) congressional-research"
     )
 }
 
+PERPLEXITY_STAFF_SYSTEM = """You extract senior U.S. Senate office staff from the user-provided context and query.
+Return only a JSON array: [{"name": "Full Name", "role": "Chief of Staff"}].
+Use roles such as Chief of Staff, Legislative Director, Communications Director when stated.
+If no staff are documented, return [].
+No prose outside JSON."""
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _congress_api_key() -> str:
+    raw = (os.environ.get("CONGRESS_API_KEY") or "").strip()
+    if raw:
+        return raw
+    try:
+        k = CredentialRegistry.get_credential("congress")
+        return (k or "").strip()
+    except Exception:
+        return ""
 
 
 def _norm_entity(s: str) -> str:
@@ -99,93 +119,214 @@ def _donor_overlap_for_clients(
     return bool(hits), sorted(set(hits))
 
 
-def _parse_staff_entry(raw: dict[str, Any], role_label: str) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    name = (
-        str(raw.get("name") or raw.get("staff_name") or "").strip()
-        or " ".join(
-            str(p or "").strip()
-            for p in (
-                raw.get("first_name"),
-                raw.get("middle_name"),
-                raw.get("last_name"),
-            )
-            if p
-        ).strip()
-    )
-    if not name:
-        return None
-    role = str(raw.get("title") or raw.get("role") or raw.get("position") or role_label)
-    return {
-        "name": name,
-        "role_at_office": role,
-        "start_date": str(raw.get("start_date") or raw.get("begin_date") or "") or "",
-        "end_date": str(raw.get("end_date") or "") or None,
-    }
-
-
-def extract_senior_staff_from_propublica_member(member: dict[str, Any]) -> list[dict[str, Any]]:
-    """Best-effort: ProPublica payloads vary; tests inject structured staff lists."""
-    staff_rows: list[dict[str, Any]] = []
-    for key in ("staff", "senior_staff", "office_staff", "staff_list"):
-        block = member.get(key)
-        if isinstance(block, list):
-            for item in block:
-                parsed = _parse_staff_entry(item, "Staff")
-                if parsed:
-                    staff_rows.append(parsed)
-        elif isinstance(block, dict):
-            parsed = _parse_staff_entry(block, "Staff")
-            if parsed:
-                staff_rows.append(parsed)
-
-    for role in member.get("roles") or []:
-        if not isinstance(role, dict):
-            continue
-        rtitle = str(role.get("title") or role.get("chamber") or "Senate role")
-        for key in ("staff", "senior_staff", "office_staff", "staff_list"):
-            block = role.get(key)
-            if isinstance(block, list):
-                for item in block:
-                    parsed = _parse_staff_entry(item, rtitle)
-                    if parsed:
-                        staff_rows.append(parsed)
-            elif isinstance(block, dict):
-                parsed = _parse_staff_entry(block, rtitle)
-                if parsed:
-                    staff_rows.append(parsed)
-    return staff_rows
-
-
-def _subject_meta_from_member(member: dict[str, Any]) -> dict[str, Any]:
-    first = str(member.get("first_name") or "").strip()
-    last = str(member.get("last_name") or "").strip()
-    name = f"{first} {last}".strip() or str(member.get("name") or "").strip()
-    party = str(member.get("current_party") or member.get("party") or "").strip()
+def extract_subject_meta_from_congress_gov_member(member: dict[str, Any]) -> dict[str, Any]:
+    """Map Congress.gov v3 `member` object to dossier subject_meta fields."""
+    if not isinstance(member, dict):
+        return {}
+    first = str(member.get("firstName") or "").strip()
+    last = str(member.get("lastName") or "").strip()
+    name = str(member.get("directOrderName") or f"{first} {last}".strip() or "").strip()
     state = str(member.get("state") or "").strip()
-    roles = [r for r in (member.get("roles") or []) if isinstance(r, dict)]
-    committees: list[str] = []
-    years_in_office = 0
-    if roles:
-        latest = roles[-1]
-        for c in latest.get("committees") or []:
-            if isinstance(c, dict) and c.get("name"):
-                committees.append(str(c["name"]))
-        begin = str(latest.get("start_date") or latest.get("begin_date") or "")[:10]
-        if begin and len(begin) >= 4:
+    party = ""
+    ph = member.get("partyHistory") or []
+    if isinstance(ph, list) and ph:
+        lastp = ph[-1] if isinstance(ph[-1], dict) else {}
+        party = str(lastp.get("partyAbbreviation") or lastp.get("partyName") or "").strip()
+    terms = [t for t in (member.get("terms") or []) if isinstance(t, dict)]
+    senate_years: list[int] = []
+    for t in terms:
+        ch = str(t.get("chamber") or "").lower()
+        if "senate" not in ch:
+            continue
+        sy = t.get("startYear")
+        if sy is not None:
             try:
-                y0 = int(begin[:4])
-                years_in_office = max(0, datetime.now(timezone.utc).year - y0)
-            except ValueError:
-                years_in_office = 0
+                senate_years.append(int(sy))
+            except (TypeError, ValueError):
+                pass
+    years_in_office = 0
+    if senate_years:
+        years_in_office = max(0, datetime.now(timezone.utc).year - min(senate_years))
     return {
         "name": name,
         "party": party,
         "state": state,
-        "committees": committees,
+        "committees": [],
         "years_in_office": years_in_office,
     }
+
+
+def _extract_json_array(text: str) -> list[Any]:
+    t = (text or "").strip()
+    if not t:
+        return []
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", t)
+    if fence:
+        t = fence.group(1).strip()
+    try:
+        data = json.loads(t)
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        m = re.search(r"\[[\s\S]*\]", t)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                return data if isinstance(data, list) else []
+            except json.JSONDecodeError:
+                pass
+        return []
+
+
+def parse_staff_from_sonar_assistant_text(text: str) -> list[dict[str, Any]]:
+    """Parse Perplexity sonar output into staff_seed rows (name, role_at_office, dates)."""
+    arr = _extract_json_array(text)
+    out: list[dict[str, Any]] = []
+    for it in arr:
+        if not isinstance(it, dict):
+            continue
+        n = str(it.get("name") or it.get("staff_name") or "").strip()
+        r = str(it.get("role") or it.get("title") or it.get("position") or "Senior staff").strip()
+        if n:
+            out.append(
+                {
+                    "name": n,
+                    "role_at_office": r,
+                    "start_date": str(it.get("start_date") or "") or "",
+                    "end_date": it.get("end_date"),
+                }
+            )
+    if out:
+        return out
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(
+            r"^[-*•\d.]+\s*(.+?)\s*[—–-]\s*(.+)$",
+            line,
+        )
+        if m:
+            n, r = m.group(1).strip(), m.group(2).strip()
+            n = re.sub(r"^\*+|\*+$", "", n).strip()
+            if len(n) > 2:
+                out.append(
+                    {
+                        "name": n,
+                        "role_at_office": r or "Senior staff",
+                        "start_date": "",
+                        "end_date": None,
+                    }
+                )
+    return out
+
+
+def _assistant_text(data: dict[str, Any]) -> str:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    ch0 = choices[0]
+    if not isinstance(ch0, dict):
+        return ""
+    msg = ch0.get("message")
+    if not isinstance(msg, dict):
+        return ""
+    return str(msg.get("content") or "")
+
+
+def _perplexity_sonar_staff_sync(senator_name: str, context_snippet: str, api_key: str) -> str:
+    query = (
+        f'"{senator_name}" chief of staff OR legislative director OR communications director '
+        "site:politico.com OR site:rollcall.com OR site:linkedin.com"
+    )
+    user = f"Research query: {query}\n\n"
+    if (context_snippet or "").strip():
+        user += f"Optional public bioguide/office page excerpt:\n{context_snippet[:12000]}\n\n"
+    user += f"Senator: {senator_name}. Return only the JSON array specified in the system message."
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": "sonar",
+        "messages": [
+            {"role": "system", "content": PERPLEXITY_STAFF_SYSTEM},
+            {"role": "user", "content": user},
+        ],
+    }
+    resp = http_request_with_retry(
+        "POST",
+        PERPLEXITY_API_URL,
+        headers=headers,
+        json=body,
+        timeout=120.0,
+    )
+    data = resp.json()
+    return _assistant_text(data if isinstance(data, dict) else {})
+
+
+async def _staff_seed_from_perplexity_sonar(
+    senator_name: str, context_snippet: str
+) -> list[dict[str, Any]]:
+    api_key = (os.environ.get("PERPLEXITY_API_KEY") or "").strip()
+    if not api_key:
+        logger.warning("PERPLEXITY_API_KEY missing; staff names from sonar search skipped")
+        return []
+    loop = asyncio.get_running_loop()
+    try:
+        text = await loop.run_in_executor(
+            None,
+            lambda: _perplexity_sonar_staff_sync(senator_name, context_snippet, api_key),
+        )
+    except Exception as e:
+        logger.warning("Perplexity sonar staff lookup failed: %s", e)
+        return []
+    return parse_staff_from_sonar_assistant_text(text)
+
+
+def _strip_html_to_text(html: str) -> str:
+    t = re.sub(r"(?is)<script.*?>.*?</script>", " ", html)
+    t = re.sub(r"(?is)<style.*?>.*?</style>", " ", t)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+
+async def _fetch_bioguide_contact_excerpt(client: httpx.AsyncClient, bioguide_id: str) -> str:
+    bg = (bioguide_id or "").strip()
+    if not bg:
+        return ""
+    urls = [
+        f"https://bioguide.congress.gov/search/bio/{bg}",
+        f"https://bioguide.congress.gov/search/bio/{bg}.html",
+    ]
+    for url in urls:
+        try:
+            r = await client.get(url, timeout=25.0, headers=HEADERS_HTTP, follow_redirects=True)
+            if r.status_code == 200 and len(r.text) > 200:
+                return _strip_html_to_text(r.text)[:15000]
+        except Exception as e:
+            logger.debug("bioguide fetch %s: %s", url, e)
+            continue
+    return ""
+
+
+async def _fetch_congress_gov_member(
+    client: httpx.AsyncClient, bioguide_id: str, api_key: str
+) -> dict[str, Any] | None:
+    url = CONGRESS_MEMBER_URL.format(bioguide_id=(bioguide_id or "").strip())
+    params = {"api_key": api_key, "format": "json"}
+    try:
+        resp = await async_http_request_with_retry(
+            client, "GET", url, params=params, headers=HEADERS_HTTP
+        )
+        data = resp.json()
+    except Exception as e:
+        logger.warning("Congress.gov member fetch failed for %s: %s", bioguide_id, e)
+        return None
+    if not isinstance(data, dict):
+        return None
+    m = data.get("member")
+    return m if isinstance(m, dict) else None
 
 
 async def _lda_search_lobbyist(client: httpx.AsyncClient, name: str) -> list[dict[str, Any]]:
@@ -193,7 +334,7 @@ async def _lda_search_lobbyist(client: httpx.AsyncClient, name: str) -> list[dic
         return []
     params = {"name": name.strip(), "format": "json"}
     resp = await async_http_request_with_retry(
-        client, "GET", LDA_LOBBYIST_SEARCH, params=params, headers=HEADERS_LDA
+        client, "GET", LDA_LOBBYIST_SEARCH, params=params, headers=HEADERS_HTTP
     )
     data = resp.json()
     results = data.get("results") if isinstance(data, dict) else None
@@ -239,7 +380,6 @@ async def _lda_filings_for_lobbyist(
     max_filings: int = 24,
     max_pages_per_year: int = 4,
 ) -> list[dict[str, Any]]:
-    """Scan recent-year LDA filing pages and keep rows naming this lobbyist id."""
     collected: list[dict[str, Any]] = []
     year_now = datetime.now(timezone.utc).year
     for year in range(year_now, year_now - 6, -1):
@@ -255,11 +395,11 @@ async def _lda_filings_for_lobbyist(
             try:
                 if params:
                     resp = await async_http_request_with_retry(
-                        client, "GET", url, params=params, headers=HEADERS_LDA
+                        client, "GET", url, params=params, headers=HEADERS_HTTP
                     )
                 else:
                     resp = await async_http_request_with_retry(
-                        client, "GET", url, headers=HEADERS_LDA
+                        client, "GET", url, headers=HEADERS_HTTP
                     )
             except Exception as e:
                 logger.warning("LDA filings page failed year=%s: %s", year, e)
@@ -281,20 +421,29 @@ async def _lda_filings_for_lobbyist(
     return collected
 
 
+def _empty_staff_response() -> dict[str, Any]:
+    return {
+        "staff": [],
+        "subject_meta": {},
+        "retrieved_at": _now_iso(),
+        "source_urls": [],
+        "from_cache": False,
+    }
+
+
 async def fetch_staff_network(
     db: Session,
     bioguide_id: str,
     case_file_id: UUID,
 ) -> dict[str, Any]:
     """
-    Returns { "staff": [...], "subject_meta": {...}, "retrieved_at", "source_urls" }.
-    Cached7 days per bioguide (case-specific donor overlap recomputed when missing from cache).
+    Congress.gov member profile + bioguide.congress.gov excerpt + Perplexity sonar staff names + LDA.
+    Cached7 days per bioguide (donor overlap recomputed per case on cache hit).
     """
     bg = (bioguide_id or "").strip()
     cache_key = bg
     cached = get_cached_raw_json(db, CACHE_ADAPTER, cache_key)
     if cached is not None and isinstance(cached, dict):
-        # Recompute donor overlap for this case (not cached with case id to keep key stable).
         fec = _fec_donor_strings_for_case(db, case_file_id)
         staff = []
         for row in cached.get("staff") or []:
@@ -314,35 +463,50 @@ async def fetch_staff_network(
             "from_cache": True,
         }
 
-    api_key = (os.environ.get("PROPUBLICA_API_KEY") or "").strip()
-    source_urls: list[str] = []
-    member: dict[str, Any] = {}
-    if api_key:
-        url = PROPUBLICA_MEMBER_URL.format(bioguide_id=bg)
-        source_urls.append(url)
-        try:
-            async with httpx.AsyncClient(timeout=60.0, headers={"X-API-Key": api_key}) as hc:
-                resp = await async_http_request_with_retry(hc, "GET", url)
-                data = resp.json()
-        except Exception as e:
-            logger.warning("ProPublica member fetch failed: %s", e)
-            data = {}
-        results = data.get("results") if isinstance(data, dict) else None
-        if isinstance(results, list) and results and isinstance(results[0], dict):
-            member = results[0]
-    else:
-        logger.warning("PROPUBLICA_API_KEY missing; staff_network uses empty member profile")
+    api_key = _congress_api_key()
+    if not api_key:
+        logger.warning(
+            "CONGRESS_API_KEY missing; staff_network returns empty staff (Congress.gov member required)."
+        )
+        return _empty_staff_response()
 
-    subject_meta = _subject_meta_from_member(member)
-    staff_seed = extract_senior_staff_from_propublica_member(member)
-    if not staff_seed and subject_meta.get("name"):
-        # Allow minimal pipeline progress when ProPublica omits staff lists.
-        staff_seed = []
+    source_urls: list[str] = []
+    member: dict[str, Any] | None = None
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        congress_url = CONGRESS_MEMBER_URL.format(bioguide_id=bg)
+        source_urls.append(congress_url)
+        member = await _fetch_congress_gov_member(client, bg, api_key)
+
+    if member is None:
+        logger.warning(
+            "Congress.gov member lookup failed for bioguide_id=%s; staff_network returns empty staff.",
+            bg,
+        )
+        return _empty_staff_response()
+
+    subject_meta = extract_subject_meta_from_congress_gov_member(member)
+    senator_name = (subject_meta.get("name") or "").strip()
+    if not senator_name:
+        logger.warning("Congress.gov member has no display name for %s; staff_network empty.", bg)
+        return {
+            **_empty_staff_response(),
+            "subject_meta": subject_meta,
+            "source_urls": source_urls,
+        }
+
+    bioguide_excerpt = ""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        bioguide_excerpt = await _fetch_bioguide_contact_excerpt(client, bg)
+    if bioguide_excerpt:
+        source_urls.append(f"https://bioguide.congress.gov/search/bio/{bg}")
+
+    staff_seed = await _staff_seed_from_perplexity_sonar(senator_name, bioguide_excerpt)
 
     fec_entities = _fec_donor_strings_for_case(db, case_file_id)
     staff_out: list[dict[str, Any]] = []
 
-    async with httpx.AsyncClient(timeout=60.0, headers=HEADERS_LDA) as lda_client:
+    async with httpx.AsyncClient(timeout=60.0) as lda_client:
         for s in staff_seed:
             name = str(s.get("name") or "").strip()
             role = str(s.get("role_at_office") or "").strip()
@@ -363,7 +527,6 @@ async def fetch_staff_network(
 
             best_id: int | None = None
             if matches:
-                # Prefer exact last-name match on final token
                 target_last = name.lower().split()[-1] if name else ""
                 for m in matches:
                     ln = str(m.get("last_name") or "").lower().strip()
