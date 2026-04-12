@@ -13,9 +13,10 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from models import SenatorDossier, SubjectProfile
+from models import CaseContributor, CaseFile, SenatorDossier, SubjectProfile
 from services.senator_dossier import run_senator_dossier_job
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -49,6 +50,49 @@ PERPLEXITY_DEEP_RESEARCH_USD_PER_CATEGORY = 0.05
 PROPUBLICA_MEMBER_USD = 0.0
 LDA_USD_PER_SEARCH = 0.0
 
+_BATCH_CASE_HANDLE = "batch_senator_dossiers"
+
+
+def ensure_subject_profiles(db: Session, senators: list[dict]) -> None:
+    """
+    Ensure each senator has a SubjectProfile (and backing CaseFile). SubjectProfile
+    requires case_file_id, subject_name, and subject_type — not standalone rows.
+    """
+    for s in senators:
+        bg = s["bioguide_id"].strip()
+        name = (s["name"] or "").strip()
+        existing = db.scalar(select(SubjectProfile).where(SubjectProfile.bioguide_id == bg))
+        if existing:
+            continue
+        case = CaseFile(
+            slug=f"sen-batch-{bg}",
+            title=f"Senator dossier: {name}",
+            subject_name=name,
+            subject_type="public_official",
+            jurisdiction="US",
+            status="open",
+            created_by=_BATCH_CASE_HANDLE,
+            summary="Auto-seeded for batch senator dossier builds.",
+        )
+        db.add(case)
+        db.flush()
+        db.add(
+            CaseContributor(
+                case_file_id=case.id,
+                investigator_handle=_BATCH_CASE_HANDLE,
+                role="field",
+            )
+        )
+        db.add(
+            SubjectProfile(
+                case_file_id=case.id,
+                subject_name=name,
+                subject_type="public_official",
+                bioguide_id=bg,
+            )
+        )
+    db.commit()
+
 
 def _unique_share_token(db, alphabet: str = "abcdefghijklmnopqrstuvwxyz0123456789") -> str:
     import secrets
@@ -74,6 +118,18 @@ def main() -> None:
     total_lda = 0
     ok = 0
     failed = 0
+
+    if not args.dry_run:
+        seed_db = SessionLocal()
+        try:
+            ensure_subject_profiles(seed_db, SENATORS)
+            logger.info("Subject profiles ensured for %s senators", len(SENATORS))
+        except Exception:
+            seed_db.rollback()
+            logger.exception("Seeding SubjectProfile rows failed")
+            raise
+        finally:
+            seed_db.close()
 
     for i, sub in enumerate(SENATORS):
         bg = sub["bioguide_id"].strip()
