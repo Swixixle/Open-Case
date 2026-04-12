@@ -25,6 +25,63 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def get_cached_raw_json(
+    db: Session,
+    adapter_name: str,
+    query_string: str,
+) -> dict[str, Any] | None:
+    """Return any JSON object from AdapterCache (not limited to AdapterResponse shape)."""
+    if _bust_cache_enabled():
+        return None
+    cache_key = make_cache_key(adapter_name, query_string)
+    now = _utc_now()
+    row = db.scalar(
+        select(AdapterCache).where(
+            AdapterCache.adapter_name == adapter_name,
+            AdapterCache.query_hash == cache_key,
+            AdapterCache.expires_at > now,
+        )
+    )
+    if not row:
+        return None
+    try:
+        data = json.loads(row.response_json)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def store_cached_raw_json(
+    db: Session,
+    adapter_name: str,
+    query_string: str,
+    data: dict[str, Any],
+    ttl_hours: int,
+) -> None:
+    """Store an arbitrary JSON-serializable dict in AdapterCache."""
+    cache_key = make_cache_key(adapter_name, query_string)
+    now = _utc_now()
+    expires_at = now + timedelta(hours=ttl_hours)
+    db.execute(
+        delete(AdapterCache).where(
+            AdapterCache.adapter_name == adapter_name,
+            AdapterCache.query_hash == cache_key,
+        )
+    )
+    db.add(
+        AdapterCache(
+            adapter_name=adapter_name,
+            query_hash=cache_key,
+            response_json=json.dumps(data, sort_keys=True, default=str),
+            created_at=now,
+            expires_at=expires_at,
+            ttl_hours=ttl_hours,
+            query_string=query_string,
+        )
+    )
+    db.flush()
+
+
 def get_cached_response(
     db: Session,
     adapter_name: str,

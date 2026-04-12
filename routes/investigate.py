@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import secrets
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
@@ -11,6 +13,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from starlette.responses import JSONResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -63,6 +66,7 @@ from models import (
     EnrichmentReceipt,
     InvestigationRun,
     Investigator,
+    SenatorDossier,
     Signal,
     SignalAuditLog,
     SourceCheckLog,
@@ -82,6 +86,8 @@ from core.datetime_utils import coerce_utc
 from scoring import add_credibility
 from services.enrichment_service import run_enrichment
 from services.gap_analysis import GAP_ANALYSIS_DISCLAIMER, generate_gap_sentences
+from services.senator_dossier import run_senator_dossier_job
+from utils.dossier_pdf import dossier_dict_from_stored_json, dossier_to_pdf_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -2543,3 +2549,156 @@ def dismiss_signal(
     )
     db.commit()
     return {"signal_id": str(signal_id), "dismissed": True}
+
+
+def _unique_dossier_share_token(db: Session) -> str:
+    alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+    for _ in range(80):
+        token = "".join(secrets.choice(alphabet) for _ in range(8))
+        exists = db.scalar(select(SenatorDossier.id).where(SenatorDossier.share_token == token))
+        if exists is None:
+            return token
+    raise HTTPException(status_code=500, detail="Could not allocate share_token")
+
+
+def _public_dossier_view(d: dict[str, Any]) -> dict[str, Any]:
+    out = dict(d)
+    dr = out.get("deep_research")
+    if isinstance(dr, dict):
+        cats = dr.get("categories")
+        if isinstance(cats, dict):
+            cleaned: dict[str, Any] = {}
+            for k, v in cats.items():
+                if isinstance(v, dict):
+                    cleaned[k] = {kk: vv for kk, vv in v.items() if kk != "query_errors"}
+                else:
+                    cleaned[k] = v
+            out["deep_research"] = {**dr, "categories": cleaned}
+    return out
+
+
+@router.post("/senators/{bioguide_id}/dossier")
+def create_senator_dossier(
+    bioguide_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _auth_inv: Investigator = Depends(require_api_key),
+) -> dict[str, Any]:
+    bg = (bioguide_id or "").strip()
+    prof = db.scalar(select(SubjectProfile).where(SubjectProfile.bioguide_id == bg))
+    if not prof:
+        raise HTTPException(status_code=404, detail="No subject profile for this bioguide_id")
+    prev = db.scalar(
+        select(SenatorDossier)
+        .where(SenatorDossier.bioguide_id == bg, SenatorDossier.status == "completed")
+        .order_by(SenatorDossier.completed_at.desc())
+    )
+    version = 1
+    prev_id: uuid.UUID | None = None
+    if prev:
+        version = int(prev.version or 1) + 1
+        prev_id = prev.id
+    share = _unique_dossier_share_token(db)
+    row = SenatorDossier(
+        bioguide_id=bg,
+        senator_name="",
+        dossier_json="{}",
+        signature="",
+        share_token=share,
+        version=version,
+        previous_version_id=prev_id,
+        status="building",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    background_tasks.add_task(run_senator_dossier_job, row.id)
+    base = (os.environ.get("BASE_URL") or "http://localhost:8000").rstrip("/")
+    poll_url = f"{base}/api/v1/senators/{bg}/dossier"
+    return {"dossier_id": str(row.id), "status": "building", "poll_url": poll_url}
+
+
+@router.get("/senators/{bioguide_id}/dossier")
+def get_senator_dossier(
+    bioguide_id: str,
+    db: Session = Depends(get_db),
+    _auth_inv: Investigator = Depends(require_api_key),
+) -> dict[str, Any]:
+    bg = (bioguide_id or "").strip()
+    building = db.scalar(
+        select(SenatorDossier)
+        .where(SenatorDossier.bioguide_id == bg, SenatorDossier.status == "building")
+        .order_by(SenatorDossier.created_at.desc())
+    )
+    if building:
+        base = (os.environ.get("BASE_URL") or "http://localhost:8000").rstrip("/")
+        return {
+            "status": "building",
+            "dossier_id": str(building.id),
+            "poll_url": f"{base}/api/v1/senators/{bg}/dossier",
+        }
+    latest = db.scalar(
+        select(SenatorDossier)
+        .where(SenatorDossier.bioguide_id == bg, SenatorDossier.status == "completed")
+        .order_by(SenatorDossier.completed_at.desc())
+    )
+    if not latest:
+        raise HTTPException(status_code=404, detail="No dossier found for this bioguide_id")
+    try:
+        data = json.loads(latest.dossier_json or "{}")
+    except json.JSONDecodeError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    out = dict(data)
+    out["status"] = "completed"
+    out["dossier_id"] = str(latest.id)
+    return out
+
+
+@router.get("/dossiers/{dossier_id}/public")
+def get_dossier_public(
+    dossier_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    row = db.get(SenatorDossier, dossier_id)
+    if not row or row.status != "completed":
+        raise HTTPException(status_code=404, detail="Dossier not available")
+    try:
+        data = json.loads(row.dossier_json or "{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=404, detail="Dossier payload missing")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=404, detail="Dossier payload invalid")
+    pub = _public_dossier_view(data)
+    return {
+        **pub,
+        "verify_url": pub.get("verify_url") or "",
+        "share_token": row.share_token,
+        "disclaimer": pub.get("disclaimer") or "",
+        "signature": pub.get("signature") or "",
+        "public_key": pub.get("public_key") or "",
+    }
+
+
+@router.get("/dossiers/{dossier_id}/pdf")
+def get_dossier_pdf(
+    dossier_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _auth_inv: Investigator = Depends(require_api_key),
+) -> Response:
+    row = db.get(SenatorDossier, dossier_id)
+    if not row or row.status != "completed":
+        raise HTTPException(status_code=404, detail="Dossier not available")
+    dossier = dossier_dict_from_stored_json(row.dossier_json)
+    try:
+        pdf_bytes = dossier_to_pdf_bytes(dossier, dossier_id=dossier_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e!s}") from e
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="dossier-{dossier_id}.pdf"',
+        },
+    )

@@ -383,3 +383,23 @@ class PatternAlertRecord(Base):
     fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     diagnostics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SenatorDossier(Base):
+    __tablename__ = "senator_dossiers"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bioguide_id: Mapped[str] = mapped_column(String(16), index=True)
+    senator_name: Mapped[str] = mapped_column(String(256))
+    dossier_json: Mapped[str] = mapped_column(Text)
+    signature: Mapped[str] = mapped_column(Text)
+    share_token: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    previous_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="building")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
