@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import sys
 from logging.config import fileConfig
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from alembic import context
 from sqlalchemy import create_engine, pool
@@ -54,7 +57,11 @@ def run_migrations_online() -> None:
             context.run_migrations()
 
 
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+try:
+    if context.is_offline_mode():
+        run_migrations_offline()
+    else:
+        run_migrations_online()
+except Exception:
+    logger.exception("Alembic env: run_migrations_online/offline failed")
+    raise

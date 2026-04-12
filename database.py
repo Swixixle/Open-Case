@@ -62,7 +62,15 @@ def run_migrations() -> None:
     ini = Path(__file__).resolve().parent / "alembic.ini"
     cfg = Config(str(ini))
     cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
-    command.upgrade(cfg, "head")
+    try:
+        logger.info("Running alembic upgrade head")
+        command.upgrade(cfg, "head")
+        logger.info("Migration complete")
+    except Exception as e:
+        logger.exception(
+            "Migration failed — continuing with existing schema: %s",
+            e,
+        )
 
 
 def backfill_donor_fingerprint_canonical_ids() -> None:
@@ -105,7 +113,12 @@ def backfill_donor_fingerprint_canonical_ids() -> None:
 def init_db() -> None:
     """Apply Alembic migrations (replaces create_all)."""
     run_migrations()
-    backfill_donor_fingerprint_canonical_ids()
+    try:
+        backfill_donor_fingerprint_canonical_ids()
+    except Exception:
+        logger.exception(
+            "Donor fingerprint canonical_id backfill failed; continuing without backfill."
+        )
 
 
 def get_db() -> Generator[Session, None, None]:
