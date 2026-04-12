@@ -3,6 +3,7 @@ SQLite for development; swap URL via DATABASE_URL for Postgres (e.g. Render).
 """
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Generator
 
@@ -11,7 +12,35 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from models import Base
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./open_case.db")
+logger = logging.getLogger(__name__)
+
+_raw_url = os.getenv("DATABASE_URL")
+if not _raw_url or not str(_raw_url).strip():
+    logger.critical(
+        "DATABASE_URL is not set; falling back to sqlite:///./open_case.db so the app can start."
+    )
+    DATABASE_URL = "sqlite:///./open_case.db"
+elif str(_raw_url).strip().lower().startswith("sqlite"):
+    DATABASE_URL = str(_raw_url).strip()
+    logger.warning(
+        "DATABASE_URL uses SQLite (%s). OK for local dev; use Postgres in production if needed.",
+        DATABASE_URL[:48] + "..." if len(DATABASE_URL) > 48 else DATABASE_URL,
+    )
+elif str(_raw_url).strip().startswith(("postgresql", "postgres")):
+    DATABASE_URL = str(_raw_url).strip()
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        logger.info("Normalized postgres:// URL to postgresql:// for SQLAlchemy.")
+    logger.info(
+        "DATABASE_URL uses PostgreSQL (prefix: %s).",
+        DATABASE_URL[:32] + "..." if len(DATABASE_URL) > 32 else DATABASE_URL,
+    )
+else:
+    DATABASE_URL = str(_raw_url).strip()
+    logger.info(
+        "DATABASE_URL is set (prefix: %s).",
+        DATABASE_URL[:32] + "..." if len(DATABASE_URL) > 32 else DATABASE_URL,
+    )
 
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(

@@ -1,11 +1,27 @@
 import logging
 import os
 import sys
-from contextlib import asynccontextmanager
 from pathlib import Path
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+_ROOT = Path(__file__).resolve().parent
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 from dotenv import load_dotenv
+
+load_dotenv(_ROOT / ".env")
+
+logger.info("Python version: %s", sys.version)
+_db_preview = os.getenv("DATABASE_URL", "NOT SET")
+logger.info(
+    "DATABASE_URL prefix: %s",
+    _db_preview[:20] if _db_preview != "NOT SET" else "NOT SET",
+)
+
+from contextlib import asynccontextmanager
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from database import init_db
@@ -23,12 +39,7 @@ from routes.system import router as system_router
 from core.credentials import CredentialRegistry
 from signing import bootstrap_env_keys
 
-_ROOT = Path(__file__).resolve().parent
-
-load_dotenv(_ROOT / ".env")
 bootstrap_env_keys(_ROOT)
-
-logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 
@@ -76,21 +87,36 @@ def check_config_warnings() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    check_config_warnings()
-    init_db()
-    scheduler.add_job(
-        _scheduled_enrichment_refresh,
-        "interval",
-        hours=24,
-        id="enrichment_refresh",
-        replace_existing=True,
-    )
-    scheduler.start()
-    yield
-    scheduler.shutdown(wait=False)
+    try:
+        check_config_warnings()
+        logger.info("Running database migrations and startup hooks.")
+        init_db()
+        scheduler.add_job(
+            _scheduled_enrichment_refresh,
+            "interval",
+            hours=24,
+            id="enrichment_refresh",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info("Application startup complete.")
+    except Exception:
+        logger.exception("Application startup failed")
+        raise
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="OPEN CASE", version="0.2.0", lifespan=lifespan)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(cases_router)
