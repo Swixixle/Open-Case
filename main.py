@@ -4,6 +4,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
@@ -28,6 +29,17 @@ load_dotenv(_ROOT / ".env")
 bootstrap_env_keys(_ROOT)
 
 logger = logging.getLogger(__name__)
+
+scheduler = AsyncIOScheduler()
+
+
+def _scheduled_enrichment_refresh() -> None:
+    try:
+        from services.enrichment_service import enqueue_stale_enrichment
+
+        enqueue_stale_enrichment()
+    except Exception:
+        logger.exception("Scheduled enrichment refresh failed.")
 
 
 def check_config_warnings() -> None:
@@ -66,7 +78,16 @@ def check_config_warnings() -> None:
 async def lifespan(app: FastAPI):
     check_config_warnings()
     init_db()
+    scheduler.add_job(
+        _scheduled_enrichment_refresh,
+        "interval",
+        hours=24,
+        id="enrichment_refresh",
+        replace_existing=True,
+    )
+    scheduler.start()
     yield
+    scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="OPEN CASE", version="0.2.0", lifespan=lifespan)

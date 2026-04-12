@@ -34,7 +34,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "2.2"
+PATTERN_ENGINE_VERSION = "2.3"
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,10 @@ BASELINE_ANOMALY_CALENDAR_ADJACENT_MIN_MULTIPLIER = 10.0
 BASELINE_ANOMALY_MIN_AGGREGATE = 5000.0
 BASELINE_ANOMALY_MIN_DATAPOINTS = 20
 BASELINE_ANOMALY_MAX_ALERTS_PER_CASE = 5
+# Spikes decades from the nearest stored vote are not comparable to legislative context.
+BASELINE_ANOMALY_MAX_DAYS_TO_NEAREST_VOTE = 180
+# Expected fundraising spikes in FEC election-cycle years (even years in cycles_included).
+BASELINE_ANOMALY_CAMPAIGN_SEASON_DISCOUNT = 0.5
 
 ALIGNMENT_ANOMALY_MIN_VOTES = 5
 ALIGNMENT_ANOMALY_DEVIATION_THRESHOLD = 1.5
@@ -910,6 +914,17 @@ def _nearest_vote_for_cases(
     prof = proximity_to_vote_score_from_days(best_days)
     vdesc, vres, vq = _vote_details_from_evidence_id(db, best_id)
     return best_days, best_id, best_date, prof, vdesc, vres, vq
+
+
+def _baseline_election_cycle_discount(midpoint: date, cycles_included: list[int]) -> float:
+    """
+    Campaign-season discount: if spike midpoint calendar year falls in an even
+    FEC cycle year present for this committee, treat spike as expected fundraising.
+    """
+    election_years = [y for y in cycles_included if y % 2 == 0]
+    if election_years and midpoint.year in election_years:
+        return BASELINE_ANOMALY_CAMPAIGN_SEASON_DISCOUNT
+    return 1.0
 
 
 def _donation_date_for_signal(s: Signal) -> date | None:
@@ -1835,6 +1850,7 @@ def _detect_baseline_anomaly(
         seen_win: set[tuple[date, date]] = set()
         case_alerts: list[PatternAlert] = []
         principal = _principal_committee_id_for_case(db, cid) or ""
+        cycles_included = _fec_cycles_present_for_bioguide(db, bg)
         for d0 in dates_sorted:
             for d1 in dates_sorted:
                 if (d1 - d0).days > 7:
@@ -1856,21 +1872,29 @@ def _detect_baseline_anomaly(
                 )
                 if mult < min_mult:
                     continue
-                seen_win.add((d0, d1))
-                base_suspicion = min(1.0, mult / 8.0)
-                suspicion = base_suspicion * dl_discount if dl_adj else base_suspicion
                 midpoint = _cluster_midpoint_date(d0, d1)
                 d_days, v_id, v_date, v_prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
                     db, {cid}, midpoint, votes_by_case
                 )
+                if d_days is None or d_days > BASELINE_ANOMALY_MAX_DAYS_TO_NEAREST_VOTE:
+                    continue
+                seen_win.add((d0, d1))
+                base_suspicion = min(1.0, mult / 8.0)
+                suspicion = base_suspicion * dl_discount if dl_adj else base_suspicion
+                election_cycle_discount = _baseline_election_cycle_discount(
+                    midpoint, cycles_included
+                )
+                suspicion = suspicion * election_cycle_discount
                 ev_ids = _fec_receipt_evidence_ids_for_case_window(db, cid, d0, d1)
                 pe = {
                     "window_aggregate": float(tot),
                     "senator_median_7day": float(median),
                     "baseline_multiplier": float(mult),
                     "baseline_datapoints": len(pairs),
-                    "cycles_included": _fec_cycles_present_for_bioguide(db, bg),
+                    "cycles_included": cycles_included,
                     "base_suspicion_before_deadline": float(base_suspicion),
+                    "election_cycle_discount": float(election_cycle_discount),
+                    "max_days_to_nearest_vote": BASELINE_ANOMALY_MAX_DAYS_TO_NEAREST_VOTE,
                 }
                 case_alerts.append(
                     PatternAlert(

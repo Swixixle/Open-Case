@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timezone
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -45,6 +47,9 @@ class CaseFile(Base):
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     is_public: Mapped[bool] = mapped_column(Boolean, default=True)
     last_source_statuses: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_enriched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     evidence_entries: Mapped[list["EvidenceEntry"]] = relationship(
         "EvidenceEntry",
@@ -337,6 +342,27 @@ class InvestigationRun(Base):
     run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     signals_detected: Mapped[int] = mapped_column(Integer, default=0)
     top_donors: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class EnrichmentReceipt(Base):
+    """Signed Perplexity sonar enrichment run attached to a case (receipts, not verdicts)."""
+
+    __tablename__ = "enrichment_receipts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    subject_name: Mapped[str] = mapped_column(String(512))
+    bioguide_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    queried_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    findings: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    new_findings_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_delta: Mapped[bool] = mapped_column(Boolean, default=False)
+    signed_receipt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
 
 
 class PatternAlertRecord(Base):

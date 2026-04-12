@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, delete, func, or_, select
@@ -60,6 +60,7 @@ from models import (
     CaseFile,
     DonorFingerprint,
     EvidenceEntry,
+    EnrichmentReceipt,
     InvestigationRun,
     Investigator,
     Signal,
@@ -79,6 +80,7 @@ from core.credentials import CredentialRegistry
 from engines.pattern_engine import _schedule_b_recipient_committee_id, _schedule_b_spender_committee_id
 from core.datetime_utils import coerce_utc
 from scoring import add_credibility
+from services.enrichment_service import run_enrichment
 
 logger = logging.getLogger(__name__)
 
@@ -1320,6 +1322,7 @@ def batch_open_cases(
 async def run_investigation(
     case_id: uuid.UUID,
     request: InvestigateRequest,
+    background_tasks: BackgroundTasks,
     include_unresolved: bool = Query(
         False,
         description="If true, include signals_unresolved_detail for quarantined clusters.",
@@ -1613,6 +1616,7 @@ async def run_investigation(
             )
 
         db.commit()
+        background_tasks.add_task(run_enrichment, str(case_id))
     except HTTPException:
         db.rollback()
         raise
@@ -1669,6 +1673,40 @@ async def run_investigation(
         }
         ok_body["source_row_counts"] = source_row_counts
     return ok_body
+
+
+@router.get("/cases/{case_id}/enrichment")
+def get_case_enrichment(
+    case_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
+) -> dict[str, Any]:
+    """All signed Perplexity enrichment receipts for a case (newest first)."""
+    case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    rows = db.scalars(
+        select(EnrichmentReceipt)
+        .where(EnrichmentReceipt.case_file_id == case_id)
+        .order_by(EnrichmentReceipt.queried_at.desc())
+    ).all()
+    return {
+        "case_id": str(case_id),
+        "receipts": [
+            {
+                "id": str(r.id),
+                "subject_name": r.subject_name,
+                "bioguide_id": r.bioguide_id,
+                "queried_at": r.queried_at.isoformat() if r.queried_at else None,
+                "findings": list(r.findings) if r.findings is not None else [],
+                "new_findings_count": r.new_findings_count,
+                "is_delta": r.is_delta,
+                "signed_receipt": r.signed_receipt or "",
+                "version": r.version,
+            }
+            for r in rows
+        ],
+    }
 
 
 def _jfc_name_has_marker(text: str) -> bool:

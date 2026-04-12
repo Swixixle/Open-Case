@@ -379,6 +379,37 @@ def test_baseline_anomaly_fires_on_spike(test_engine) -> None:
     assert b.payload_extra and b.payload_extra.get("baseline_multiplier", 0) >= 6.0
 
 
+def test_baseline_anomaly_not_fired_when_nearest_vote_over_180_days(test_engine) -> None:
+    """Temporal gate: spike ~April 2024 vs only vote Jan 2025 is >180 days — no alert."""
+    Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    db = Session()
+    _seed_investigator(db)
+    c = _case(db, f"blfar-{uuid.uuid4().hex[:8]}", "Senator FarVote")
+    db.flush()
+    _subject(db, c.id, "S77777777", "Senator FarVote")
+    for i in range(25):
+        _fec_historical(db, c.id, amount=200.0, receipt_date=f"2024-03-{i + 1:02d}")
+    for j in range(5):
+        _fec_historical(db, c.id, amount=5000.0, receipt_date=f"2024-04-{j + 1:02d}")
+    db.add(
+        EvidenceEntry(
+            case_file_id=c.id,
+            entry_type="vote_record",
+            title="Roll",
+            body="test",
+            source_url="https://www.senate.gov/",
+            entered_by="v2_tester",
+            confidence="confirmed",
+            date_of_event=date(2025, 1, 15),
+            raw_data_json=json.dumps({"congress": 119}, separators=(",", ":")),
+        )
+    )
+    db.commit()
+    hits = [a for a in run_pattern_engine(db) if a.rule_id == RULE_BASELINE_ANOMALY]
+    db.close()
+    assert not any(str(c.id) in a.matched_case_ids for a in hits)
+
+
 def test_alignment_anomaly_high_pharma_yea_rate(test_engine) -> None:
     Session = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
     db = Session()
@@ -599,8 +630,8 @@ def test_hearing_testimony_skipped_without_govinfo(test_engine) -> None:
     assert hits == []
 
 
-def test_pattern_engine_version_is_2_2() -> None:
-    assert PATTERN_ENGINE_VERSION == "2.2"
+def test_pattern_engine_version_is_2_3() -> None:
+    assert PATTERN_ENGINE_VERSION == "2.3"
 
 
 def test_joint_fundraising_not_fired_without_principal_committee(test_engine) -> None:
