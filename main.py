@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from database import init_db
 from routes.admin import router as admin_router
@@ -138,3 +139,11 @@ app.include_router(evidence_disambig_router)
 app.include_router(reporting_router)
 app.include_router(subjects_router)
 app.include_router(system_router)
+
+_client_dist = _ROOT / "client" / "dist"
+if _client_dist.is_dir():
+    app.mount(
+        "/app",
+        StaticFiles(directory=str(_client_dist), html=True),
+        name="client",
+    )

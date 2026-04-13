@@ -1,0 +1,340 @@
+/* Home layout */
+.oc-home {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 4.5rem;
+}
+
+.oc-header-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  gap: 1rem;
+}
+
+.oc-header-brand {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  color: var(--text-primary);
+  letter-spacing: 0.06em;
+}
+
+.oc-header-tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--amber-gold);
+  border: 1px solid var(--amber-dim);
+  padding: 0.35rem 0.6rem;
+  align-self: flex-start;
+  white-space: nowrap;
+}
+
+.oc-header-sub {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 0.25rem 0 0;
+  max-width: 18rem;
+}
+
+.oc-search-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 2rem 1rem 1.5rem;
+}
+
+.oc-search {
+  width: 100%;
+  max-width: 600px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-bright);
+  padding: 14px 20px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-family: var(--font-body);
+  outline: none;
+}
+
+.oc-search:focus {
+  border-color: var(--amber-gold);
+  box-shadow: 0 0 0 1px var(--amber-dim);
+}
+
+.oc-search::placeholder {
+  color: var(--text-dim);
+}
+
+.oc-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  padding: 0 1.5rem 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .oc-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .oc-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .oc-header-bar {
+    flex-direction: column;
+  }
+}
+
+.oc-footer-disclaimer {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 1rem 1.5rem 2rem;
+  max-width: 42rem;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Senator card */
+.oc-card {
+  display: block;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 1.1rem 1rem;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  min-height: 11rem;
+}
+
+.oc-card:hover {
+  border-color: var(--amber-gold);
+  box-shadow: 0 0 0 1px var(--amber-dim);
+  text-decoration: none;
+}
+
+.oc-card-meta {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+.oc-card-name {
+  font-family: var(--font-display);
+  font-size: 1.65rem;
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  margin: 0 0 0.65rem;
+}
+
+.oc-card-rule {
+  height: 1px;
+  background: var(--border-bright);
+  margin-bottom: 0.65rem;
+  opacity: 0.85;
+}
+
+.oc-tier {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.35rem;
+}
+
+.oc-tier-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.oc-tier--critical .oc-tier-dot {
+  background: var(--critical);
+}
+.oc-tier--critical {
+  color: var(--critical);
+}
+
+.oc-tier--high .oc-tier-dot {
+  background: var(--high);
+}
+.oc-tier--high {
+  color: var(--high);
+}
+
+.oc-tier--moderate .oc-tier-dot {
+  background: var(--moderate);
+}
+.oc-tier--moderate {
+  color: var(--moderate);
+}
+
+.oc-tier--low .oc-tier-dot {
+  background: var(--low);
+}
+.oc-tier--low {
+  color: var(--low);
+}
+
+.oc-card-findings {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0 0 0.25rem;
+}
+
+.oc-card-updated {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin: 0;
+}
+
+.oc-card--muted {
+  opacity: 0.92;
+}
+
+/* Bottom bar */
+.oc-bottom-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.85rem 1.25rem;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border);
+  z-index: 50;
+}
+
+.oc-bottom-bar a {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  color: var(--amber-gold);
+}
+
+.oc-bottom-bar a:hover {
+  color: var(--amber-bright);
+}
+
+.oc-home-status {
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 0 1rem 1rem;
+}
+
+/* Loading screen (dossier fetch) */
+.oc-loading {
+  min-height: 100vh;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.oc-loading-brand {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin: 0 0 1rem;
+}
+
+.oc-loading-name {
+  font-family: var(--font-display);
+  font-size: clamp(2.5rem, 8vw, 4rem);
+  color: var(--amber-gold);
+  letter-spacing: 0.06em;
+  margin: 0 0 1.25rem;
+  line-height: 1;
+}
+
+.oc-loading-dots {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.oc-loading-dots span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--amber-gold);
+  animation: oc-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.oc-loading-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.oc-loading-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes oc-dot-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.oc-loading-sub {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin: 0 0 0.5rem;
+}
+
+.oc-loading-field {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  letter-spacing: 0.1em;
+  color: var(--text-primary);
+  margin: 0.5rem 0 0;
+}
+
+.oc-loading-rule {
+  width: min(420px, 100%);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--border-bright),
+    transparent
+  );
+  margin: 1.5rem 0 1rem;
+}
+
+.oc-loading-disclaimer {
+  font-size: 0.65rem;
+  line-height: 1.7;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  max-width: 28rem;
+  margin: 0;
+}
