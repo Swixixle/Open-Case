@@ -4,6 +4,7 @@ import BottomBar from "../components/BottomBar.jsx";
 import CategoryChips from "../components/CategoryChips.jsx";
 import ClaimsAccordion from "../components/ClaimsAccordion.jsx";
 import GapAnalysis from "../components/GapAnalysis.jsx";
+import InfluenceGraphSections from "../components/InfluenceGraphSections.jsx";
 import InvestigationReceipt from "../components/InvestigationReceipt.jsx";
 import LoadingScreen from "../components/LoadingScreen.jsx";
 import PatternAlerts from "../components/PatternAlerts.jsx";
@@ -336,6 +337,7 @@ export default function SenatorPage() {
           <ClaimsAccordion categories={cats} />
           <GapAnalysis gaps={data.gap_analysis} />
           <StaffNetwork staff={data.staff_network} />
+          <InfluenceGraphSections dossier={data} />
           <PatternAlerts alerts={data.pattern_alerts} />
           <StoryAngles dossier={data} />
           <InvestigationReceipt dossier={data} />

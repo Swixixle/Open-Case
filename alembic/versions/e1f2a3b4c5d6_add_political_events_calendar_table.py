@@ -4,6 +4,10 @@ Revision ID: e1f2a3b4c5d6
 Revises: d5e6f7a8b9c0
 Create Date: 2026-04-03
 
+Note (Phase 13): Senator dossier signed JSON payload may include schema_version \"2.0\"
+and influence-graph keys (stock_act_trades, dark_money, ethics_travel, committee_witnesses)
+stored in SenatorDossier.dossier_json — no new DB columns required.
+
 """
 
 from __future__ import annotations

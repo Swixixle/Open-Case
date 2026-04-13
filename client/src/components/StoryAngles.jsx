@@ -27,6 +27,9 @@ export default function StoryAngles({ dossier }) {
       const cats = dossier?.deep_research?.categories || {};
       const gaps = dossier?.gap_analysis || [];
       const alerts = dossier?.pattern_alerts || [];
+      const darkMoney = dossier?.dark_money || [];
+      const ethicsTravel = dossier?.ethics_travel || [];
+      const committeeWitnesses = dossier?.committee_witnesses || [];
 
       const prompt = `You are an investigative journalism assistant.
 
@@ -42,6 +45,15 @@ ${JSON.stringify(gaps, null, 2).slice(0, 1000)}
 
 Pattern alerts:
 ${JSON.stringify(alerts, null, 2).slice(0, 1000)}
+
+Dark money connections:
+${JSON.stringify(darkMoney, null, 2).slice(0, 500)}
+
+Ethics and travel:
+${JSON.stringify(ethicsTravel, null, 2).slice(0, 500)}
+
+Committee witness overlaps:
+${JSON.stringify(committeeWitnesses, null, 2).slice(0, 500)}
 
 Return ONLY a JSON array, no prose, no markdown:
 [{

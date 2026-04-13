@@ -14,9 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from adapters.amendment_fingerprint import fetch_amendment_fingerprint
+from adapters.committee_witnesses import fetch_committee_witnesses
+from adapters.dark_money import fetch_dark_money
+from adapters.ethics_travel import fetch_ethics_travel
 from adapters.senate_committees import get_or_refresh_senator_committees
 from adapters.senator_deep_research import fetch_all_senator_deep_research
 from adapters.staff_network import fetch_staff_network
+from adapters.stock_act_trades import fetch_stock_act_trades_all_years
 from adapters.stock_trade_proximity import fetch_stock_trade_proximity_all_years
 from engines.pattern_engine import pattern_alert_to_payload, run_pattern_engine
 from models import CaseFile, SenatorDossier, SubjectProfile
@@ -105,9 +109,38 @@ async def build_senator_dossier(bioguide_id: str, db: Session) -> dict[str, Any]
     )
     amendment_fingerprint = await fetch_amendment_fingerprint(db, bg, case.id)
 
+    state_for_dm = str(subject_meta.get("state") or "").strip()
+
+    stock_act_trades: list[dict[str, Any]] = []
+    try:
+        stock_act_trades = await fetch_stock_act_trades_all_years(
+            db, bg, senator_name, committee_names, case.id
+        )
+    except Exception:
+        logger.exception("stock_act_trades adapter failed bioguide_id=%s", bg)
+
+    dark_money: list[dict[str, Any]] = []
+    try:
+        dark_money = await fetch_dark_money(db, bg, case.id, state_for_dm)
+    except Exception:
+        logger.exception("dark_money adapter failed bioguide_id=%s", bg)
+
+    ethics_travel: list[dict[str, Any]] = []
+    try:
+        ethics_travel = await fetch_ethics_travel(db, bg, senator_name, case.id)
+    except Exception:
+        logger.exception("ethics_travel adapter failed bioguide_id=%s", bg)
+
+    committee_witnesses: list[dict[str, Any]] = []
+    try:
+        committee_witnesses = await fetch_committee_witnesses(db, bg, sen_rows, case.id)
+    except Exception:
+        logger.exception("committee_witnesses adapter failed bioguide_id=%s", bg)
+
     pdf_url, public_url, verify_url = _urls_for_dossier(row.id)
 
     body: dict[str, Any] = {
+        "schema_version": "2.0",
         "dossier_id": str(row.id),
         "version": row.version,
         "previous_version_id": str(row.previous_version_id)
@@ -125,6 +158,10 @@ async def build_senator_dossier(bioguide_id: str, db: Session) -> dict[str, Any]
         "gap_analysis": gap_list,
         "pattern_alerts": pattern_alerts,
         "stock_trade_proximity": stock_trade_proximity,
+        "stock_act_trades": stock_act_trades,
+        "dark_money": dark_money,
+        "ethics_travel": ethics_travel,
+        "committee_witnesses": committee_witnesses,
         "amendment_fingerprint": amendment_fingerprint,
         "share_token": row.share_token,
         "disclaimer": DOSSIER_DISCLAIMER,

@@ -344,7 +344,27 @@ def test_dossier_signature_verifies(test_engine) -> None:
                             new_callable=AsyncMock,
                             return_value={"bioguide_id": "Z000088", "total_amendment_votes": 0},
                         ):
-                            asyncio.run(build_senator_dossier("Z000088", db))
+                            with patch(
+                                "services.senator_dossier.fetch_stock_act_trades_all_years",
+                                new_callable=AsyncMock,
+                                return_value=[],
+                            ):
+                                with patch(
+                                    "services.senator_dossier.fetch_dark_money",
+                                    new_callable=AsyncMock,
+                                    return_value=[],
+                                ):
+                                    with patch(
+                                        "services.senator_dossier.fetch_ethics_travel",
+                                        new_callable=AsyncMock,
+                                        return_value=[],
+                                    ):
+                                        with patch(
+                                            "services.senator_dossier.fetch_committee_witnesses",
+                                            new_callable=AsyncMock,
+                                            return_value=[],
+                                        ):
+                                            asyncio.run(build_senator_dossier("Z000088", db))
 
     db.refresh(row)
     assert row.status == "completed"
@@ -352,6 +372,11 @@ def test_dossier_signature_verifies(test_engine) -> None:
     body = {k: v for k, v in data.items() if k not in ("content_hash", "signature", "public_key")}
     vr = verify_signed_hash_string(row.signature, body)
     assert vr["ok"], vr
+    assert data.get("schema_version") == "2.0"
+    assert isinstance(data.get("stock_act_trades"), list)
+    assert isinstance(data.get("dark_money"), list)
+    assert isinstance(data.get("ethics_travel"), list)
+    assert isinstance(data.get("committee_witnesses"), list)
     db.close()
 
 
@@ -378,6 +403,11 @@ def test_pdf_endpoint_returns_pdf(client, test_engine) -> None:
         "gap_analysis": [],
         "pattern_alerts": [],
         "stock_trade_proximity": [],
+        "schema_version": "2.0",
+        "stock_act_trades": [],
+        "dark_money": [],
+        "ethics_travel": [],
+        "committee_witnesses": [],
         "amendment_fingerprint": {},
         "share_token": "x1y2z3a4",
         "disclaimer": "d",
