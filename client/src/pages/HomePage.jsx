@@ -16,8 +16,15 @@ async function tryFetchDossierList() {
 async function fetchDossierForCard(bg) {
   const url = apiUrl(`/api/v1/senators/${encodeURIComponent(bg)}/dossier`);
   const res = await fetch(url, { headers: apiHeaders() });
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    return null;
+  }
   if (!res.ok) return null;
-  return res.json();
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 export default function HomePage() {
@@ -28,6 +35,7 @@ export default function HomePage() {
       concern_tier: "MODERATE",
       finding_count: 0,
       last_updated: "",
+      is_building: false,
     }))
   );
   const [loadNote, setLoadNote] = useState("Loading directory…");
@@ -48,6 +56,7 @@ export default function HomePage() {
           concern_tier: (row.concern_tier || "MODERATE").toUpperCase(),
           finding_count: row.finding_count ?? 0,
           last_updated: row.last_updated || row.completed_at || "",
+          is_building: false,
         }));
         setCards(merged);
         setLoadNote("Directory from API.");
@@ -62,6 +71,7 @@ export default function HomePage() {
         concern_tier: "MODERATE",
         finding_count: 0,
         last_updated: "",
+        is_building: false,
       }));
 
       const enriched = await Promise.all(
@@ -76,6 +86,7 @@ export default function HomePage() {
             concern_tier: st.concern_tier,
             finding_count: st.finding_count,
             last_updated: st.last_updated,
+            is_building: st.is_building,
           };
         })
       );
@@ -140,6 +151,7 @@ export default function HomePage() {
             concern_tier={c.concern_tier}
             finding_count={c.finding_count}
             last_updated={c.last_updated}
+            is_building={c.is_building}
           />
         ))}
       </div>

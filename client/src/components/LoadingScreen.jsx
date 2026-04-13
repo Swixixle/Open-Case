@@ -1,4 +1,8 @@
-export default function LoadingScreen({ senatorName = "", stateLine = "" }) {
+export default function LoadingScreen({
+  senatorName = "",
+  stateLine = "",
+  sub = "",
+}) {
   return (
     <div className="oc-loading">
       <p className="oc-loading-brand">OPEN CASE</p>
@@ -8,7 +12,9 @@ export default function LoadingScreen({ senatorName = "", stateLine = "" }) {
         <span />
         <span />
       </div>
-      <p className="oc-loading-sub">Retrieving public records...</p>
+      <p className="oc-loading-sub">
+        {sub || "Retrieving public records..."}
+      </p>
       {stateLine ? <p className="oc-loading-field">{stateLine}</p> : null}
       <div className="oc-loading-rule" />
       <p className="oc-loading-disclaimer oc-mono">

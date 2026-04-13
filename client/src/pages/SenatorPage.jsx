@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import BottomBar from "../components/BottomBar.jsx";
 import CategoryChips from "../components/CategoryChips.jsx";
@@ -49,97 +49,163 @@ function tierBadgeClass(tier) {
   return "var(--moderate)";
 }
 
+/** True when we should render the full dossier layout (partial data OK). */
+function dossierHasRenderableContent(data) {
+  if (!data || typeof data !== "object") return false;
+  if (data.status === "building") return false;
+  const cats = data.deep_research?.categories;
+  const hasCats =
+    cats && typeof cats === "object" && Object.keys(cats).length > 0;
+  const hasAlerts =
+    Array.isArray(data.pattern_alerts) && data.pattern_alerts.length > 0;
+  if (data.status === "completed") return true;
+  return Boolean(hasCats || hasAlerts);
+}
+
 export default function SenatorPage() {
   const { bioguide_id } = useParams();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [building, setBuilding] = useState(false);
+  const [loadStatus, setLoadStatus] = useState("initial");
+  const [dossier, setDossier] = useState(null);
+  const [pollSession, setPollSession] = useState(0);
+  const completedRef = useRef(false);
+
+  useEffect(() => {
+    setPollSession(0);
+    setDossier(null);
+    setLoadStatus("initial");
+  }, [bioguide_id]);
 
   const dirMeta = DIRECTORY_SENATORS.find(
     (s) => s.bioguide_id === bioguide_id
   );
   const displayName =
-    data?.subject?.name || dirMeta?.name || bioguide_id || "Senator";
-
-  const fetchDossier = useCallback(async () => {
-    const r = await fetch(
-      apiUrl(
-        `/api/v1/senators/${encodeURIComponent(bioguide_id || "")}/dossier`
-      ),
-      { headers: apiHeaders() }
-    );
-    const j = await r.json().catch(() => ({}));
-    return { ok: r.ok, status: r.status, body: j };
-  }, [bioguide_id]);
+    dossier?.subject?.name || dirMeta?.name || bioguide_id || "Senator";
 
   useEffect(() => {
+    completedRef.current = false;
+    let intervalId;
+    let timeoutId;
     let cancelled = false;
 
-    async function run() {
-      setLoading(true);
-      setError(null);
-      try {
-        const { ok, status, body } = await fetchDossier();
-        if (cancelled) return;
-        if (status === 401 || status === 403) {
-          setError("API key missing or invalid. Set VITE_OPEN_CASE_API_KEY.");
-          setData(null);
-          setBuilding(false);
-          return;
-        }
-        if (body?.status === "building") {
-          setBuilding(true);
-          setData(null);
-          return;
-        }
-        setBuilding(false);
-        if (!ok) {
-          setError(
-            typeof body?.detail === "string"
-              ? body.detail
-              : body?.detail?.[0]?.msg || "Could not load dossier."
-          );
-          setData(null);
-          return;
-        }
-        setData(body);
-      } catch (e) {
-        if (!cancelled) setError(e.message || String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    run();
-    return () => {
-      cancelled = true;
+    const clearTimers = () => {
+      if (intervalId) clearInterval(intervalId);
+      if (timeoutId) clearTimeout(timeoutId);
+      intervalId = undefined;
+      timeoutId = undefined;
     };
-  }, [fetchDossier]);
 
-  useEffect(() => {
-    if (!building) return undefined;
-    const id = setInterval(async () => {
+    const fetchOnce = async () => {
+      if (cancelled) return;
       try {
-        const { ok, body } = await fetchDossier();
-        if (body?.status === "building") return;
-        if (ok && body?.status === "completed") {
-          setData(body);
-          setBuilding(false);
-        } else if (ok) {
-          setData(body);
-          setBuilding(false);
+        const res = await fetch(
+          apiUrl(
+            `/api/v1/senators/${encodeURIComponent(bioguide_id || "")}/dossier`
+          ),
+          { headers: apiHeaders() }
+        );
+
+        if (cancelled) return;
+
+        if (res.status === 401 || res.status === 403) {
+          setLoadStatus("api_key");
+          clearTimers();
+          return;
+        }
+
+        if (res.status === 404) {
+          setLoadStatus("not_found");
+          setDossier(null);
+          clearTimers();
+          return;
+        }
+
+        let data;
+        try {
+          data = await res.json();
+        } catch {
+          setLoadStatus("network");
+          clearTimers();
+          return;
+        }
+
+        if (!res.ok) {
+          setLoadStatus("network");
+          clearTimers();
+          return;
+        }
+
+        if (data.status === "building") {
+          setLoadStatus("building");
+          setDossier(null);
+          return;
+        }
+
+        if (dossierHasRenderableContent(data)) {
+          completedRef.current = true;
+          setDossier(data);
+          setLoadStatus("complete");
+          clearTimers();
         }
       } catch {
-        /* ignore */
+        if (!cancelled) {
+          setLoadStatus("network");
+          clearTimers();
+        }
       }
-    }, 4000);
-    return () => clearInterval(id);
-  }, [building, fetchDossier]);
+    };
+
+    fetchOnce();
+    intervalId = setInterval(fetchOnce, 5000);
+
+    timeoutId = setTimeout(() => {
+      if (intervalId) clearInterval(intervalId);
+      intervalId = undefined;
+      if (!cancelled && !completedRef.current) {
+        setLoadStatus((s) => (s === "complete" ? "complete" : "timeout"));
+      }
+    }, 90000);
+
+    return () => {
+      cancelled = true;
+      clearTimers();
+    };
+  }, [bioguide_id, pollSession]);
+
+  const runInvestigation = async () => {
+    const bg = encodeURIComponent(bioguide_id || "");
+    try {
+      const res = await fetch(apiUrl(`/api/v1/senators/${bg}/dossier`), {
+        method: "POST",
+        headers: {
+          ...apiHeaders(),
+          "Content-Type": "application/json",
+        },
+      });
+      if (res.status === 401 || res.status === 403) {
+        setLoadStatus("api_key");
+        return;
+      }
+      if (!res.ok) {
+        setLoadStatus("network");
+        return;
+      }
+      setDossier(null);
+      setPollSession((n) => n + 1);
+      setLoadStatus("building");
+    } catch {
+      setLoadStatus("network");
+    }
+  };
+
+  const retryPolling = () => {
+    setDossier(null);
+    setLoadStatus("initial");
+    setPollSession((n) => n + 1);
+  };
 
   const shareReceipt = () => {
     const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
-    const id = data?.dossier_id;
+    const id = dossier?.dossier_id;
     if (!id) {
       scrollToAnchor("receipt");
       return;
@@ -155,15 +221,23 @@ export default function SenatorPage() {
     }
   };
 
-  if (loading && !building) {
+  if (loadStatus === "initial" || loadStatus === "building") {
+    const isBuilding = loadStatus === "building";
     return (
       <>
         <LoadingScreen
           senatorName={displayName}
+          sub={
+            isBuilding
+              ? "Deep research in progress. This takes 2–5 minutes per senator."
+              : ""
+          }
           stateLine={
-            dirMeta
-              ? `FIELD REPORT · ${dirMeta.state}`
-              : "FIELD REPORT · US SENATE"
+            isBuilding
+              ? "Polling for completed dossier…"
+              : dirMeta
+                ? `FIELD REPORT · ${dirMeta.state}`
+                : "FIELD REPORT · US SENATE"
           }
         />
         <BottomBar variant="senator" onShareReceipt={shareReceipt} />
@@ -171,24 +245,92 @@ export default function SenatorPage() {
     );
   }
 
-  if (building) {
+  if (loadStatus === "api_key") {
     return (
-      <>
-        <LoadingScreen
-          senatorName={displayName}
-          stateLine="DOSSIER BUILD IN PROGRESS — POLLING…"
-        />
+      <div className="oc-dossier-wrap">
+        <div className="oc-error-panel">
+          <h1>API KEY</h1>
+          <p>API key missing or invalid. Set VITE_OPEN_CASE_API_KEY.</p>
+          <p>
+            <Link to="/">← Back to directory</Link>
+          </p>
+        </div>
         <BottomBar variant="senator" />
-      </>
+      </div>
     );
   }
 
-  if (error || !data) {
+  if (loadStatus === "not_found") {
+    return (
+      <div className="oc-dossier-wrap">
+        <div className="oc-error-panel">
+          <h1>NO DOSSIER FOUND</h1>
+          <p>No dossier found for this senator yet.</p>
+          <p>
+            <button
+              type="button"
+              className="oc-btn-sidebar"
+              onClick={runInvestigation}
+            >
+              Run investigation →
+            </button>
+          </p>
+          <p>
+            <Link to="/">← Back to directory</Link>
+          </p>
+        </div>
+        <BottomBar variant="senator" />
+      </div>
+    );
+  }
+
+  if (loadStatus === "timeout") {
+    return (
+      <div className="oc-dossier-wrap">
+        <div className="oc-error-panel">
+          <h1>TAKING LONGER THAN EXPECTED</h1>
+          <p>The dossier build is still running or the request timed out.</p>
+          <p>
+            <button type="button" className="oc-btn-sidebar" onClick={retryPolling}>
+              Retry →
+            </button>
+          </p>
+          <p>
+            <Link to="/">← Back to directory</Link>
+          </p>
+        </div>
+        <BottomBar variant="senator" />
+      </div>
+    );
+  }
+
+  if (loadStatus === "network") {
+    return (
+      <div className="oc-dossier-wrap">
+        <div className="oc-error-panel">
+          <h1>CONNECTION</h1>
+          <p>Could not connect to Open Case API.</p>
+          <p>
+            <button type="button" className="oc-btn-sidebar" onClick={retryPolling}>
+              Retry →
+            </button>
+          </p>
+          <p>
+            <Link to="/">← Back to directory</Link>
+          </p>
+        </div>
+        <BottomBar variant="senator" />
+      </div>
+    );
+  }
+
+  const data = dossier;
+  if (!data) {
     return (
       <div className="oc-dossier-wrap">
         <div className="oc-error-panel">
           <h1>DOSSIER UNAVAILABLE</h1>
-          <p>{error || "No data returned."}</p>
+          <p>No data returned.</p>
           <p>
             <Link to="/">← Back to directory</Link>
           </p>

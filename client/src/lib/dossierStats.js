@@ -1,6 +1,6 @@
 /** Derive card stats from GET /api/v1/senators/:bioguide_id/dossier payload. */
 
-const TIER_ORDER = { CRITICAL: 4, HIGH: 3, MODERATE: 2, LOW: 1 };
+import { concernTierFromDossier } from "./dossierParse.js";
 
 function countClaims(categories) {
   if (!categories || typeof categories !== "object") return 0;
@@ -20,31 +20,27 @@ function countCategories(categories) {
   }).length;
 }
 
-function maxPatternTier(patternAlerts) {
-  if (!Array.isArray(patternAlerts) || !patternAlerts.length) return "MODERATE";
-  let best = "LOW";
-  for (const a of patternAlerts) {
-    const sev = (a?.severity || a?.level || "").toString().toUpperCase();
-    const mapped =
-      sev.includes("CRIT") || sev === "CRITICAL"
-        ? "CRITICAL"
-        : sev.includes("HIGH")
-          ? "HIGH"
-          : sev.includes("MOD") || sev === "MODERATE"
-            ? "MODERATE"
-            : "LOW";
-    if ((TIER_ORDER[mapped] || 0) > (TIER_ORDER[best] || 0)) best = mapped;
-  }
-  return best;
-}
-
 export function statsFromDossier(data) {
-  if (!data || data.status !== "completed") return null;
+  if (!data || typeof data !== "object") return null;
+
+  if (data.status === "building") {
+    return {
+      concern_tier: "MODERATE",
+      finding_count: 0,
+      categories_flagged: 0,
+      last_updated: "",
+      dossier_id: data.dossier_id,
+      is_building: true,
+    };
+  }
+
+  if (data.status !== "completed") return null;
+
   const dr = data.deep_research || {};
   const categories = dr.categories || {};
   const finding_count = countClaims(categories);
   const categories_flagged = countCategories(categories);
-  const concern_tier = maxPatternTier(data.pattern_alerts);
+  const concern_tier = concernTierFromDossier(data);
   const rawDate = data.completed_at || data.generated_at || "";
   let last_updated = "";
   try {
@@ -63,5 +59,6 @@ export function statsFromDossier(data) {
     categories_flagged,
     last_updated,
     dossier_id: data.dossier_id,
+    is_building: false,
   };
 }

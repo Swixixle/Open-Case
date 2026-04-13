@@ -30,6 +30,7 @@ export default function SenatorCard({
   concern_tier = "MODERATE",
   finding_count = 0,
   last_updated = "",
+  is_building = false,
 }) {
   const tier = (concern_tier || "MODERATE").toUpperCase();
   const tc = tierClass[tier] || tierClass.MODERATE;
@@ -48,7 +49,11 @@ export default function SenatorCard({
       <p className="oc-card-findings">
         {finding_count} documented {finding_count === 1 ? "finding" : "findings"}
       </p>
-      <p className="oc-card-updated">Updated {formatUpdated(last_updated)}</p>
+      {is_building ? (
+        <p className="oc-card-updated">Dossier build in progress…</p>
+      ) : last_updated ? (
+        <p className="oc-card-updated">Updated {formatUpdated(last_updated)}</p>
+      ) : null}
     </Link>
   );
 }
