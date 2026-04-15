@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import os
@@ -9,9 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import nulls_last, select
 from sqlalchemy.orm import Session
@@ -33,6 +34,12 @@ from models import (
     SourceCheckLog,
 )
 from payloads import METHODOLOGY_NOTE_TEXT
+from services.case_auto_ingest import case_needs_fec_refresh
+from server.services.report_stream import (
+    report_pattern_refresh_task,
+    subscribe_pattern_events,
+    unsubscribe_pattern_events,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["reporting"])
 
@@ -587,18 +594,80 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
     }
 
 
+def _attach_pattern_refresh_meta(
+    report: dict[str, Any], case_id: uuid.UUID, pending: bool
+) -> None:
+    report["pattern_alerts_refresh_pending"] = pending
+    if pending:
+        report["pattern_alerts_stream"] = {
+            "protocol": "sse",
+            "path": f"/api/v1/cases/{case_id}/report/pattern-events",
+        }
+
+
+@router.get("/cases/{case_id}/report/pattern-events")
+async def case_report_pattern_events(case_id: uuid.UUID) -> StreamingResponse:
+    """SSE: receive updated `pattern_alerts` after background FEC ingest completes."""
+
+    async def event_gen():
+        queue = await subscribe_pattern_events(case_id)
+        try:
+            yield f"data: {json.dumps({'type': 'connected'})}\n\n"
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=75.0)
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    continue
+                yield f"data: {json.dumps(msg, default=str)}\n\n"
+                if msg.get("type") in ("pattern_alerts", "error"):
+                    break
+        finally:
+            await unsubscribe_pattern_events(case_id, queue)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/cases/{case_id}/report")
-def get_case_report(case_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
-    return _collect_report_payload(case_id, db, bump_view=True)
+async def get_case_report(
+    case_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    pending = case_needs_fec_refresh(db, case_id, case)
+    if pending:
+        background_tasks.add_task(report_pattern_refresh_task, case_id)
+    report = _collect_report_payload(case_id, db, bump_view=True)
+    _attach_pattern_refresh_meta(report, case_id, pending)
+    return report
 
 
 @router.get("/cases/{case_id}/report/view", response_class=HTMLResponse)
-def get_case_report_html(
+async def get_case_report_html(
     request: Request,
     case_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> Any:
+    case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    pending = case_needs_fec_refresh(db, case_id, case)
+    if pending:
+        background_tasks.add_task(report_pattern_refresh_task, case_id)
     report = _collect_report_payload(case_id, db, bump_view=True)
+    _attach_pattern_refresh_meta(report, case_id, pending)
     return _TEMPLATES.TemplateResponse(
         request,
         "report.html",
@@ -607,12 +676,20 @@ def get_case_report_html(
 
 
 @router.get("/cases/{case_id}/report/card", response_class=HTMLResponse)
-def get_case_receipt_card(
+async def get_case_receipt_card(
     request: Request,
     case_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    pending = case_needs_fec_refresh(db, case_id, case)
+    if pending:
+        background_tasks.add_task(report_pattern_refresh_task, case_id)
     report = _collect_report_payload(case_id, db, bump_view=False)
+    _attach_pattern_refresh_meta(report, case_id, pending)
     released = [
         s
         for s in report["signals"]
@@ -765,96 +842,6 @@ def get_signal_history(
             for h in history
         ],
     }
-
-
-@router.get("/cases/{case_id}/report/view", response_class=HTMLResponse)
-def investigation_report_view(
-    case_id: uuid.UUID, db: Session = Depends(get_db)
-) -> HTMLResponse:
-    """
-    Human-readable HTML summary of the case — top donor-cluster signals (resolved only).
-    """
-    case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    rows = db.scalars(
-        select(Signal)
-        .where(
-            Signal.case_file_id == case_id,
-            Signal.exposure_state != "unresolved",
-            Signal.signal_type == "temporal_proximity",
-        )
-        .order_by(Signal.weight.desc())
-    ).all()
-
-    clusters: list[tuple[Signal, dict[str, Any]]] = []
-    for s in rows:
-        try:
-            bd = json.loads(s.weight_breakdown or "{}")
-        except json.JSONDecodeError:
-            bd = {}
-        if bd.get("kind") == "donor_cluster":
-            clusters.append((s, bd))
-    clusters = clusters[:10]
-
-    gen_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    handle = html.escape(case.created_by or "unknown")
-    header_recipient = case.subject_name or "Subject"
-    for _s, bd0 in clusters:
-        cl = (bd0.get("committee_label") or "").strip()
-        if cl:
-            header_recipient = cl
-            break
-    subject = html.escape(header_recipient)
-    title = html.escape(case.title or "Investigation")
-    sig_short = html.escape((case.signed_hash or "")[:48])
-
-    cards_html: list[str] = []
-    for s, bd in clusters:
-        donor = html.escape(str(bd.get("donor") or s.actor_a or ""))
-        official = html.escape(str(bd.get("official") or s.actor_b or ""))
-        total_amt = float(bd.get("total_amount") or s.amount or 0.0)
-        min_gap = bd.get("min_gap_days", "—")
-        ex_vote = html.escape(str(bd.get("exemplar_vote") or ""))
-        direction = html.escape(str(bd.get("exemplar_direction") or ""))
-        w = float(s.weight or 0.0)
-        bar_w = min(100, int(w * 100))
-        temporal = html.escape(str(s.temporal_class or ""))
-        cards_html.append(
-            f'<section style="border:1px solid #ccc;margin:1em 0;padding:1em;max-width:50em;">'
-            f"<h3>{donor}</h3>"
-            f"<p><strong>Official:</strong> {official} &nbsp;|&nbsp; "
-            f"<strong>Type:</strong> {temporal}</p>"
-            f"<p><strong>Total amount (window):</strong> ${total_amt:,.2f}</p>"
-            f"<p><strong>Tightest gap:</strong> {html.escape(str(min_gap))} days &nbsp;|&nbsp; "
-            f"<strong>Exemplar vote:</strong> {ex_vote} &nbsp;|&nbsp; "
-            f"<strong>Direction:</strong> {direction}</p>"
-            f'<p><strong>Weight:</strong> {w:.3f}</p>'
-            f'<div style="background:#eee;height:12px;width:100%;max-width:400px;">'
-            f'<div style="background:#264653;height:12px;width:{bar_w}%;"></div></div>'
-            f"<p style=\"font-size:0.9em;color:#444;\">{html.escape((s.description or '')[:500])}</p>"
-            f"</section>"
-        )
-
-    body = "".join(cards_html) or "<p>No donor-cluster signals yet (run investigate).</p>"
-
-    page = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>Open Case — {subject}</title></head>
-<body style="font-family:Georgia,serif;max-width:720px;margin:2em auto;line-height:1.45;">
-<h1>Open Case Investigation: {subject}</h1>
-<p><strong>Case:</strong> {title} &nbsp;|&nbsp; <strong>Generated:</strong> {html.escape(gen_at)}</p>
-<p><strong>Investigator handle (created_by):</strong> {handle}</p>
-<h2>Top donor clusters (temporal proximity)</h2>
-{body}
-<hr/>
-<p style="font-size:0.85em;color:#333;">
-All findings drawn from public FEC and Congressional records. Signals represent temporal proximity,
-not confirmed causation.
-<strong>Signed (truncated):</strong> <code>{sig_short}</code>
-</p>
-</body></html>"""
-    return HTMLResponse(content=page)
 
 
 @router.get("/investigators/{handle}/score")

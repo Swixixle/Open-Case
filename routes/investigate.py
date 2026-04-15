@@ -85,6 +85,7 @@ from engines.pattern_engine import _schedule_b_recipient_committee_id, _schedule
 from core.datetime_utils import coerce_utc
 from scoring import add_credibility
 from services.enrichment_service import run_enrichment
+from server.services.investigate_verify import log_post_investigate_evidence_snapshot
 from services.gap_analysis import GAP_ANALYSIS_DISCLAIMER, generate_gap_sentences
 from services.senator_dossier import run_senator_dossier_job
 from utils.dossier_pdf import dossier_dict_from_stored_json, dossier_to_pdf_bytes
@@ -1325,26 +1326,15 @@ def batch_open_cases(
     return {"case_ids": created}
 
 
-@router.post("/cases/{case_id}/investigate", response_model=None)
-async def run_investigation(
+async def execute_investigation_for_case(
+    db: Session,
     case_id: uuid.UUID,
     request: InvestigateRequest,
-    background_tasks: BackgroundTasks,
-    include_unresolved: bool = Query(
-        False,
-        description="If true, include signals_unresolved_detail for quarantined clusters.",
-    ),
-    debug: bool = Query(
-        False,
-        description=(
-            "If true, include pairing_diagnostics and source_row_counts "
-            "(internal QA; omit for cleaner journalist-facing receipts)."
-        ),
-    ),
-    db: Session = Depends(get_db),
-    auth_inv: Investigator = Depends(require_api_key),
+    background_tasks: BackgroundTasks | None,
+    *,
+    include_unresolved: bool = False,
+    debug: bool = False,
 ) -> dict[str, Any] | JSONResponse:
-    require_matching_handle(auth_inv, request.investigator_handle)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -1623,7 +1613,24 @@ async def run_investigation(
             )
 
         db.commit()
-        background_tasks.add_task(run_enrichment, str(case_id))
+        if case.subject_type == "public_official":
+            log_post_investigate_evidence_snapshot(
+                db,
+                case_id=case_id,
+                bioguide_id=(prof.bioguide_id if prof else None),
+                subject_name=(request.subject_name or case.subject_name or "").strip(),
+            )
+        if background_tasks is not None:
+            background_tasks.add_task(run_enrichment, str(case_id))
+        else:
+            try:
+                run_enrichment(str(case_id))
+            except Exception as enrich_exc:
+                logger.warning(
+                    "run_enrichment after inline investigation failed case_id=%s: %s",
+                    case_id,
+                    enrich_exc,
+                )
     except HTTPException:
         db.rollback()
         raise
@@ -1680,6 +1687,38 @@ async def run_investigation(
         }
         ok_body["source_row_counts"] = source_row_counts
     return ok_body
+
+
+@router.post("/cases/{case_id}/investigate", response_model=None)
+async def run_investigation(
+    case_id: uuid.UUID,
+    request: InvestigateRequest,
+    background_tasks: BackgroundTasks,
+    include_unresolved: bool = Query(
+        False,
+        description="If true, include signals_unresolved_detail for quarantined clusters.",
+    ),
+    debug: bool = Query(
+        False,
+        description=(
+            "If true, include pairing_diagnostics and source_row_counts "
+            "(internal QA; omit for cleaner journalist-facing receipts)."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    auth_inv: Investigator = Depends(require_api_key),
+) -> dict[str, Any] | JSONResponse:
+    require_matching_handle(auth_inv, request.investigator_handle)
+    return await execute_investigation_for_case(
+        db,
+        case_id,
+        request,
+        background_tasks,
+        include_unresolved=include_unresolved,
+        debug=debug,
+    )
+
+
 
 
 @router.get("/cases/{case_id}/enrichment")
@@ -2314,6 +2353,8 @@ async def _run_investigation_adapters(
             source_check_tracker,
         )
 
+    bg_for_extras = request.bioguide_id or (prof.bioguide_id if prof else None)
+
     principal_cid: str | None = None
     if request.fec_committee_id:
         cid = request.fec_committee_id.strip().upper()
@@ -2324,6 +2365,7 @@ async def _run_investigation_adapters(
         resolved_committee = await resolve_principal_committee_id_for_official(
             request.subject_name,
             case.jurisdiction or "",
+            bioguide_id=bg_for_extras,
         )
         if resolved_committee:
             principal_cid = resolved_committee.strip().upper()
@@ -2339,8 +2381,6 @@ async def _run_investigation_adapters(
         await run_cached(FECAdapter(), request.subject_name, "person")
     await run_cached(USASpendingAdapter(), request.subject_name, "entity")
     await run_cached(IndianaCFAdapter(), request.subject_name, "person")
-
-    bg_for_extras = request.bioguide_id or (prof.bioguide_id if prof else None)
     if case.subject_type == "public_official":
         cv = CongressVotesAdapter()
         if bg_for_extras:
