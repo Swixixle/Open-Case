@@ -6,6 +6,8 @@ from typing import Any
 
 from signing import pack_signed_hash, sign_payload
 
+from services.epistemic_classifier import aggregate_epistemic_levels, classify_epistemic_level
+
 # Structured finding row (each item in ``findings`` passed to signing):
 # claim, type ("fact"|"pattern"|"allegation"), allegation_status (optional),
 # sources (list of URLs), time_span, confidence ("low"|"medium"|"high"),
@@ -80,6 +82,25 @@ def claims_to_findings(phase_1_claims: list[dict[str, Any]]) -> list[dict[str, A
     return out
 
 
+def _epistemic_distribution_for_findings(findings: list[dict[str, Any]]) -> dict[str, int]:
+    from services.epistemic_classifier import ALL_LEVELS
+
+    counts = {k: 0 for k in ALL_LEVELS}
+    for f in findings:
+        sources = f.get("sources") or []
+        if not isinstance(sources, list) or not sources:
+            lev = classify_epistemic_level(body=str(f.get("claim") or ""))
+        else:
+            lev = aggregate_epistemic_levels(
+                [classify_epistemic_level(source_url=str(u)) for u in sources if u]
+            )
+        if lev in counts:
+            counts[lev] += 1
+        else:
+            counts["REPORTED"] += 1
+    return counts
+
+
 def sign_enrichment_receipt(
     subject_name: str,
     bioguide_id: str | None,
@@ -100,6 +121,7 @@ def sign_enrichment_receipt(
         "narrative": narrative,
         "needs_human_review": bool(needs_human_review),
         "new_findings_count": new_findings_count,
+        "epistemic_distribution": _epistemic_distribution_for_findings(findings),
     }
     signed = sign_payload(body)
     return pack_signed_hash(

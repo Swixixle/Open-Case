@@ -1,0 +1,60 @@
+{
+  "description": "Curated Indianapolis/Marion local entity links for procurement ↔ IDIS matching. Only explicit rows; no fuzzy matching.",
+  "aliases": [
+    {
+      "jurisdiction": "indianapolis",
+      "canonical_key": "rieth riley construction",
+      "alias": "rieth-riley construction co inc indiana pac",
+      "relationship_type": "pac_of_vendor",
+      "confidence": "high",
+      "source_note": "IDIS contributor naming vs DPW vendor record; PAC is related political account",
+      "public_explanation": "PAC shares corporate family with construction vendor per state disclosure pattern",
+      "reviewed_by": "system",
+      "active": true
+    },
+    {
+      "jurisdiction": "indianapolis",
+      "canonical_key": "Rieth Riley Construction",
+      "alias": "Rieth-Riley Indiana PAC",
+      "relationship_type": "pac_of_vendor",
+      "confidence": "high",
+      "source_note": "Shorter PAC naming variant vs DPW vendor Rieth Riley Construction",
+      "public_explanation": "PAC affiliated with vendor; not the same entity as the construction firm",
+      "reviewed_by": "system",
+      "active": true
+    },
+    {
+      "jurisdiction": "indianapolis",
+      "canonical_key": "thieneman construction",
+      "alias": "thieneman group",
+      "relationship_type": "affiliate",
+      "confidence": "medium",
+      "source_note": "fixture alignment / common-name family linkage",
+      "public_explanation": "Related corporate name; not asserted identical",
+      "reviewed_by": "system",
+      "active": true
+    },
+    {
+      "jurisdiction": "indianapolis",
+      "canonical_key": "Thieneman Construction Inc",
+      "alias": "Thieneman Group LLC",
+      "relationship_type": "affiliate",
+      "confidence": "medium",
+      "source_note": "Affiliate linkage under explicit Inc/LLC naming (fixture-backed)",
+      "public_explanation": "Related entity; not asserted identical to construction vendor",
+      "reviewed_by": "system",
+      "active": true
+    },
+    {
+      "jurisdiction": "indianapolis",
+      "canonical_key": "milestone contractors l p",
+      "alias": "milestone contractors lp",
+      "relationship_type": "alias",
+      "confidence": "high",
+      "source_note": "manual review / suffix spacing variation",
+      "public_explanation": "Formatting and suffix variation only",
+      "reviewed_by": "system",
+      "active": true
+    }
+  ]
+}

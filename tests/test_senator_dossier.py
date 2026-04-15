@@ -322,49 +322,50 @@ def test_dossier_signature_verifies(test_engine) -> None:
             "from_cache": False,
         }
 
-    with patch(
-        "services.senator_dossier.fetch_all_senator_deep_research",
-        return_value=deep_bundle,
-    ):
-        with patch("services.senator_dossier.fetch_staff_network", new_callable=AsyncMock) as fs:
-            fs.side_effect = fake_staff
-            with patch(
-                "services.senator_dossier.get_or_refresh_senator_committees",
-                new_callable=AsyncMock,
-                return_value=[],
-            ):
-                with patch("services.senator_dossier.run_pattern_engine", return_value=[]):
-                    with patch(
-                        "services.senator_dossier.fetch_stock_trade_proximity_all_years",
-                        new_callable=AsyncMock,
-                        return_value=[],
-                    ):
+    with patch("services.senator_dossier.maybe_auto_ingest_case", new_callable=AsyncMock):
+        with patch(
+            "services.senator_dossier.fetch_all_senator_deep_research",
+            return_value=deep_bundle,
+        ):
+            with patch("services.senator_dossier.fetch_staff_network", new_callable=AsyncMock) as fs:
+                fs.side_effect = fake_staff
+                with patch(
+                    "services.senator_dossier.get_or_refresh_senator_committees",
+                    new_callable=AsyncMock,
+                    return_value=[],
+                ):
+                    with patch("services.senator_dossier.run_pattern_engine", return_value=[]):
                         with patch(
-                            "services.senator_dossier.fetch_amendment_fingerprint",
+                            "services.senator_dossier.fetch_stock_trade_proximity_all_years",
                             new_callable=AsyncMock,
-                            return_value={"bioguide_id": "Z000088", "total_amendment_votes": 0},
+                            return_value=[],
                         ):
                             with patch(
-                                "services.senator_dossier.fetch_stock_act_trades_all_years",
+                                "services.senator_dossier.fetch_amendment_fingerprint",
                                 new_callable=AsyncMock,
-                                return_value=[],
+                                return_value={"bioguide_id": "Z000088", "total_amendment_votes": 0},
                             ):
                                 with patch(
-                                    "services.senator_dossier.fetch_dark_money",
+                                    "services.senator_dossier.fetch_stock_act_trades_all_years",
                                     new_callable=AsyncMock,
                                     return_value=[],
                                 ):
                                     with patch(
-                                        "services.senator_dossier.fetch_ethics_travel",
+                                        "services.senator_dossier.fetch_dark_money",
                                         new_callable=AsyncMock,
                                         return_value=[],
                                     ):
                                         with patch(
-                                            "services.senator_dossier.fetch_committee_witnesses",
+                                            "services.senator_dossier.fetch_ethics_travel",
                                             new_callable=AsyncMock,
                                             return_value=[],
                                         ):
-                                            asyncio.run(build_senator_dossier("Z000088", db))
+                                            with patch(
+                                                "services.senator_dossier.fetch_committee_witnesses",
+                                                new_callable=AsyncMock,
+                                                return_value=[],
+                                            ):
+                                                asyncio.run(build_senator_dossier("Z000088", db))
 
     db.refresh(row)
     assert row.status == "completed"

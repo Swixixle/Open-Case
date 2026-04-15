@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from collections import Counter, defaultdict
@@ -20,6 +21,14 @@ from typing import Any
 from signals.dedup import _parse_evidence_id_list
 
 from adapters.fec import classify_donor_type
+from adapters.indianapolis_procurement import normalize_vendor_name
+from engines.entity_resolution import canonicalize, resolve
+from utils.local_entity_matching import (
+    MATCH_RELATED_ENTITY,
+    _local_match_type,
+    local_jurisdiction_alias_key,
+    local_match_eligible_for_loop_and_timing,
+)
 from engines.political_calendar import get_calendar_discount
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
@@ -34,7 +43,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "2.3"
+PATTERN_ENGINE_VERSION = "2.6"
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,51 @@ RULE_ALIGNMENT_ANOMALY = "ALIGNMENT_ANOMALY_V1"
 RULE_AMENDMENT_TELL = "AMENDMENT_TELL_V1"
 RULE_HEARING_TESTIMONY = "HEARING_TESTIMONY_V1"
 RULE_REVOLVING_DOOR = "REVOLVING_DOOR_V1"
+RULE_LOCAL_CONTRACTOR_DONOR_LOOP = "LOCAL_CONTRACTOR_DONOR_LOOP_V1"
+RULE_LOCAL_CONTRACT_DONATION_TIMING = "LOCAL_CONTRACT_DONATION_TIMING_V1"
+RULE_LOCAL_VENDOR_CONCENTRATION = "LOCAL_VENDOR_CONCENTRATION_V1"
+RULE_LOCAL_RELATED_ENTITY_DONOR = "LOCAL_RELATED_ENTITY_DONOR_V1"
+
+# Enumerated rule ids (diagnostics, QA, client allowlists).
+PATTERN_RULE_IDS: frozenset[str] = frozenset(
+    {
+        RULE_COMMITTEE_SWEEP,
+        RULE_FINGERPRINT_BLOOM,
+        RULE_SOFT_BUNDLE,
+        RULE_SOFT_BUNDLE_V2,
+        RULE_SECTOR_CONVERGENCE,
+        RULE_GEO_MISMATCH,
+        RULE_DISBURSEMENT_LOOP,
+        RULE_JOINT_FUNDRAISING,
+        RULE_BASELINE_ANOMALY,
+        RULE_ALIGNMENT_ANOMALY,
+        RULE_AMENDMENT_TELL,
+        RULE_HEARING_TESTIMONY,
+        RULE_REVOLVING_DOOR,
+        RULE_LOCAL_CONTRACTOR_DONOR_LOOP,
+        RULE_LOCAL_CONTRACT_DONATION_TIMING,
+        RULE_LOCAL_VENDOR_CONCENTRATION,
+        RULE_LOCAL_RELATED_ENTITY_DONOR,
+    }
+)
+
+# Populated each run by _detect_local_related_entity_donor (read-only telemetry for POC / tests).
+LOCAL_RELATED_ENTITY_DONOR_DIAGNOSTICS: dict[str, int] = {
+    "skipped_missing_contract_event_type": 0,
+}
+
+LOCAL_TIMING_WINDOW_DAYS = 180
+LOCAL_CONCENTRATION_TOP_N = 5
+LOCAL_CONCENTRATION_MIN_OVERLAP = 2
+
+# Future: non-legislative subject profiles (appointed boards, prosecutors, law enforcement,
+# utilities, port authorities, gaming commissions, etc.). These rules are implemented for
+# the FEC/Congress pipeline today but apply with minor adaptation:
+#   - SOFT_BUNDLE_V1 / SOFT_BUNDLE_V2 — donor-to-decision proximity for any elected official.
+#   - COMMITTEE_SWEEP_V1 — map committee/jurisdiction to regulatory or agency oversight body.
+#   - REVOLVING_DOOR_V1 — employment and interest transitions (chiefs, prosecutors, zoning).
+#   - SECTOR_CONVERGENCE_V1 — sector clustering for utilities, ports, gaming, licensing boards.
+# No engine logic changes yet — taxonomy/registry only.
 
 COMMITTEE_SWEEP_MIN_OFFICIALS = 3
 COMMITTEE_SWEEP_MAX_WINDOW_DAYS = 14
@@ -378,6 +432,29 @@ SENATOR_HOME_STATE: dict[str, str] = {
 
 CURRENT_CONGRESS_FOR_VOTE_CONTEXT = 119
 
+
+def _home_state_from_db(db: Session, bioguide_id: str | None) -> str | None:
+    """Resolve senator home state for calendar / geo rules beyond the static map."""
+    if not bioguide_id:
+        return None
+    u = bioguide_id.strip().upper()
+    if u in SENATOR_HOME_STATE:
+        return SENATOR_HOME_STATE[u]
+    st = db.scalar(select(SubjectProfile.state).where(SubjectProfile.bioguide_id == u))
+    if st and len(str(st).strip()) >= 2:
+        return str(st).strip().upper()[:2]
+    jur = db.scalar(
+        select(CaseFile.jurisdiction)
+        .join(SubjectProfile, SubjectProfile.case_file_id == CaseFile.id)
+        .where(SubjectProfile.bioguide_id == u)
+        .limit(1)
+    )
+    if jur and len(str(jur).strip()) == 2:
+        j = str(jur).strip().upper()
+        if j.isalpha():
+            return j[:2]
+    return None
+
 PATTERN_ALERT_DISCLAIMER = (
     "This alert documents donor appearance across public records. "
     "It does not assert coordination, intent, or quid pro quo."
@@ -442,6 +519,8 @@ class PatternAlert:
     diagnostics_json: str | None = None
     payload_extra: dict[str, Any] | None = None
     proportionality_context: list[dict[str, Any]] | None = None
+    epistemic_level: str = "REPORTED"
+    requires_human_review: bool = False
 
 
 def _utc_now() -> datetime:
@@ -487,28 +566,114 @@ def _vote_raw_congress_number(raw: dict[str, Any]) -> int | None:
             c = bill.get("congress")
     if c is None:
         return None
+    if isinstance(c, bool):
+        return None
     if isinstance(c, int):
         return c
+    if isinstance(c, float):
+        if c.is_integer():
+            return int(c)
+        return None
     s = str(c).strip()
     if s.isdigit():
         return int(s)
+    # "119th Congress", "One Hundred Nineteenth Congress"
+    m = re.search(r"\b(11[89]|12\d)\b", s)
+    if m:
+        return int(m.group(1))
     digits = "".join(ch for ch in s if ch.isdigit())
+    if len(digits) >= 3:
+        return int(digits[:3])
     return int(digits) if digits else None
 
 
+def _subject_bioguides_by_case(db: Session) -> dict[uuid.UUID, str | None]:
+    m: dict[uuid.UUID, str | None] = {}
+    for prof in db.scalars(select(SubjectProfile)).all():
+        bg = (prof.bioguide_id or "").strip().upper() or None
+        m[prof.case_file_id] = bg
+    return m
+
+
+def _vote_record_bioguide_raw(raw: dict[str, Any]) -> str:
+    mv = raw.get("memberVote")
+    if isinstance(mv, dict):
+        v = mv.get("bioguideId") or mv.get("bioguide_id")
+        if v:
+            return str(v).strip().upper()
+    for k in ("bioguide_id", "member_bioguide_id"):
+        v = raw.get(k)
+        if v:
+            return str(v).strip().upper()
+    return ""
+
+
+def _vote_bioguide_aligns_with_subject(
+    raw: dict[str, Any], case_subject_bioguide: str | None
+) -> bool:
+    """Reject votes explicitly tagged for another member (production data hygiene)."""
+    subj = (case_subject_bioguide or "").strip().upper() or None
+    vote_bg = _vote_record_bioguide_raw(raw)
+    if vote_bg and subj and vote_bg != subj:
+        return False
+    return True
+
+
+def _vote_qualifies_for_ghost_gate(
+    raw: dict[str, Any],
+    case_subject_bioguide: str | None,
+) -> bool:
+    """Strict: must be current-congress vote evidence tied to this subject when bioguides exist."""
+    subj = (case_subject_bioguide or "").strip().upper() or None
+    vote_bg = _vote_record_bioguide_raw(raw)
+    if subj:
+        # Production hygiene (Shaheen-class): votes with no member bioguide in raw JSON
+        # must not open the vote-context gate — otherwise another senator's roll calls
+        # attached to the case could still fire BASELINE_ANOMALY / alignment, etc.
+        if not vote_bg or vote_bg != subj:
+            return False
+    else:
+        if not _vote_bioguide_aligns_with_subject(raw, case_subject_bioguide):
+            return False
+    if _vote_raw_congress_number(raw) != CURRENT_CONGRESS_FOR_VOTE_CONTEXT:
+        return False
+    return True
+
+
+def _vote_qualifies_for_nearest_vote_map(
+    raw: dict[str, Any],
+    case_subject_bioguide: str | None,
+) -> bool:
+    """
+    Loose for temporal proximity: allow legacy rows with no congress field; exclude
+    wrong-congress and wrong-bioguide rows.
+    """
+    if not _vote_bioguide_aligns_with_subject(raw, case_subject_bioguide):
+        return False
+    cn = _vote_raw_congress_number(raw)
+    if cn is None:
+        return True
+    return cn == CURRENT_CONGRESS_FOR_VOTE_CONTEXT
+
+
 def _case_ids_with_current_congress_votes(db: Session) -> set[uuid.UUID]:
+    prof_by_case = _subject_bioguides_by_case(db)
     out: set[uuid.UUID] = set()
     for ent in db.scalars(
-        select(EvidenceEntry).where(EvidenceEntry.entry_type == "vote_record")
+        select(EvidenceEntry).where(
+            EvidenceEntry.entry_type.in_(("vote_record", "amendment_vote"))
+        )
     ).all():
+        subj = prof_by_case.get(ent.case_file_id)
         try:
             raw = json.loads(ent.raw_data_json or "{}")
         except json.JSONDecodeError:
             continue
         if not isinstance(raw, dict):
             continue
-        if _vote_raw_congress_number(raw) == CURRENT_CONGRESS_FOR_VOTE_CONTEXT:
-            out.add(ent.case_file_id)
+        if not _vote_qualifies_for_ghost_gate(raw, subj):
+            continue
+        out.add(ent.case_file_id)
     return out
 
 
@@ -525,22 +690,64 @@ def _all_cases_have_vote_context(
     return True
 
 
+def _senate_committee_calendar_context(
+    db: Session, bioguide_id: str | None
+) -> tuple[list[str], list[str]]:
+    bg = (bioguide_id or "").strip().upper()
+    if not bg:
+        return [], []
+    rows = list(
+        db.scalars(select(SenatorCommittee).where(SenatorCommittee.bioguide_id == bg)).all()
+    )
+    codes: list[str] = []
+    chairs: list[str] = []
+    for r in rows:
+        c = (r.committee_code or "").strip().upper()
+        if not c:
+            continue
+        codes.append(c)
+        nm = (r.committee_name or "").lower()
+        if "chair" in nm:
+            chairs.append(c)
+    return codes, chairs
+
+
 def _calendar_for_window(
-    db: Session, d0: date, d1: date, state_code: str | None
+    db: Session,
+    d0: date,
+    d1: date,
+    state_code: str | None,
+    bioguide_id: str | None = None,
 ) -> tuple[bool, float, str | None, str | None, str | None]:
-    disc, et, en = get_calendar_discount(db, d0, d1, state_code)
+    comm, chair = _senate_committee_calendar_context(db, bioguide_id)
+    disc, et, en = get_calendar_discount(
+        db,
+        d0,
+        d1,
+        state_code,
+        committee_codes=comm if comm else None,
+        chair_committee_codes=chair if chair else None,
+    )
     adjacent = disc < 1.0
     note = f"{en} ({et})" if en and et else None
     return adjacent, float(disc), note, et, en
 
 
-def _senator_state_for_calendar(bg: str | None, profile_state: str | None) -> str | None:
+def _senator_state_for_calendar(
+    bg: str | None,
+    profile_state: str | None,
+    db: Session | None = None,
+) -> str | None:
     st = (profile_state or "").strip().upper()[:2]
     if len(st) == 2:
         return st
     b = (bg or "").strip()
     if b in SENATOR_HOME_STATE:
         return SENATOR_HOME_STATE[b]
+    if db is not None and b:
+        got = _home_state_from_db(db, b)
+        if got:
+            return got
     return None
 
 
@@ -873,15 +1080,30 @@ def _vote_details_from_evidence_id(db: Session, evidence_id: str | None) -> tupl
 
 
 def _vote_evidence_by_case(db: Session) -> dict[uuid.UUID, list[tuple[uuid.UUID, date]]]:
+    prof_by_case = _subject_bioguides_by_case(db)
     rows = db.execute(
-        select(EvidenceEntry.id, EvidenceEntry.case_file_id, EvidenceEntry.date_of_event).where(
-            EvidenceEntry.entry_type == "vote_record",
+        select(
+            EvidenceEntry.id,
+            EvidenceEntry.case_file_id,
+            EvidenceEntry.date_of_event,
+            EvidenceEntry.raw_data_json,
+        ).where(
+            EvidenceEntry.entry_type.in_(("vote_record", "amendment_vote")),
             EvidenceEntry.date_of_event.isnot(None),
         )
     ).all()
     m: dict[uuid.UUID, list[tuple[uuid.UUID, date]]] = {}
-    for eid, cid, d in rows:
+    for eid, cid, d, raw_json in rows:
         if cid is None or d is None:
+            continue
+        try:
+            raw = json.loads(raw_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        subj = prof_by_case.get(cid)
+        if not _vote_qualifies_for_nearest_vote_map(raw, subj):
             continue
         m.setdefault(cid, []).append((eid, d))
     return m
@@ -1059,9 +1281,9 @@ def _geo_build_alert_if_qualified(
     if total_amt < GEO_MISMATCH_MIN_AGGREGATE:
         return None
     bg = next((e.bioguide_id for e in window if e.bioguide_id), None)
-    if not bg or bg not in SENATOR_HOME_STATE:
+    home = _home_state_from_db(db, bg)
+    if not home:
         return None
-    home = SENATOR_HOME_STATE[bg]
     in_n = out_n = unk_n = 0
     state_counts: dict[str, int] = {}
     for e in window:
@@ -1089,7 +1311,7 @@ def _geo_build_alert_if_qualified(
     d_days, v_id, v_date, prof, vdesc, vres, vq = _nearest_vote_for_cases(
         db, case_uuids, midpoint, votes_by_case
     )
-    dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(db, d0, d1, home)
+    dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(db, d0, d1, home, bg)
     suspicion = ratio * float(prof) * dl_disc
     donor_labels = sorted({e.donor_display for e in window})
     preview = ", ".join(donor_labels[:5])
@@ -1274,11 +1496,11 @@ def _detect_sector_convergence(db: Session, fired_at: datetime) -> list[PatternA
         d_days, v_id, v_date, prof, vdesc, vres, vq = _nearest_vote_for_cases(
             db, case_uuids, midpoint, votes_by_case
         )
-        st_cal = _senator_state_for_calendar(
-            next((e.bioguide_id for e in sector_rows if e.bioguide_id), None),
-            None,
+        bg_sec = next((e.bioguide_id for e in sector_rows if e.bioguide_id), None)
+        st_cal = _senator_state_for_calendar(bg_sec, None, db)
+        dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(
+            db, d0, d1, st_cal, bg_sec
         )
-        dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(db, d0, d1, st_cal)
         mult = 1.5 if vm else 1.0
         suspicion = conc * float(prof) * dl_disc * mult
         donor_labels = sorted({e.donor_display for e in sector_rows})
@@ -1350,9 +1572,9 @@ def _detect_geo_mismatch(db: Session, fired_at: datetime) -> list[PatternAlert]:
                 if ind_amt < GEO_MISMATCH_MIN_AGGREGATE:
                     continue
                 bg = next((e.bioguide_id for e in window if e.bioguide_id), None)
-                if not bg or bg not in SENATOR_HOME_STATE:
+                home = _home_state_from_db(db, bg)
+                if not home:
                     continue
-                home = SENATOR_HOME_STATE[bg]
                 in_n = out_n = unk_n = 0
                 for e in window:
                     if not _is_individual_donor(e.donor_display):
@@ -1861,9 +2083,9 @@ def _detect_baseline_anomaly(
                 if tot < BASELINE_ANOMALY_MIN_AGGREGATE:
                     continue
                 mult = tot / median
-                state_cal = _senator_state_for_calendar(bg, prof.state)
+                state_cal = _senator_state_for_calendar(bg, prof.state, db)
                 dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(
-                    db, d0, d1, state_cal
+                    db, d0, d1, state_cal, bg
                 )
                 min_mult = (
                     BASELINE_ANOMALY_CALENDAR_ADJACENT_MIN_MULTIPLIER
@@ -2226,10 +2448,10 @@ def _detect_amendment_tell(
                 abs((donation_day - avd).days)
             )
             bg_am = (fp.bioguide_id or "").strip() or None
-            st_cal = _senator_state_for_calendar(bg_am, None)
+            st_cal = _senator_state_for_calendar(bg_am, None, db)
             d0c, d1c = min(donation_day, avd), max(donation_day, avd)
             dl_adj, dl_disc, dl_note, cet, cen = _calendar_for_window(
-                db, d0c, d1c, st_cal
+                db, d0c, d1c, st_cal, bg_am
             )
             suspicion = (
                 float(prof)
@@ -2595,8 +2817,10 @@ def _detect_soft_bundles(
         d_days, v_id, v_date, prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
             db, case_uuids, midpoint, votes_by_case
         )
-        st_cal = _senator_state_for_calendar(sample_row.bioguide_id, None)
-        dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(db, d0, d1, st_cal)
+        st_cal = _senator_state_for_calendar(sample_row.bioguide_id, None, db)
+        dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(
+            db, d0, d1, st_cal, sample_row.bioguide_id
+        )
         div_f = float(div) if div is not None else 0.0
         size_factor = min(int(n_donors) / 10.0, 1.0)
         suspicion = div_f * prof * dl_discount * size_factor
@@ -2810,8 +3034,8 @@ def _detect_soft_bundle_v2(
         d_days, v_id, v_date, prof, v_desc, v_res, v_q = _nearest_vote_for_cases(
             db, case_uuids, midpoint, votes_by_case
         )
-        st_cal = _senator_state_for_calendar(bg, None)
-        dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(db, d0, d1, st_cal)
+        st_cal = _senator_state_for_calendar(bg, None, db)
+        dl_adj, dl_discount, dl_note, cet, cen = _calendar_for_window(db, d0, d1, st_cal, bg)
 
         plurality = sec_counts.most_common(1)[0][0] if sec_counts else None
         diagnostics: dict[str, Any] = {
@@ -3030,6 +3254,608 @@ def _detect_fingerprint_bloom(
     return alerts
 
 
+_LOCAL_PROCUREMENT_ADAPTERS: frozenset[str] = frozenset(
+    {"INDY_PROCUREMENT", "INDY_GATEWAY_CONTRACT_DOC"}
+)
+
+
+def _local_procurement_vendor_variants(entry: EvidenceEntry) -> list[str]:
+    """Vendor labels for LOCAL_* rules: procurement rows only; prefers vendor_canonical."""
+    if entry.is_absence or (entry.entry_type or "") == "gap_documented":
+        return []
+    if (entry.adapter_name or "") not in _LOCAL_PROCUREMENT_ADAPTERS:
+        return []
+    if (entry.entry_type or "") != "government_record":
+        return []
+    raw: dict[str, Any] = {}
+    try:
+        raw = json.loads(entry.raw_data_json or "{}")
+    except json.JSONDecodeError:
+        raw = {}
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(s: str) -> None:
+        t = (s or "").strip()
+        if len(t) < 3:
+            return
+        tl = t.lower()
+        if tl in seen:
+            return
+        seen.add(tl)
+        out.append(t)
+
+    add(str(raw.get("vendor_canonical") or ""))
+    add(str(raw.get("vendor_name_raw") or ""))
+    add(entry.matched_name or "")
+    return out
+
+
+def _idis_donor_label(entry: EvidenceEntry) -> str:
+    if entry.is_absence or (entry.entry_type or "") == "gap_documented":
+        return ""
+    if (entry.adapter_name or "") != "IDIS":
+        return ""
+    if (entry.entry_type or "") != "financial_connection":
+        return ""
+    raw: dict[str, Any] = {}
+    try:
+        raw = json.loads(entry.raw_data_json or "{}")
+    except json.JSONDecodeError:
+        raw = {}
+    return str(raw.get("contributor_name") or "").strip()
+
+
+def _local_names_equivalent(name_a: str, name_b: str, db: Session) -> bool:
+    a = (name_a or "").strip()
+    b = (name_b or "").strip()
+    if not a or not b:
+        return False
+    ca, cb = canonicalize(a), canonicalize(b)
+    if ca and cb and ca == cb:
+        return True
+    ra, rb = resolve(a, db), resolve(b, db)
+    return bool(ra.canonical_id) and ra.canonical_id == rb.canonical_id
+
+
+_LOCAL_TIMING_ELIGIBLE_EVENTS = frozenset({"award"})
+_LOCAL_LOOP_ELIGIBLE_EVENTS = frozenset({"award", "supply_purchase", "final_acceptance"})
+_LOCAL_LOOP_BLOCKED_EVENTS = frozenset({"amendment", "change_order", "closeout"})
+
+
+def _local_procurement_raw_dict(entry: EvidenceEntry) -> dict[str, Any]:
+    try:
+        raw = json.loads(entry.raw_data_json or "{}")
+        return raw if isinstance(raw, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _local_contract_event_type(entry: EvidenceEntry) -> str | None:
+    raw = _local_procurement_raw_dict(entry)
+    v = raw.get("contract_event_type")
+    if v is None or str(v).strip() == "":
+        return None
+    return str(v).strip().lower()
+
+
+def _idis_donor_raw_dict(entry: EvidenceEntry) -> dict[str, Any]:
+    try:
+        raw = json.loads(entry.raw_data_json or "{}")
+        return raw if isinstance(raw, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _local_loop_score(contract_amt: float | None, donation_amt: float | None) -> float:
+    c = max(0.0, float(contract_amt or 0))
+    d = max(0.0, float(donation_amt or 0))
+    nc = min(1.0, math.log10(c + 1.0) / 8.0)
+    nd = min(1.0, math.log10(d + 1.0) / 6.0)
+    return max(0.05, min(1.0, 0.12 + 0.38 * nc + 0.50 * nd))
+
+
+_LOCAL_RELATED_ENTITY_ELIGIBLE_EVENTS = frozenset({"award", "supply_purchase"})
+
+
+def _local_related_entity_score(contract_amt: float | None, donation_amt: float | None) -> float:
+    """Separate band from direct loop: documented link but weaker epistemics."""
+    c = max(0.0, float(contract_amt or 0))
+    d = max(0.0, float(donation_amt or 0))
+    nc = min(1.0, math.log10(c + 1.0) / 8.0)
+    nd = min(1.0, math.log10(d + 1.0) / 6.0)
+    return max(0.35, min(0.72, 0.35 + 0.20 * nc + 0.17 * nd))
+
+
+def _local_indirect_match_label(relationship_type: str | None) -> str:
+    rt = (relationship_type or "").strip().lower()
+    mapping = {
+        "pac_of_vendor": "PAC affiliated with vendor",
+        "affiliate": "Corporate affiliate of vendor",
+        "subsidiary": "Subsidiary of vendor",
+        "parent": "Parent company of vendor",
+    }
+    return mapping.get(rt, "Related entity of vendor")
+
+
+def _load_local_case_evidence(
+    db: Session,
+) -> dict[uuid.UUID, tuple[CaseFile, list[EvidenceEntry]]]:
+    out: dict[uuid.UUID, tuple[CaseFile, list[EvidenceEntry]]] = {}
+    for case in db.scalars(select(CaseFile)).all():
+        if (case.government_level or "").strip().lower() != "local":
+            continue
+        entries = db.scalars(
+            select(EvidenceEntry).where(
+                EvidenceEntry.case_file_id == case.id,
+                EvidenceEntry.is_absence.is_(False),
+                or_(
+                    EvidenceEntry.adapter_name == "INDY_PROCUREMENT",
+                    EvidenceEntry.adapter_name == "INDY_GATEWAY_CONTRACT_DOC",
+                    EvidenceEntry.adapter_name == "IDIS",
+                ),
+            )
+        ).all()
+        if entries:
+            out[case.id] = (case, list(entries))
+    return out
+
+
+def _detect_local_contractor_donor_loop(
+    db: Session, fired_at: datetime
+) -> list[PatternAlert]:
+    alerts: list[PatternAlert] = []
+    for case_id, (case, entries) in _load_local_case_evidence(db).items():
+        jkey = local_jurisdiction_alias_key(case.jurisdiction or "")
+        vendor_rows: list[tuple[EvidenceEntry, list[str]]] = []
+        idis_rows: list[EvidenceEntry] = []
+        for e in entries:
+            if (e.adapter_name or "") in _LOCAL_PROCUREMENT_ADAPTERS:
+                variants = _local_procurement_vendor_variants(e)
+                if variants:
+                    vendor_rows.append((e, variants))
+            elif (e.adapter_name or "") == "IDIS":
+                idis_rows.append(e)
+
+        seen_pairs: set[tuple[str, str]] = set()
+        official = (case.subject_name or "").strip() or "Unknown official"
+        jurisdiction = (case.jurisdiction or "").strip()
+
+        for vend_ent, vlabels in vendor_rows:
+            cet = _local_contract_event_type(vend_ent)
+            if cet in _LOCAL_LOOP_BLOCKED_EVENTS:
+                continue
+            if cet is not None and cet not in _LOCAL_LOOP_ELIGIBLE_EVENTS:
+                continue
+            vend_raw = _local_procurement_raw_dict(vend_ent)
+            v_name_raw = str(vend_raw.get("vendor_name_raw") or "").strip()
+            v_canon = str(vend_raw.get("vendor_canonical") or "").strip()
+            event_warn: str | None = None
+            if cet is None:
+                event_warn = "contract_event_type missing on procurement row"
+            elif cet != "award":
+                event_warn = (
+                    f"contract_event_type={cet} is not a primary award; "
+                    "interpret loop context cautiously"
+                )
+
+            for idis_ent in idis_rows:
+                dlabel = _idis_donor_label(idis_ent)
+                if not dlabel:
+                    continue
+                d_raw = _idis_donor_raw_dict(idis_ent)
+                d_name_raw = str(d_raw.get("contributor_name_raw") or dlabel).strip()
+                d_canon = str(
+                    d_raw.get("contributor_canonical")
+                    or normalize_vendor_name(dlabel)
+                    or canonicalize(dlabel)
+                ).strip()
+                for vl in vlabels:
+                    ok, mtype, rtype, rnote = local_match_eligible_for_loop_and_timing(
+                        vl, dlabel, jkey, db
+                    )
+                    if not ok:
+                        continue
+                    pair_key = (str(vend_ent.id), str(idis_ent.id))
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+                    c_amt = vend_ent.amount
+                    d_amt = idis_ent.amount
+                    score = _local_loop_score(c_amt, d_amt)
+                    agg: float | None = None
+                    if c_amt is not None or d_amt is not None:
+                        agg = float(c_amt or 0) + float(d_amt or 0)
+                    alerts.append(
+                        PatternAlert(
+                            rule_id=RULE_LOCAL_CONTRACTOR_DONOR_LOOP,
+                            pattern_version=PATTERN_ENGINE_VERSION,
+                            donor_entity=(
+                                f"Local contractor/donor match: {dlabel} / {vl}"
+                            ),
+                            matched_officials=[official],
+                            matched_case_ids=[str(case_id)],
+                            committee=jurisdiction,
+                            window_days=None,
+                            evidence_refs=sorted([str(vend_ent.id), str(idis_ent.id)]),
+                            fired_at=fired_at,
+                            suspicion_score=score,
+                            aggregate_amount=agg,
+                            payload_extra={
+                                "vendor_label": vl,
+                                "donor_label": dlabel,
+                                "match_type": mtype,
+                                "relationship_type": rtype,
+                                "relationship_source_note": rnote,
+                                "vendor_canonical": v_canon or None,
+                                "donor_canonical": d_canon or None,
+                                "contract_event_type": cet,
+                                "vendor_name_raw": v_name_raw or None,
+                                "donor_name_raw": d_name_raw or None,
+                                "contract_amount": c_amt,
+                                "donation_amount": d_amt,
+                                "event_type_used": cet,
+                                "event_type_warning": event_warn,
+                            },
+                        )
+                    )
+                    break
+    return alerts
+
+
+def _detect_local_related_entity_donor(
+    db: Session, fired_at: datetime
+) -> list[PatternAlert]:
+    """Curated related-entity rows only (affiliate / PAC / parent / subsidiary); not direct or alias."""
+    LOCAL_RELATED_ENTITY_DONOR_DIAGNOSTICS["skipped_missing_contract_event_type"] = 0
+    alerts: list[PatternAlert] = []
+    for case_id, (case, entries) in _load_local_case_evidence(db).items():
+        jkey = local_jurisdiction_alias_key(case.jurisdiction or "")
+        vendor_rows: list[tuple[EvidenceEntry, list[str]]] = []
+        idis_rows: list[EvidenceEntry] = []
+        for e in entries:
+            if (e.adapter_name or "") in _LOCAL_PROCUREMENT_ADAPTERS:
+                variants = _local_procurement_vendor_variants(e)
+                if variants:
+                    vendor_rows.append((e, variants))
+            elif (e.adapter_name or "") == "IDIS":
+                idis_rows.append(e)
+
+        seen_pairs: set[tuple[str, str]] = set()
+        official = (case.subject_name or "").strip() or "Unknown official"
+        jurisdiction = (case.jurisdiction or "").strip()
+
+        for vend_ent, vlabels in vendor_rows:
+            cet = _local_contract_event_type(vend_ent)
+            for idis_ent in idis_rows:
+                dlabel = _idis_donor_label(idis_ent)
+                if not dlabel:
+                    continue
+                matched_vl: str | None = None
+                mtype: str | None = None
+                rtype: str | None = None
+                rnote: str | None = None
+                for vl in vlabels:
+                    mt, rt, rn = _local_match_type(vl, dlabel, jkey, db)
+                    if mt == MATCH_RELATED_ENTITY:
+                        matched_vl = vl
+                        mtype, rtype, rnote = mt, rt, rn
+                        break
+                if not matched_vl or mtype != MATCH_RELATED_ENTITY:
+                    continue
+                if cet is None:
+                    LOCAL_RELATED_ENTITY_DONOR_DIAGNOSTICS[
+                        "skipped_missing_contract_event_type"
+                    ] += 1
+                    continue
+                if cet not in _LOCAL_RELATED_ENTITY_ELIGIBLE_EVENTS:
+                    continue
+                pair_key = (str(vend_ent.id), str(idis_ent.id))
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+
+                vend_raw = _local_procurement_raw_dict(vend_ent)
+                v_name_raw = str(vend_raw.get("vendor_name_raw") or "").strip()
+                v_canon = str(vend_raw.get("vendor_canonical") or "").strip()
+                d_raw = _idis_donor_raw_dict(idis_ent)
+                d_name_raw = str(d_raw.get("contributor_name_raw") or dlabel).strip()
+                d_canon = str(
+                    d_raw.get("contributor_canonical")
+                    or normalize_vendor_name(dlabel)
+                    or canonicalize(dlabel)
+                ).strip()
+                c_amt = vend_ent.amount
+                d_amt = idis_ent.amount
+                indirect = _local_indirect_match_label(rtype)
+                score = _local_related_entity_score(c_amt, d_amt)
+                agg: float | None = None
+                if c_amt is not None or d_amt is not None:
+                    agg = float(c_amt or 0) + float(d_amt or 0)
+                amt_s = (
+                    f"${float(c_amt):,.2f}"
+                    if c_amt is not None
+                    else "amount n/a"
+                )
+                dt_s = (
+                    vend_ent.date_of_event.isoformat()
+                    if vend_ent.date_of_event
+                    else "date n/a"
+                )
+                donor_entity = (
+                    f"Related entity donor — {d_name_raw or dlabel} ({indirect}) linked to "
+                    f"vendor {v_name_raw or matched_vl}; {cet} {amt_s} on {dt_s}. "
+                    f"Documented related-entity tie — not a direct same-entity donation."
+                )
+                alerts.append(
+                    PatternAlert(
+                        rule_id=RULE_LOCAL_RELATED_ENTITY_DONOR,
+                        pattern_version=PATTERN_ENGINE_VERSION,
+                        donor_entity=donor_entity,
+                        matched_officials=[official],
+                        matched_case_ids=[str(case_id)],
+                        committee=jurisdiction,
+                        window_days=None,
+                        evidence_refs=sorted([str(vend_ent.id), str(idis_ent.id)]),
+                        fired_at=fired_at,
+                        suspicion_score=score,
+                        aggregate_amount=agg,
+                        payload_extra={
+                            "vendor_label": matched_vl,
+                            "donor_label": dlabel,
+                            "match_type": mtype,
+                            "relationship_type": rtype,
+                            "relationship_source_note": (rnote or "") or "",
+                            "vendor_canonical": v_canon or "",
+                            "donor_canonical": d_canon or "",
+                            "vendor_name_raw": v_name_raw or "",
+                            "donor_name_raw": d_name_raw or "",
+                            "contract_event_type": cet,
+                            "contract_amount": float(c_amt or 0.0),
+                            "donation_amount": float(d_amt or 0.0),
+                            "indirect_match_label": indirect,
+                        },
+                    )
+                )
+    return alerts
+
+
+def _detect_local_contract_donation_timing(
+    db: Session, fired_at: datetime
+) -> list[PatternAlert]:
+    alerts: list[PatternAlert] = []
+    for case_id, (case, entries) in _load_local_case_evidence(db).items():
+        jkey = local_jurisdiction_alias_key(case.jurisdiction or "")
+        vendor_rows: list[tuple[EvidenceEntry, list[str]]] = []
+        idis_rows: list[EvidenceEntry] = []
+        for e in entries:
+            if (e.adapter_name or "") in _LOCAL_PROCUREMENT_ADAPTERS:
+                variants = _local_procurement_vendor_variants(e)
+                if variants:
+                    vendor_rows.append((e, variants))
+            elif (e.adapter_name or "") == "IDIS":
+                idis_rows.append(e)
+
+        seen_pairs: set[tuple[str, str]] = set()
+        official = (case.subject_name or "").strip() or "Unknown official"
+        jurisdiction = (case.jurisdiction or "").strip()
+
+        for vend_ent, vlabels in vendor_rows:
+            cet = _local_contract_event_type(vend_ent)
+            if cet not in _LOCAL_TIMING_ELIGIBLE_EVENTS:
+                continue
+            award = vend_ent.date_of_event
+            if award is None:
+                continue
+            vend_raw = _local_procurement_raw_dict(vend_ent)
+            v_name_raw = str(vend_raw.get("vendor_name_raw") or "").strip()
+            v_canon = str(vend_raw.get("vendor_canonical") or "").strip()
+
+            for idis_ent in idis_rows:
+                dlabel = _idis_donor_label(idis_ent)
+                if not dlabel:
+                    continue
+                don_date = idis_ent.date_of_event
+                if don_date is None:
+                    continue
+                delta = (don_date - award).days
+                if abs(delta) > LOCAL_TIMING_WINDOW_DAYS:
+                    continue
+                d_raw = _idis_donor_raw_dict(idis_ent)
+                d_name_raw = str(d_raw.get("contributor_name_raw") or dlabel).strip()
+                d_canon = str(
+                    d_raw.get("contributor_canonical")
+                    or normalize_vendor_name(dlabel)
+                    or canonicalize(dlabel)
+                ).strip()
+                for vl in vlabels:
+                    ok, mtype, rtype, rnote = local_match_eligible_for_loop_and_timing(
+                        vl, dlabel, jkey, db
+                    )
+                    if not ok:
+                        continue
+                    pair_key = (str(vend_ent.id), str(idis_ent.id))
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+                    direction = "pre_award" if don_date < award else "post_award"
+                    c_amt = vend_ent.amount
+                    d_amt = idis_ent.amount
+                    base = _local_loop_score(c_amt, d_amt)
+                    score = min(1.0, base + 0.22)
+                    agg: float | None = None
+                    if c_amt is not None or d_amt is not None:
+                        agg = float(c_amt or 0) + float(d_amt or 0)
+                    alerts.append(
+                        PatternAlert(
+                            rule_id=RULE_LOCAL_CONTRACT_DONATION_TIMING,
+                            pattern_version=PATTERN_ENGINE_VERSION,
+                            donor_entity=(
+                                f"Local contract/donation timing: {dlabel} / {vl} ({direction})"
+                            ),
+                            matched_officials=[official],
+                            matched_case_ids=[str(case_id)],
+                            committee=jurisdiction,
+                            window_days=LOCAL_TIMING_WINDOW_DAYS,
+                            evidence_refs=sorted([str(vend_ent.id), str(idis_ent.id)]),
+                            fired_at=fired_at,
+                            suspicion_score=score,
+                            aggregate_amount=agg,
+                            payload_extra={
+                                "vendor_label": vl,
+                                "donor_label": dlabel,
+                                "match_type": mtype,
+                                "relationship_type": rtype,
+                                "relationship_source_note": rnote,
+                                "vendor_canonical": v_canon or None,
+                                "donor_canonical": d_canon or None,
+                                "contract_event_type": cet,
+                                "vendor_name_raw": v_name_raw or None,
+                                "donor_name_raw": d_name_raw or None,
+                                "contract_amount": c_amt,
+                                "donation_amount": d_amt,
+                                "award_date": award.isoformat(),
+                                "donation_date": don_date.isoformat(),
+                                "timing_direction": direction,
+                                "days_donation_minus_award": delta,
+                                "contract_award_date": award.isoformat(),
+                            },
+                        )
+                    )
+                    break
+    return alerts
+
+
+def _detect_local_vendor_concentration(
+    db: Session, fired_at: datetime
+) -> list[PatternAlert]:
+    alerts: list[PatternAlert] = []
+    for case_id, (case, entries) in _load_local_case_evidence(db).items():
+        jkey = local_jurisdiction_alias_key(case.jurisdiction or "")
+        vendor_totals: dict[str, tuple[float, str]] = {}
+        donor_totals: dict[str, tuple[float, str]] = {}
+        procurement_award_total = 0.0
+        procurement_other_event_total = 0.0
+
+        for e in entries:
+            if (e.adapter_name or "") in _LOCAL_PROCUREMENT_ADAPTERS:
+                variants = _local_procurement_vendor_variants(e)
+                if not variants:
+                    continue
+                raw = _local_procurement_raw_dict(e)
+                label = str(raw.get("vendor_canonical") or "").strip() or variants[0]
+                key = resolve(label, db).canonical_id
+                amt = float(e.amount or 0)
+                prev = vendor_totals.get(key)
+                if prev is None:
+                    vendor_totals[key] = (amt, label)
+                else:
+                    vendor_totals[key] = (prev[0] + amt, prev[1])
+                cet = _local_contract_event_type(e)
+                if cet == "award":
+                    procurement_award_total += amt
+                else:
+                    procurement_other_event_total += amt
+            elif (e.adapter_name or "") == "IDIS":
+                dl = _idis_donor_label(e)
+                if not dl:
+                    continue
+                key = resolve(dl, db).canonical_id
+                amt = float(e.amount or 0)
+                prev = donor_totals.get(key)
+                if prev is None:
+                    donor_totals[key] = (amt, dl)
+                else:
+                    donor_totals[key] = (prev[0] + amt, prev[1])
+
+        if len(vendor_totals) < 1 or len(donor_totals) < 1:
+            continue
+
+        top_v = sorted(vendor_totals.items(), key=lambda x: -x[1][0])[
+            :LOCAL_CONCENTRATION_TOP_N
+        ]
+        top_d = sorted(donor_totals.items(), key=lambda x: -x[1][0])[
+            :LOCAL_CONCENTRATION_TOP_N
+        ]
+        vkeys = {k for k, _ in top_v}
+        dkeys = {k for k, _ in top_d}
+        overlap_keys = vkeys & dkeys
+        if len(overlap_keys) < LOCAL_CONCENTRATION_MIN_OVERLAP:
+            continue
+
+        overlap_n = len(overlap_keys)
+        score = max(0.35, min(1.0, 0.30 + 0.14 * float(overlap_n)))
+
+        evidence_ids: set[str] = set()
+        overlap_entities: list[dict[str, Any]] = []
+        for ok in sorted(overlap_keys):
+            vtot, vlabel = vendor_totals[ok]
+            dtot, dlabel = donor_totals[ok]
+            mt, rt, rn = _local_match_type(vlabel, dlabel, jkey, db)
+            overlap_entities.append(
+                {
+                    "entity_key": ok,
+                    "match_type": mt,
+                    "relationship_type": rt,
+                    "relationship_source_note": rn,
+                    "vendor_label": vlabel,
+                    "vendor_total": vtot,
+                    "donor_label": dlabel,
+                    "donor_total": dtot,
+                }
+            )
+
+        for e in entries:
+            if (e.adapter_name or "") in _LOCAL_PROCUREMENT_ADAPTERS:
+                variants = _local_procurement_vendor_variants(e)
+                if not variants:
+                    continue
+                raw = _local_procurement_raw_dict(e)
+                lab = str(raw.get("vendor_canonical") or "").strip() or variants[0]
+                if resolve(lab, db).canonical_id in overlap_keys:
+                    evidence_ids.add(str(e.id))
+            elif (e.adapter_name or "") == "IDIS":
+                dl = _idis_donor_label(e)
+                if dl and resolve(dl, db).canonical_id in overlap_keys:
+                    evidence_ids.add(str(e.id))
+
+        official = (case.subject_name or "").strip() or "Unknown official"
+        jurisdiction = (case.jurisdiction or "").strip()
+
+        alerts.append(
+            PatternAlert(
+                rule_id=RULE_LOCAL_VENDOR_CONCENTRATION,
+                pattern_version=PATTERN_ENGINE_VERSION,
+                donor_entity=(
+                    f"Local top-vendor / top-donor overlap ({overlap_n} entities)"
+                ),
+                matched_officials=[official],
+                matched_case_ids=[str(case_id)],
+                committee=jurisdiction,
+                window_days=None,
+                evidence_refs=sorted(evidence_ids),
+                fired_at=fired_at,
+                suspicion_score=score,
+                cluster_size=overlap_n,
+                payload_extra={
+                    "overlap_count": overlap_n,
+                    "overlapping_entities": overlap_entities,
+                    "procurement_total_award_amount": procurement_award_total,
+                    "procurement_total_other_event_types_amount": procurement_other_event_total,
+                    "top_vendors": [
+                        {"entity_key": k, "label": vendor_totals[k][1], "total": vendor_totals[k][0]}
+                        for k, _ in top_v
+                    ],
+                    "top_donors": [
+                        {"entity_key": k, "label": donor_totals[k][1], "total": donor_totals[k][0]}
+                        for k, _ in top_d
+                    ],
+                },
+            )
+        )
+    return alerts
+
+
 def run_pattern_engine(db: Session) -> list[PatternAlert]:
     """
     Run all pattern rules against the current fingerprint table.
@@ -3057,12 +3883,19 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
     alerts.extend(_detect_amendment_tell(db, fired_at, cases_with_votes))
     alerts.extend(_detect_hearing_testimony(db, fired_at))
     alerts.extend(_detect_revolving_door(db, fired_at))
+    alerts.extend(_detect_local_contractor_donor_loop(db, fired_at))
+    alerts.extend(_detect_local_related_entity_donor(db, fired_at))
+    alerts.extend(_detect_local_contract_donation_timing(db, fired_at))
+    alerts.extend(_detect_local_vendor_concentration(db, fired_at))
     for a in alerts:
         if a.vote_context_available is None:
             a.vote_context_available = _all_cases_have_vote_context(
                 a.matched_case_ids, cases_with_votes
             )
     alerts.sort(key=lambda x: (x.donor_entity.lower(), x.rule_id, x.committee or ""))
+    from engines.pattern_alert_epistemic import enrich_pattern_alerts_epistemic_metadata
+
+    enrich_pattern_alerts_epistemic_metadata(db, alerts)
     from services.proportionality import attach_proportionality_to_pattern_alerts
 
     attach_proportionality_to_pattern_alerts(db, alerts)
@@ -3140,6 +3973,8 @@ def pattern_alert_to_payload(a: PatternAlert) -> dict[str, Any]:
         payload["payload_extra"] = a.payload_extra
     if a.proportionality_context:
         payload["proportionality_context"] = list(a.proportionality_context)
+    payload["epistemic_level"] = getattr(a, "epistemic_level", "REPORTED")
+    payload["requires_human_review"] = bool(getattr(a, "requires_human_review", False))
     return payload
 
 
@@ -3185,18 +4020,44 @@ def sync_pattern_alert_records(db: Session, alerts: list[PatternAlert]) -> None:
                 fired_at=a.fired_at,
                 created_at=now,
                 diagnostics_json=diag_store,
+                epistemic_level=getattr(a, "epistemic_level", "REPORTED"),
+                requires_human_review=bool(getattr(a, "requires_human_review", False)),
             )
         )
 
 
-def pattern_alerts_for_case(case_id: uuid.UUID, alerts: list[PatternAlert]) -> list[dict[str, Any]]:
+def pattern_alerts_for_case(
+    case_id: uuid.UUID,
+    alerts: list[PatternAlert],
+    *,
+    include_unreviewed: bool = False,
+) -> list[dict[str, Any]]:
     """HTML report rows: only alerts that reference this case."""
     sid = str(case_id)
-    return [
+    rows = [
         pattern_alert_to_report_dict(a)
         for a in alerts
         if sid in a.matched_case_ids
     ]
+    if not include_unreviewed:
+        rows = [r for r in rows if not r.get("requires_human_review")]
+    return rows
+
+
+def _pattern_alert_report_score(a: PatternAlert) -> float | None:
+    """Unified 0..1 score for API report rows; None if no usable signal."""
+    for attr in ("proximity_to_vote_score", "suspicion_score"):
+        raw = getattr(a, attr, None)
+        if raw is None:
+            continue
+        try:
+            f = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(f):
+            continue
+        return max(0.0, min(1.0, f))
+    return None
 
 
 def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
@@ -3214,6 +4075,45 @@ def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
             f"Soft bundle — {n} distinct donors aggregated ${agg:,.0f} to {a.committee} "
             f"within {a.window_days} day(s)"
         )
+    elif a.rule_id == RULE_FINGERPRINT_BLOOM:
+        badge = "Cross-Case Donor"
+        rule_line = (
+            f"Fingerprint bloom — appeared in {FINGERPRINT_BLOOM_MIN_CASES}+ investigations "
+            f"with relevance ≥ {FINGERPRINT_BLOOM_MIN_RELEVANCE}"
+        )
+    elif a.rule_id == RULE_LOCAL_CONTRACTOR_DONOR_LOOP:
+        pe = a.payload_extra or {}
+        badge = "Local contractor / donor"
+        rule_line = (
+            f"Direct or curated-alias overlap: vendor {pe.get('vendor_name_raw') or pe.get('vendor_label') or ''} "
+            f"and donor {pe.get('donor_name_raw') or pe.get('donor_label') or ''}"
+        )
+    elif a.rule_id == RULE_LOCAL_CONTRACT_DONATION_TIMING:
+        pe = a.payload_extra or {}
+        badge = "Local contract / donation timing"
+        rule_line = (
+            f"Donation near award window: {pe.get('donor_name_raw') or pe.get('donor_label') or ''} "
+            f"vs vendor {pe.get('vendor_name_raw') or pe.get('vendor_label') or ''} "
+            f"({pe.get('timing_direction') or 'timing'})"
+        )
+    elif a.rule_id == RULE_LOCAL_VENDOR_CONCENTRATION:
+        pe = a.payload_extra or {}
+        n = int(pe.get("overlap_count") or 0)
+        badge = "Local vendor concentration"
+        rule_line = (
+            f"Top vendor and top donor totals overlap on {n} entities "
+            f"(procurement vs IDIS)"
+        )
+    elif a.rule_id == RULE_LOCAL_RELATED_ENTITY_DONOR:
+        pe = a.payload_extra or {}
+        d = pe.get("donor_name_raw") or pe.get("donor_label") or ""
+        v = pe.get("vendor_name_raw") or pe.get("vendor_label") or ""
+        rel = pe.get("indirect_match_label") or "documented related entity"
+        badge = "Related entity donor"
+        rule_line = (
+            f"Related entity donor — {d} ({rel}) linked to vendor {v}; "
+            f"not a direct same-entity donation."
+        )
     else:
         badge = "Cross-Case Donor"
         rule_line = (
@@ -3227,9 +4127,17 @@ def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
         window_phrase = f"{ws}–{we} ({a.window_days} days)"
     elif a.window_days is not None:
         window_phrase = f"{a.window_days} days"
+    el = getattr(a, "epistemic_level", "REPORTED")
+    ep_note = ""
+    if el == "VERIFIED":
+        ep_note = " Epistemic basis: verified official records."
+    elif el == "ALLEGED":
+        ep_note = " Epistemic basis: alleged / filed claims (not adjudicated)."
+    elif el == "CONTEXTUAL":
+        ep_note = " Epistemic basis: contextual / unverified discourse."
     row: dict[str, Any] = {
         "badge": badge,
-        "rule_line": rule_line,
+        "rule_line": rule_line + ep_note,
         "donor_entity": a.donor_entity,
         "matched_officials": a.matched_officials,
         "committee": a.committee or "",
@@ -3237,6 +4145,9 @@ def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
         "window_phrase": window_phrase,
         "disclaimer": a.disclaimer,
         "rule_id": a.rule_id,
+        "epistemic_level": el,
+        "requires_human_review": bool(getattr(a, "requires_human_review", False)),
+        "score": _pattern_alert_report_score(a),
     }
     if a.proportionality_context:
         row["proportionality_context"] = list(a.proportionality_context)

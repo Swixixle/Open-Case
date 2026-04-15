@@ -69,6 +69,61 @@ def test_fec_api_error_payload_returns_failure_not_clean(mock_fec_invalid_key_re
     assert response.found is False
 
 
+def test_fec_schedule_a_422_retries_without_two_year_transaction_period(monkeypatch):
+    """Some committees reject an explicit cycle; adapter drops two_year and retries once."""
+    monkeypatch.setenv("FEC_API_KEY", "DEMO_KEY")
+    ok_body = {
+        "results": [
+            {
+                "contribution_receipt_amount": 100,
+                "contribution_receipt_date": "2024-06-01",
+                "committee": {"name": "Friends of Example", "committee_type": "H"},
+                "contributor_name": "DONOR PAC",
+                "entity_type": "ORG",
+            }
+        ],
+        "pagination": {},
+    }
+    resp422 = _mock_schedule_response(422, {"errors": ["Invalid parameter"]})
+    resp200 = _mock_schedule_response(200, ok_body)
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(side_effect=[resp422, resp200])
+
+    with patch("adapters.fec.httpx.AsyncClient", return_value=mock_client):
+        response = asyncio.run(
+            FECAdapter().search("C00459255", "committee", two_year_transaction_period=2024)
+        )
+
+    assert response.found is True
+    assert len(response.results) == 1
+    assert mock_client.get.call_count == 2
+
+
+def test_fec_schedule_a_committee_422_after_retry_returns_gap_documented(monkeypatch):
+    """Persistent HTTP 422 (e.g. some principal committees) becomes gap_documented, not an error."""
+    monkeypatch.setenv("FEC_API_KEY", "DEMO_KEY")
+    resp422 = _mock_schedule_response(422, {"errors": ["Invalid parameter"]})
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(side_effect=[resp422, resp422])
+
+    with patch("adapters.fec.httpx.AsyncClient", return_value=mock_client):
+        response = asyncio.run(
+            FECAdapter().search("C00459255", "committee", two_year_transaction_period=2024)
+        )
+
+    assert response.found is True
+    assert response.error is None
+    assert len(response.results) == 1
+    row = response.results[0]
+    assert row.entry_type == "gap_documented"
+    assert row.raw_data.get("gap_reason") == "fec_schedule_a_http_422_committee"
+    assert mock_client.get.call_count == 2
+
+
 def test_fec_bad_env_key_surfaces_as_credential_failure(
     monkeypatch, mock_fec_invalid_key_response
 ):

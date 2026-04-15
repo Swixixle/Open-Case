@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,6 +18,7 @@ from engines.pattern_engine import (
     COMMITTEE_SWEEP_MAX_WINDOW_DAYS,
     FINGERPRINT_BLOOM_MIN_RELEVANCE,
     PATTERN_ENGINE_VERSION,
+    PatternAlert,
     RULE_COMMITTEE_SWEEP,
     RULE_DISBURSEMENT_LOOP,
     RULE_FINGERPRINT_BLOOM,
@@ -29,6 +31,7 @@ from engines.pattern_engine import (
     _is_individual_donor,
     classify_donor_sector,
     pattern_alert_to_payload,
+    pattern_alert_to_report_dict,
     proximity_to_vote_score_from_days,
     match_donor_to_lda,
     run_pattern_engine,
@@ -536,6 +539,7 @@ def test_full_case_payload_includes_pattern_alerts_array(test_engine) -> None:
     assert packed["payload"].get("pattern_alerts") == []
     assert packed["payload"].get("case_signals") == []
     assert "methodology_note" in packed["payload"]
+    assert "epistemic_distribution" in packed["payload"]
     db.close()
 
 
@@ -2475,4 +2479,48 @@ def test_refund_rows_are_not_ingested_from_fec_schedule_a() -> None:
             {"transaction_tp": "15Z", "contribution_receipt_amount": -88}
         )
         == "negative_amount"
+    )
+
+
+def test_pattern_alert_report_dict_includes_score() -> None:
+    fired = datetime.now(timezone.utc)
+    a = PatternAlert(
+        rule_id=RULE_SOFT_BUNDLE,
+        pattern_version="1",
+        donor_entity="D",
+        matched_officials=[],
+        matched_case_ids=[str(uuid.uuid4())],
+        committee="X",
+        window_days=7,
+        evidence_refs=[],
+        fired_at=fired,
+        proximity_to_vote_score=0.62,
+    )
+    row = pattern_alert_to_report_dict(a)
+    assert "score" in row
+    assert row["score"] == 0.62
+
+    b = replace(
+        a,
+        proximity_to_vote_score=None,
+        suspicion_score=0.41,
+    )
+    row_b = pattern_alert_to_report_dict(b)
+    assert row_b["score"] == 0.41
+
+    c = replace(b, proximity_to_vote_score=None, suspicion_score=None)
+    assert pattern_alert_to_report_dict(c)["score"] is None
+
+
+def test_readme_rule_count_matches_pattern_rule_ids() -> None:
+    import re
+    from pathlib import Path
+
+    from engines.pattern_engine import PATTERN_RULE_IDS
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    match = re.search(r"(\d+)\s+pattern rules", readme, re.IGNORECASE)
+    assert match, "README must contain a rule count like '17 pattern rules'"
+    assert int(match.group(1)) == len(PATTERN_RULE_IDS), (
+        f"README says {match.group(1)} rules but PATTERN_RULE_IDS has {len(PATTERN_RULE_IDS)}"
     )

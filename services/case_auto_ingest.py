@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
+from core.subject_taxonomy import subject_type_uses_fec_congress_pipeline
 from models import CaseFile, EvidenceEntry, SubjectProfile
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def latest_fec_evidence_entered_at(db: Session, case_id: UUID) -> datetime | Non
 
 
 def case_needs_fec_refresh(db: Session, case_id: UUID, case: CaseFile) -> bool:
-    if (case.subject_type or "").strip() != "public_official":
+    if not subject_type_uses_fec_congress_pipeline(case.subject_type):
         return False
     n = count_fec_financial_rows(db, case_id)
     if n == 0:
@@ -67,7 +68,7 @@ def build_investigate_request_for_case(db: Session, case_id: UUID) -> Any | None
     from routes.investigate import InvestigateRequest
 
     case = db.get(CaseFile, case_id)
-    if not case or (case.subject_type or "").strip() != "public_official":
+    if not case or not subject_type_uses_fec_congress_pipeline(case.subject_type):
         return None
     prof = db.scalar(select(SubjectProfile).where(SubjectProfile.case_file_id == case_id))
     handle = (case.created_by or "").strip() or "auto_ingest"

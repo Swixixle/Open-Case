@@ -1,6 +1,6 @@
 import { categoryLabel } from "./constants.js";
 
-const TIER_ORDER = { CRITICAL: 4, HIGH: 3, MODERATE: 2, LOW: 1 };
+const TIER_ORDER = { CRITICAL: 4, SIGNIFICANT: 3, HIGH: 3, MODERATE: 2, LOW: 1 };
 
 export function countTotalFindings(categories) {
   if (!categories || typeof categories !== "object") return 0;
@@ -24,16 +24,78 @@ export function concernTierFromDossier(data) {
   if (!Array.isArray(alerts) || !alerts.length) return "MODERATE";
   let best = "LOW";
   for (const a of alerts) {
-    const score = Number(a?.proximity_to_vote_score);
+    const score = Number(
+      a?.score ?? a?.proximity_to_vote_score ?? a?.suspicion_score
+    );
     let tier = "LOW";
     if (!Number.isNaN(score) && score >= 0.75) tier = "CRITICAL";
-    else if (!Number.isNaN(score) && score >= 0.5) tier = "HIGH";
+    else if (!Number.isNaN(score) && score >= 0.5) tier = "SIGNIFICANT";
     else if (!Number.isNaN(score) && score >= 0.25) tier = "MODERATE";
     else tier = "MODERATE";
     if ((TIER_ORDER[tier] || 0) > (TIER_ORDER[best] || 0)) best = tier;
   }
-  if (alerts.length >= 3 && best === "LOW") return "HIGH";
+  if (alerts.length >= 3 && best === "LOW") return "SIGNIFICANT";
   return best;
+}
+
+/** Derive concern tier from GET /cases/:id/report payload. */
+export function concernTierFromReport(report) {
+  const signals = report?.signals;
+  if (Array.isArray(signals) && signals.length) {
+    let max = 0;
+    for (const s of signals) {
+      const w = Number(s?.relevance_score ?? s?.weight ?? 0);
+      if (!Number.isNaN(w)) max = Math.max(max, w);
+    }
+    if (max >= 0.75) return "CRITICAL";
+    if (max >= 0.5) return "SIGNIFICANT";
+    if (max >= 0.25) return "MODERATE";
+  }
+  const alerts = report?.pattern_alerts;
+  if (Array.isArray(alerts) && alerts.length) {
+    let best = "LOW";
+    for (const a of alerts) {
+      const score = Number(a?.score ?? a?.proximity_to_vote_score);
+      let tier = "LOW";
+      if (!Number.isNaN(score) && score >= 0.75) tier = "CRITICAL";
+      else if (!Number.isNaN(score) && score >= 0.5) tier = "SIGNIFICANT";
+      else if (!Number.isNaN(score) && score >= 0.25) tier = "MODERATE";
+      else tier = "MODERATE";
+      if ((TIER_ORDER[tier] || 0) > (TIER_ORDER[best] || 0)) best = tier;
+    }
+    if (alerts.length >= 3 && best === "LOW") return "SIGNIFICANT";
+    if (best !== "LOW") return best;
+  }
+  if (Array.isArray(alerts) && alerts.length >= 4) return "SIGNIFICANT";
+  if (Array.isArray(alerts) && alerts.length >= 1) return "MODERATE";
+  return "MODERATE";
+}
+
+export function topPatternAlertScore(data) {
+  const alerts = data?.pattern_alerts;
+  if (!Array.isArray(alerts) || !alerts.length) return null;
+  let best = null;
+  for (const a of alerts) {
+    const s = Number(a?.score ?? a?.proximity_to_vote_score ?? a?.suspicion_score);
+    if (!Number.isNaN(s)) best = best == null ? s : Math.max(best, s);
+  }
+  return best;
+}
+
+/** Count epistemic levels on dossier pattern alerts + optional claim hints. */
+export function epistemicDistributionFromDossier(data) {
+  const dist = { VERIFIED: 0, REPORTED: 0, ALLEGED: 0, DISPUTED: 0, CONTEXTUAL: 0 };
+  const alerts = data?.pattern_alerts;
+  if (Array.isArray(alerts)) {
+    for (const a of alerts) {
+      const lev = (a?.epistemic_level || "REPORTED").toUpperCase();
+      if (lev in dist) dist[lev] += 1;
+      else dist.REPORTED += 1;
+    }
+  }
+  const total = Object.values(dist).reduce((s, n) => s + n, 0);
+  if (total > 0) return dist;
+  return null;
 }
 
 export function firstNarrativeParagraph(categories) {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from datetime import timedelta
@@ -11,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from adapters.congress_votes import DEFAULT_UA, _US_STATE_ABBR, _fetch_member_identity
-from models import SenatorCommittee, utc_now
+from models import CaseFile, EvidenceEntry, SenatorCommittee, SubjectProfile, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,82 @@ def _extract_senator_chunk(html: str, anchor_key: str) -> str:
     return html[start:hr_at]
 
 
+def _sanitize_last_for_anchor(last: str) -> str:
+    return re.sub(r"[^A-Za-z]", "", (last or "").strip())
+
+
+def _subject_anchor_parts_from_db(db: Session, bioguide_id: str) -> tuple[str, str] | None:
+    """Last name + state (2-letter) from subject profile / case when Congress.gov is unavailable."""
+    bg = bioguide_id.strip().upper()
+    prof = db.scalar(select(SubjectProfile).where(SubjectProfile.bioguide_id == bg))
+    if not prof:
+        return None
+    case = db.get(CaseFile, prof.case_file_id)
+    name_src = (prof.subject_name or (case.subject_name if case else "") or "").strip()
+    parts = name_src.split()
+    last = parts[-1] if parts else ""
+    st = (prof.state or "").strip().upper()
+    if len(st) != 2 and case:
+        jur = (case.jurisdiction or "").strip().upper()
+        if len(jur) == 2 and jur.isalpha():
+            st = jur
+    if len(st) != 2 or not last:
+        return None
+    return last, st[:2]
+
+
+def committees_from_fec_evidence_for_bioguide(
+    db: Session, bioguide_id: str
+) -> list[dict[str, str]]:
+    """
+    Recover principal committee names from ingested FEC Schedule A rows when
+    Senate.gov / Congress.gov assignment scraping is unavailable.
+    """
+    bg = bioguide_id.strip().upper()
+    stmt = (
+        select(EvidenceEntry.raw_data_json)
+        .join(SubjectProfile, SubjectProfile.case_file_id == EvidenceEntry.case_file_id)
+        .where(
+            SubjectProfile.bioguide_id == bg,
+            EvidenceEntry.entry_type == "financial_connection",
+            EvidenceEntry.source_name == "FEC",
+        )
+    )
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, str]] = []
+    for (raw_json,) in db.execute(stmt).all():
+        try:
+            raw = json.loads(raw_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        com = raw.get("committee")
+        if not isinstance(com, dict):
+            continue
+        cid = str(
+            com.get("committee_id") or com.get("id") or raw.get("committee_id") or ""
+        ).strip()
+        name = str(com.get("name") or "").strip()
+        if not name and not cid:
+            continue
+        if cid:
+            code = f"FEC-{cid}"
+        else:
+            h = hashlib.sha256(name.encode("utf-8")).hexdigest()[:10].upper()
+            code = f"FECN-{h}"
+        key = (code, name.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "committee_name": name or "Committee (FEC)",
+                "committee_code": code,
+                "bioguide_id": bg,
+            }
+        )
+    return out
+
+
 def _parse_committees_from_chunk(chunk: str) -> list[tuple[str, str]]:
     seen: set[tuple[str, str]] = set()
     out: list[tuple[str, str]] = []
@@ -63,6 +141,21 @@ async def _download_assignments_html(client: httpx.AsyncClient) -> str:
     return r.text
 
 
+def _assignments_from_html(html: str, anchor: str, bioguide_id: str) -> list[dict[str, str]]:
+    chunk = _extract_senator_chunk(html, anchor)
+    if not chunk:
+        logger.warning(
+            "[senate_committees] No assignment block for anchor=%s bioguide=%s",
+            anchor,
+            bioguide_id,
+        )
+        return []
+    rows = _parse_committees_from_chunk(chunk)
+    return [
+        {"committee_name": n, "committee_code": c, "bioguide_id": bioguide_id} for n, c in rows
+    ]
+
+
 async def fetch_committee_assignments_for_bioguide(
     bioguide_id: str,
 ) -> list[dict[str, str]]:
@@ -81,18 +174,26 @@ async def fetch_committee_assignments_for_bioguide(
             )
             return []
         anchor = _assignment_anchor_key(profile)
-        chunk = _extract_senator_chunk(html, anchor)
-        if not chunk:
-            logger.warning(
-                "[senate_committees] No assignment block for anchor=%s bioguide=%s",
-                anchor,
-                bioguide_id,
-            )
-            return []
-        rows = _parse_committees_from_chunk(chunk)
-        return [
-            {"committee_name": n, "committee_code": c, "bioguide_id": bioguide_id} for n, c in rows
-        ]
+        return _assignments_from_html(html, anchor, bioguide_id)
+
+
+async def fetch_committee_assignments_for_bioguide_fallback(
+    db: Session, bioguide_id: str
+) -> list[dict[str, str]]:
+    """
+    Same Senate.gov HTML as the primary path, but anchor = lastName + state from DB
+    when CONGRESS_API_KEY / Congress.gov member lookup is unavailable.
+    """
+    bg = bioguide_id.strip().upper()
+    parts = _subject_anchor_parts_from_db(db, bg)
+    if not parts:
+        return []
+    last, abbr = parts
+    anchor = f"{_sanitize_last_for_anchor(last)}{abbr}"
+    headers = {"User-Agent": DEFAULT_UA}
+    async with httpx.AsyncClient(timeout=45.0, headers=headers, follow_redirects=True) as client:
+        html = await _download_assignments_html(client)
+    return _assignments_from_html(html, anchor, bg)
 
 
 async def get_or_refresh_senator_committees(
@@ -121,7 +222,17 @@ async def get_or_refresh_senator_committees(
         fresh = await fetch_committee_assignments_for_bioguide(bg)
     except Exception as e:
         logger.warning("[senate_committees] refresh failed for %s: %s", bg, e)
-        return existing
+        fresh = []
+
+    if not fresh:
+        try:
+            fresh = await fetch_committee_assignments_for_bioguide_fallback(db, bg)
+        except Exception as e:
+            logger.warning("[senate_committees] fallback refresh failed for %s: %s", bg, e)
+            fresh = []
+
+    if not fresh:
+        fresh = committees_from_fec_evidence_for_bioguide(db, bg)
 
     if not fresh:
         return existing

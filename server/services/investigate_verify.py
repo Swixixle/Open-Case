@@ -72,7 +72,7 @@ def log_post_investigate_evidence_snapshot(
     )
     try:
         alerts = run_pattern_engine(db)
-        case_alerts = pattern_alerts_for_case(case_id, alerts)
+        case_alerts = pattern_alerts_for_case(case_id, alerts, include_unreviewed=True)
         rule_ids = sorted({a.get("rule_id", "") for a in case_alerts if a.get("rule_id")})
     except Exception:
         logger.exception(

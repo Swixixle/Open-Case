@@ -1,70 +1,188 @@
 # Open Case
 
-**Public records. Signed findings. No verdicts.**
+A cryptographically signed government accountability investigation engine.
 
-[open-case.onrender.com](https://open-case.onrender.com)
+Open Case cross-references public records — campaign finance, lobbying filings, legislative votes, judicial appointments, financial disclosures — to surface proximity patterns between money and decisions. Every finding is epistemically tagged, source-linked, and signed with an Ed25519 receipt.
 
----
-
-Open Case is an investigation pipeline for public officials. It links campaign finance records, Senate votes, lobbying filings, and regulatory data — then surfaces patterns a human would take weeks to find manually.
-
-It does not assert conclusions. It produces receipts.
+**Philosophy:** Receipts, not verdicts. This is a mirror of public records, not a verdict machine. No inference of guilt or wrongdoing is made or implied.
 
 ---
 
-## What it finds
+## Strongest live finding
 
-**Pattern engine** — five rules running across all cases:
+**Tom Cotton — SOFT_BUNDLE_V1 — score 0.921**
 
-- **SOFT_BUNDLE** — three or more donors to the same committee within seven days, scored against vote proximity and sector alignment
-- **SECTOR_CONVERGENCE** — industry money clustering around relevant votes
-- **GEO_MISMATCH** — out-of-state donor floods around specific legislative windows
-- **REVOLVING_DOOR** — donor entities tied to active LDA lobbying registrants
-- **BASELINE_ANOMALY** — donation spikes statistically extreme against a senator's own historical baseline, gated by temporal proximity to votes
-
-**Senator dossiers** — 20 senators fully researched via a six-category Perplexity pipeline:
-
-- Ethics complaints and investigations
-- Financial disclosures and conflict of interest
-- Donor vs vote record
-- Public statements vs voting record
-- Revolving door — staff who left for K Street
-- Recent news and scrutiny
-
-**Gap analysis** — plain English sentences derived from FEC data and vote records. "Received $X from Y industry on [date]. [N] days later voted [result] on [bill]."
-
-**Stock trade proximity** — Senate financial disclosure trades cross-referenced against committee hearing schedules. Flags trades within 30 days of a relevant hearing in the same sector.
-
-**Amendment fingerprint** — how often a senator votes in alignment with their top donor sectors on amendments, not just final passage votes.
-
-**Staff network** — senior staff cross-referenced against LDA lobbying disclosures. Flags when a former staffer lobbies for a company that is also a donor.
+FEC records document a cluster of financial services and defense sector donations to Cotton's principal committee on February 9–11, 2026, within the proximity window of a Senate vote on S.J.Res. 95. Score reflects donation timing, sector concentration, and committee jurisdiction alignment.
 
 ---
 
-## Everything is signed
+## What it does
 
-Every dossier receipt is Ed25519 signed. Verifiable at `/verify/:dossier_id`. Downloadable as JSON or PDF. Chain of custody from public record to signed artifact.
+1. Create a case for any public official — senator, judge, mayor, sheriff, zoning board member
+2. The investigation pipeline ingests public records from relevant sources
+3. The pattern engine scores proximity between financial relationships and public decisions
+4. Every finding is classified by epistemic level
+5. A cryptographically signed receipt is generated — shareable, verifiable, tamper-evident
 
 ---
 
-## What this is not
+## Epistemic levels
 
-Open Case does not prove intent. It does not assert coordination. It does not accuse anyone of anything.
+Every finding is tagged at ingest. Classification is source-driven, not sentiment-driven.
 
-Every alert includes: "This alert documents donor appearance across public records. It does not assert coordination, intent, or quid pro quo."
+| Level | Meaning |
+|-------|---------|
+| `VERIFIED` | Official record — court document, regulatory finding, government disclosure |
+| `REPORTED` | Credible named-source journalism or official statement |
+| `ALLEGED` | Formal complaint or legal allegation — not yet adjudicated |
+| `DISPUTED` | Formal rebuttal or contrary finding on record |
+| `CONTEXTUAL` | Unverified public discourse — hidden from public responses by default |
 
-Pattern scores are documented signals, not verdicts. The reader draws the conclusion.
+A court filing is VERIFIED as a document. The accusation inside it is ALLEGED until adjudicated. Historical records are never deleted — disputes update claim status without erasing the trail.
+
+---
+
+## Pattern engine
+
+The engine ships **17 pattern rules** (see `RULE_*` and `PATTERN_RULE_IDS` in `engines/pattern_engine.py`):
+
+| Rule | Signal |
+|------|--------|
+| `COMMITTEE_SWEEP_V1` | Donations from industries under direct committee oversight |
+| `FINGERPRINT_BLOOM_V1` | Cross-case donor fingerprints |
+| `SOFT_BUNDLE_V1` | Donor clustering around legislative events |
+| `SOFT_BUNDLE_V2` | Donor clustering (v2 weights: sector, baseline, hearings) |
+| `SECTOR_CONVERGENCE_V1` | Sector donation concentration vs committee jurisdiction |
+| `GEO_MISMATCH_V1` | Geographic donor anomalies |
+| `DISBURSEMENT_LOOP_V1` | PAC disbursement patterns |
+| `JOINT_FUNDRAISING_V1` | Joint fundraising committee signals |
+| `BASELINE_ANOMALY_V1` | Deviation from historical baseline |
+| `ALIGNMENT_ANOMALY_V1` | Vote/donor alignment anomalies |
+| `AMENDMENT_TELL_V1` | Amendment timing vs donor activity |
+| `HEARING_TESTIMONY_V1` | Testimony/donor overlap |
+| `REVOLVING_DOOR_V1` | LDA / employment transition overlap with donors |
+| `LOCAL_CONTRACTOR_DONOR_LOOP_V1` | Local procurement vendor ↔ donor (direct / curated alias) |
+| `LOCAL_CONTRACT_DONATION_TIMING_V1` | Donation timing vs contract award (local, award-only) |
+| `LOCAL_VENDOR_CONCENTRATION_V1` | Top vendor vs top donor overlap (local) |
+| `LOCAL_RELATED_ENTITY_DONOR_V1` | Curated related-entity donor vs vendor (local) |
+
+---
+
+## Subject coverage
+
+All branches and levels of American government:
+
+**Federal:** Senators, House members, President/VP, federal judges (SCOTUS through magistrate and bankruptcy), administrative law judges
+
+**State:** Governors, legislators, attorneys general, secretaries of state, treasurers, state judges
+
+**Local elected:** Mayors, city council, district attorneys, sheriffs, prosecutors, school boards, comptrollers
+
+**Local appointed:** Police commissioners and chiefs, zoning and planning boards, utility and water boards, transit authorities, port and airport authorities, parole boards, corrections commissioners, inspectors general, gaming and liquor commissions
 
 ---
 
 ## Data sources
 
-FEC Schedule A/B · Senate LIS XML roll call votes · Senate LDA lobbying filings · Congress.gov member data · Senate financial disclosures · Regulations.gov · GovInfo congressional hearings · USASpending federal awards · Indiana Campaign Finance
+**Implemented:**
+
+| Source | Coverage |
+|--------|----------|
+| FEC | Schedule A/B, historical cycles, JFC |
+| Congress.gov | Votes, amendments, committee assignments |
+| LDA | Lobbying filings |
+| CourtListener | Judicial opinions, dockets, financial disclosures |
+| FJC Biographical Database | Article III judge biographies and appointments |
+| USASpending | Federal contracts and grants |
+| GovInfo | Hearings, legislative documents |
+| Regulations.gov | Regulatory comments and filings |
+| Indiana Campaign Finance | State-level campaign records |
+
+**Planned:** PACER, eJudiciary disclosures, local campaign finance, city contracts, local news, bar complaints, FollowTheMoney, property records, use of force records, DOJ pattern and practice findings
 
 ---
 
-## Stack
+## Judicial pilot
 
-FastAPI · SQLAlchemy · PostgreSQL · Alembic · Ed25519 signing · Perplexity sonar-deep-research · React/Vite frontend · Render
+**Indianapolis (S.D. Indiana) + Chicago (N.D. Illinois)**
 
-Built by Alex Maksimovich / [Nikodemus Systems](https://swixixle.github.io)
+First diagnostic run on Judge James R. Sweeney II (S.D. Indiana, appointed 2017). FJC returned full biographical record: Naval Academy, Notre Dame Law, Marine Corps, Tinder clerkship, commission date 2018-09-13. CourtListener returned person ID and financial disclosure index. Pattern engine returned zero alerts — expected, no FEC or vote data available for judicial subjects under current adapters.
+
+---
+
+## Verified senator corpus
+
+Sullivan (R-AK) · Cotton (R-AR) · Ernst (R-IA) · Wyden (D-OR) · Crapo (R-ID) · Grassley (R-IA) · Cantwell (D-WA)
+
+---
+
+## Project structure
+
+```
+adapters/       FEC, CourtListener, FJC, LDA, Congress, USASpending, and more
+alembic/        Database migrations (14 phases)
+client/         React/Vite frontend
+core/           Subject taxonomy, credentials, admin gate
+data/           Source registry, entity aliases, industry maps
+engines/        Pattern engine, signal scorer, entity resolution, temporal proximity
+routes/         API endpoints
+scripts/        CI floor, epistemic classifier, calendar calibration, pilot seed
+services/       Dossier, report stream, epistemic classifier, human review
+tests/          245 passing
+main.py         FastAPI entry point
+models.py       SQLAlchemy models
+payloads.py     Receipt signing and sealing
+```
+
+---
+
+## API
+
+Case file CRUD, evidence, and snapshots use the `/cases` prefix; reports and the investigation pipeline use `/api/v1`.
+
+```
+POST   /cases                                      Create a case (Bearer)
+GET    /cases/{case_id}                            Case with evidence
+GET    /api/v1/cases                               List cases — filter by government_level, branch, subject_type, pilot
+POST   /api/v1/cases/{case_id}/investigate         Run investigation pipeline (Bearer)
+GET    /api/v1/cases/{case_id}/report              Signed report (JSON)
+GET    /api/v1/cases/{case_id}/report/view         HTML report
+GET    /api/v1/cases/{case_id}/report/pattern-events  SSE stream for async pattern alerts
+POST   /api/v1/findings/{finding_id}/dispute       Submit dispute or correction (Bearer)
+GET    /api/v1/subjects/search                     Search subject profiles
+GET    /api/v1/methodology                         Methodology and legal liability text
+```
+
+Admin routes require `X-Admin-Secret` (and API key issuance / cache flush require `ADMIN_SECRET` to be set).
+
+---
+
+## Setup
+
+```bash
+git clone https://github.com/Swixixle/Open-Case.git
+cd Open-Case
+pip install -r requirements.txt
+
+# Configure
+cp .env.example .env
+# Required: DATABASE_URL, FEC_API_KEY, CONGRESS_API_KEY
+# Required: ADMIN_SECRET (privileged HTTP routes)
+# Signing: OPEN_CASE_PRIVATE_KEY / OPEN_CASE_PUBLIC_KEY (Ed25519; auto-generated on first boot if missing — set explicitly in production)
+# Optional: COURTLISTENER_API_KEY, PERPLEXITY_API_KEY
+
+# Database
+alembic upgrade head
+
+# Run
+uvicorn main:app --reload
+
+# Test
+PYTHONPATH=. pytest
+```
+
+---
+
+## License
+
+See LICENSE. All findings link directly to primary sources. This system documents public records and labels them by evidentiary status. No inference of guilt or wrongdoing is made or implied.

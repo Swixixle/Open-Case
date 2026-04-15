@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
 export default function BottomBar({ variant = "home", onShareReceipt }) {
-  if (variant === "senator") {
+  if (variant === "senator" || variant === "official") {
     return (
       <nav className="oc-bottom-bar" aria-label="Quick actions">
         <Link to="/">← BACK TO DIRECTORY</Link>

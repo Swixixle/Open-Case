@@ -295,12 +295,16 @@
         <p class="footnote">No timeline entries.</p>
       {% endif %}
     </section>
-    {% if report.pattern_alerts %}
-    <section>
+    <section id="pattern-alerts-section">
       <h2>Cross-Official Patterns</h2>
+      {% if report.pattern_alerts_refresh_pending %}
+      <p id="pattern-alerts-status" class="footnote" style="font-style:italic;color:var(--accent);">Analyzing records… pattern alerts update when FEC ingestion finishes (this page listens for updates).</p>
+      {% endif %}
+      {% if report.pattern_alerts %}
       <p class="footnote">Pattern alerts are read from the donor fingerprint ledger across investigations. They are separate from per-signal relevance and do not change weights.</p>
+      <div id="pattern-alerts-list">
       {% for p in report.pattern_alerts %}
-      <div class="signal" style="margin-top:0.75rem;">
+      <div class="signal pattern-alert-card" style="margin-top:0.75rem;">
         <div class="badge-row" style="margin-bottom:0.35rem;">
           <span class="badge">{{ p.badge }}</span>
           <strong style="font-size:1rem;margin-left:0.25rem;">{{ p.donor_entity }}</strong>
@@ -314,7 +318,63 @@
         {{ pattern_record_context(p, loop.index0) }}
       </div>
       {% endfor %}
+      </div>
+      {% else %}
+      <div id="pattern-alerts-list">
+        {% if not report.pattern_alerts_refresh_pending %}
+        <p class="footnote">No pattern alerts for this case yet.</p>
+        {% endif %}
+      </div>
+      {% endif %}
     </section>
+    {% if report.pattern_alerts_refresh_pending and report.pattern_alerts_stream %}
+    <script>
+    (function () {
+      var streamPath = {{ report.pattern_alerts_stream.path | tojson }};
+      var statusEl = document.getElementById("pattern-alerts-status");
+      var listEl = document.getElementById("pattern-alerts-list");
+      var es = new EventSource(streamPath);
+      function esc(s) {
+        if (!s) return "";
+        var d = document.createElement("div");
+        d.textContent = s;
+        return d.innerHTML;
+      }
+      function renderPatternAlerts(rows) {
+        if (!listEl) return;
+        if (!rows || !rows.length) {
+          listEl.innerHTML = '<p class="footnote">No pattern alerts for this case.</p>';
+          return;
+        }
+        var intro = '<p class="footnote">Pattern alerts are read from the donor fingerprint ledger across investigations. They are separate from per-signal relevance and do not change weights.</p>';
+        var blocks = rows.map(function (p) {
+          var win = p.window_phrase ? '<p class="footnote" style="margin:0.35rem 0;"><strong>Window:</strong> ' + esc(p.window_phrase) + '</p>' : '';
+          var officials = (p.matched_officials || []).join(", ");
+          return '<div class="signal pattern-alert-card" style="margin-top:0.75rem;">' +
+            '<div class="badge-row" style="margin-bottom:0.35rem;"><span class="badge">' + esc(p.badge) + '</span>' +
+            '<strong style="font-size:1rem;margin-left:0.25rem;">' + esc(p.donor_entity) + '</strong></div>' +
+            '<p class="footnote" style="margin:0.35rem 0;"><strong>Rule:</strong> ' + esc(p.rule_line) + '</p>' +
+            '<p class="footnote" style="margin:0.35rem 0;"><strong>Officials:</strong> ' + esc(officials) + '</p>' +
+            win +
+            '<p class="footnote" style="margin-top:0.65rem;font-style:italic;color:var(--muted);">' + esc(p.disclaimer) + '</p></div>';
+        }).join("");
+        listEl.innerHTML = intro + blocks;
+      }
+      es.onmessage = function (ev) {
+        try {
+          var d = JSON.parse(ev.data);
+          if (d.type === "pattern_alerts") {
+            if (statusEl) { statusEl.textContent = ""; }
+            renderPatternAlerts(d.pattern_alerts || []);
+            es.close();
+          } else if (d.type === "error" && statusEl) {
+            statusEl.textContent = "Pattern analysis failed — refresh the page to retry.";
+            es.close();
+          }
+        } catch (err) {}
+      };
+    })();
+    </script>
     {% endif %}
     <section>
       <h2>Sources checked</h2>

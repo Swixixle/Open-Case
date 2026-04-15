@@ -3,9 +3,18 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
+
+from core.subject_name_match import subject_name_match_score
+from database import get_db
+from models import CaseFile, SubjectProfile
 
 router = APIRouter(prefix="/api/v1/subjects", tags=["subjects"])
+
+# Drop weak matches so the dropdown is not filled with unrelated officials.
+MIN_SUBJECT_SEARCH_MATCH = 0.40
 
 INDIANA_OFFICIALS: list[dict[str, Any]] = [
     {
@@ -60,26 +69,180 @@ _SUBJECT_SEED: dict[str, dict[str, Any]] = {
 }
 
 
+def _database_subject_matches(
+    db: Session,
+    name: str,
+    subject_type: str | None,
+    government_level: str | None,
+    branch: str | None,
+) -> list[dict[str, Any]]:
+    """Match subjects with substring + short-prefix recall; score and sort by match quality."""
+    q = name.strip()
+
+    conds: list[Any] = [CaseFile.subject_name.ilike(f"%{q}%")]
+    if len(q) >= 3:
+        conds.append(CaseFile.subject_name.ilike(f"%{q[:3]}%"))
+
+    stmt = select(SubjectProfile, CaseFile).join(
+        CaseFile, CaseFile.id == SubjectProfile.case_file_id
+    )
+    stmt = stmt.where(or_(*conds))
+    if subject_type:
+        stmt = stmt.where(SubjectProfile.subject_type == subject_type.strip())
+    if government_level:
+        stmt = stmt.where(SubjectProfile.government_level == government_level.strip())
+    if branch:
+        stmt = stmt.where(SubjectProfile.branch == branch.strip())
+    stmt = stmt.limit(150)
+
+    out: list[dict[str, Any]] = []
+    for prof, case in db.execute(stmt).all():
+        display = case.subject_name or ""
+        ms = subject_name_match_score(q, display)
+        if ms < MIN_SUBJECT_SEARCH_MATCH:
+            continue
+        out.append(
+            {
+                "case_id": str(case.id),
+                "subject_name": display,
+                "subject_type": prof.subject_type,
+                "slug": case.slug,
+                "bioguide_id": prof.bioguide_id,
+                "government_level": prof.government_level,
+                "branch": prof.branch,
+                "historical_depth": prof.historical_depth,
+                "match_score": round(ms, 4),
+            }
+        )
+    out.sort(key=lambda r: -r["match_score"])
+    return out[:25]
+
+
+def _candidate_subject_type(office: str) -> str:
+    o = (office or "").lower()
+    if o == "house":
+        return "house_member"
+    return "senator"
+
+
+def _merge_ranked(
+    database_matches: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Dedupe by case_id (preferred) or bioguide_id; keep best match_score."""
+
+    def dedupe_key(row: dict[str, Any]) -> tuple[str, str]:
+        cid = (row.get("case_id") or "").strip()
+        if cid:
+            return ("case", cid)
+        bid = (row.get("bioguide_id") or "").strip().upper()
+        if bid:
+            return ("bio", bid)
+        return ("name", (row.get("subject_name") or row.get("name") or "").lower())
+
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in database_matches:
+        k = dedupe_key(row)
+        prev = best.get(k)
+        mapped = {
+            "case_id": row.get("case_id") or None,
+            "bioguide_id": row.get("bioguide_id") or "",
+            "name": row["subject_name"],
+            "subject_type": row.get("subject_type") or "public_official",
+            "match_score": float(row.get("match_score") or 0.0),
+            "source": "database",
+            "slug": row.get("slug"),
+            "government_level": row.get("government_level"),
+            "branch": row.get("branch"),
+        }
+        if prev is None or mapped["match_score"] > float(prev.get("match_score") or 0.0):
+            best[k] = mapped
+
+    for row in candidates:
+        k = dedupe_key(row)
+        prev = best.get(k)
+        entry = {
+            "case_id": row.get("case_id") or None,
+            "bioguide_id": row.get("bioguide_id") or "",
+            "name": row.get("name") or row.get("subject_name") or "",
+            "subject_type": row.get("subject_type")
+            or _candidate_subject_type(str(row.get("office") or "")),
+            "match_score": float(row.get("match_score") or 0.0),
+            "source": row.get("source", "candidate"),
+            "state": row.get("state"),
+            "party": row.get("party"),
+        }
+        if prev is None or entry["match_score"] > float(prev.get("match_score") or 0.0):
+            best[k] = entry
+
+    merged = list(best.values())
+    merged.sort(key=lambda r: -float(r.get("match_score") or 0.0))
+    return merged[:limit]
+
+
 @router.get("/search")
 async def search_subjects(
     name: str = Query(..., min_length=1),
     state: str | None = None,
+    subject_type: str | None = None,
+    government_level: str | None = None,
+    branch: str | None = None,
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    name_lower = name.lower().strip()
+    q = name.strip()
     state_u = state.upper().strip() if state else None
 
-    matches = [
-        o
-        for o in INDIANA_OFFICIALS
-        if name_lower in o["name"].lower()
-        and (state_u is None or o["state"].upper() == state_u)
-    ]
-    if matches:
+    database_matches = _database_subject_matches(
+        db, name, subject_type, government_level, branch
+    )
+
+    if subject_type or government_level or branch:
+        ranked = _merge_ranked(database_matches, [], limit=25)
+        return {
+            "query": name,
+            "state_filter": state,
+            "subject_type": subject_type,
+            "government_level": government_level,
+            "branch": branch,
+            "source": "database",
+            "database_matches": database_matches,
+            "candidates": [],
+            "results": ranked,
+            "instruction": (
+                "Review database_matches before creating a duplicate case. "
+                "Use POST /api/v1/cases to open a new investigation when appropriate."
+            ),
+        }
+
+    candidates_scored: list[dict[str, Any]] = []
+    for o in INDIANA_OFFICIALS:
+        if state_u is not None and o["state"].upper() != state_u:
+            continue
+        ms = subject_name_match_score(q, o["name"])
+        if ms < MIN_SUBJECT_SEARCH_MATCH:
+            continue
+        candidates_scored.append(
+            {
+                **o,
+                "subject_type": _candidate_subject_type(o.get("office", "")),
+                "match_score": round(ms, 4),
+                "source": "hardcoded_indiana",
+            }
+        )
+    candidates_scored.sort(key=lambda r: -r["match_score"])
+
+    if candidates_scored:
+        ranked = _merge_ranked(database_matches, candidates_scored[:12], limit=25)
         return {
             "query": name,
             "state_filter": state,
             "source": "hardcoded_indiana",
-            "candidates": matches,
+            "database_matches": database_matches,
+            "candidates": candidates_scored[:12],
+            "results": ranked,
             "instruction": (
                 "Pass bioguide_id and optional fec_committee on POST "
                 "/api/v1/cases/{id}/investigate."
@@ -95,7 +258,7 @@ async def search_subjects(
                 "api_key": api_key,
                 "format": "json",
                 "query": name,
-                "limit": 5,
+                "limit": 8,
             }
             if state_u:
                 params["stateCode"] = state_u
@@ -112,7 +275,7 @@ async def search_subjects(
                 members = inner if isinstance(inner, list) else [inner]
 
             api_candidates: list[dict[str, Any]] = []
-            for member in members[:5]:
+            for member in members:
                 if not isinstance(member, dict):
                     continue
                 chamber = ""
@@ -123,25 +286,34 @@ async def search_subjects(
                     if tlist:
                         last = tlist[-1] if isinstance(tlist[-1], dict) else {}
                         chamber = str(last.get("chamber") or "").lower()
+                mname = member.get("name") or member.get("directOrderName") or ""
+                ms = subject_name_match_score(q, mname)
+                if ms < MIN_SUBJECT_SEARCH_MATCH:
+                    continue
                 api_candidates.append(
                     {
-                        "name": member.get("name")
-                        or member.get("directOrderName")
-                        or "",
+                        "name": mname,
                         "bioguide_id": member.get("bioguideId")
                         or member.get("bioguide_id"),
                         "state": member.get("state") or member.get("stateCode"),
                         "office": chamber,
                         "party": member.get("partyName") or member.get("party") or "",
                         "notes": "From Congress.gov API — verify before use",
+                        "subject_type": _candidate_subject_type(chamber),
+                        "match_score": round(ms, 4),
+                        "source": "congress_gov_api",
                     }
                 )
+            api_candidates.sort(key=lambda r: -r["match_score"])
 
+            ranked = _merge_ranked(database_matches, api_candidates, limit=25)
             return {
                 "query": name,
                 "state_filter": state,
                 "source": "congress_gov_api",
+                "database_matches": database_matches,
                 "candidates": api_candidates,
+                "results": ranked,
                 "instruction": (
                     "Confirm the correct candidate before using the bioguide_id "
                     "on investigate."
@@ -150,11 +322,14 @@ async def search_subjects(
         except Exception:
             pass
 
+    ranked = _merge_ranked(database_matches, [], limit=25)
     return {
         "query": name,
         "state_filter": state,
         "source": "none",
+        "database_matches": database_matches,
         "candidates": [],
+        "results": ranked,
         "instruction": (
             "No matches found. Try a different spelling or look up the bioguide_id "
             "at https://bioguide.congress.gov"

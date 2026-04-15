@@ -50,6 +50,10 @@ class CaseFile(Base):
     last_enriched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    government_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    branch: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pilot_cohort: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    summary_epistemic_level: Mapped[str] = mapped_column(String(32), default="REPORTED")
 
     evidence_entries: Mapped[list["EvidenceEntry"]] = relationship(
         "EvidenceEntry",
@@ -95,8 +99,49 @@ class EvidenceEntry(Base):
     jurisdictional_match: Mapped[bool] = mapped_column(Boolean, default=False)
     matched_committees: Mapped[str] = mapped_column(Text, default="[]")
     donor_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    epistemic_level: Mapped[str] = mapped_column(String(32), default="REPORTED")
+    requires_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    subject_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("subject_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_type: Mapped[str] = mapped_column(String(64), default="other")
+    source_title: Mapped[str] = mapped_column(String(1024), default="")
+    source_publisher: Mapped[str] = mapped_column(String(512), default="")
+    source_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_discovered: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_text: Mapped[str] = mapped_column(Text, default="")
+    claim_summary: Mapped[str] = mapped_column(Text, default="")
+    claim_status: Mapped[str] = mapped_column(String(32), default="active")
+    review_status: Mapped[str] = mapped_column(String(32), default="pending")
+    review_notes: Mapped[str] = mapped_column(Text, default="")
+    is_publicly_renderable: Mapped[bool] = mapped_column(Boolean, default=False)
+    display_label: Mapped[str] = mapped_column(String(256), default="")
+    source_excerpt: Mapped[str] = mapped_column(Text, default="")
+    source_hash: Mapped[str] = mapped_column(String(128), default="")
+    linked_entities_json: Mapped[str] = mapped_column(Text, default="[]")
+    jurisdiction: Mapped[str] = mapped_column(String(512), default="")
+    case_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    court: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ingest_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    receipt_id: Mapped[str] = mapped_column(String(512), default="")
+    classification_basis: Mapped[str] = mapped_column(String(64), default="")
+    corroboration_count: Mapped[int] = mapped_column(Integer, default=0)
+    contradiction_count: Mapped[int] = mapped_column(Integer, default=0)
 
     case_file: Mapped["CaseFile"] = relationship("CaseFile", back_populates="evidence_entries")
+    disputes: Mapped[list["DisputeRecord"]] = relationship(
+        "DisputeRecord",
+        back_populates="finding",
+    )
+    audit_events: Mapped[list["FindingAuditLog"]] = relationship(
+        "FindingAuditLog",
+        back_populates="finding",
+    )
 
 
 class Investigator(Base):
@@ -221,6 +266,8 @@ class Signal(Base):
     weight_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
     new_top_signal: Mapped[bool] = mapped_column(Boolean, default=False)
     first_appearance: Mapped[bool] = mapped_column(Boolean, default=False)
+    epistemic_level: Mapped[str] = mapped_column(String(32), default="REPORTED")
+    requires_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class SignalAuditLog(Base):
@@ -270,6 +317,58 @@ class SubjectProfile(Base):
     office: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    government_level: Mapped[str] = mapped_column(String(32), default="federal")
+    branch: Mapped[str] = mapped_column(String(32), default="legislative")
+    historical_depth: Mapped[str] = mapped_column(String(32), default="career")
+
+
+class DisputeRecord(Base):
+    """Formal dispute / correction / takedown request tied to a finding (evidence entry)."""
+
+    __tablename__ = "dispute_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evidence_entries.id", ondelete="CASCADE"),
+        index=True,
+    )
+    subject_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("subject_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    submitted_by: Mapped[str] = mapped_column(String(64))
+    submission_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    dispute_type: Mapped[str] = mapped_column(String(64))
+    dispute_text: Mapped[str] = mapped_column(Text)
+    supporting_source_url: Mapped[str] = mapped_column(Text, default="")
+    supporting_document_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolution_status: Mapped[str] = mapped_column(String(32), default="pending")
+    resolution_notes: Mapped[str] = mapped_column(Text, default="")
+    resolution_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    finding: Mapped["EvidenceEntry"] = relationship("EvidenceEntry", back_populates="disputes")
+
+
+class FindingAuditLog(Base):
+    """Audit trail for classification, render decisions, and disputes."""
+
+    __tablename__ = "finding_audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    finding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evidence_entries.id", ondelete="CASCADE"),
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(64))
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    finding: Mapped["EvidenceEntry"] = relationship("EvidenceEntry", back_populates="audit_events")
 
 
 class PoliticalEvent(Base):
@@ -383,6 +482,8 @@ class PatternAlertRecord(Base):
     fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     diagnostics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    epistemic_level: Mapped[str] = mapped_column(String(32), default="REPORTED")
+    requires_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class SenatorDossier(Base):

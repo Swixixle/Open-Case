@@ -1,5 +1,5 @@
 """
-API key issuance (unauthenticated).
+API key issuance — requires X-Admin-Secret (ADMIN_SECRET env).
 
 POST /api/v1/auth/keys?handle=...
 Generates open_case_<hex>, stores SHA-256 only, returns plaintext once.
@@ -9,11 +9,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from auth import generate_raw_key, hash_key
+from core.admin_gate import require_admin_http
 from database import get_db
 from models import Investigator
 
@@ -24,7 +25,9 @@ router = APIRouter()
 def generate_api_key(
     handle: str = Query(..., description="Investigator handle to generate key for"),
     db: Session = Depends(get_db),
+    x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> dict[str, str]:
+    require_admin_http(x_admin_secret)
     investigator = db.scalar(select(Investigator).where(Investigator.handle == handle))
     if not investigator:
         investigator = Investigator(handle=handle, public_key="")

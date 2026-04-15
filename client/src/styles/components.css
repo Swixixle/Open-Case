@@ -387,6 +387,45 @@
   padding: 1.5rem 1.75rem 3rem;
 }
 
+/* Local case: fixture / live mix (informational, not a warning). */
+.oc-data-status-banner {
+  margin: 0 0 1.25rem;
+  padding: 0.85rem 1rem 0.95rem;
+  border-radius: 4px;
+  border: 1px solid rgba(120, 165, 190, 0.35);
+  border-left: 3px solid rgba(100, 170, 210, 0.75);
+  background: linear-gradient(
+    135deg,
+    rgba(45, 58, 72, 0.65) 0%,
+    rgba(32, 40, 52, 0.85) 100%
+  );
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+
+.oc-data-status-banner__title {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: rgba(180, 210, 228, 0.95);
+  margin: 0 0 0.55rem;
+  font-weight: 600;
+}
+
+.oc-data-status-banner__body {
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.oc-data-status-banner__body p {
+  margin: 0 0 0.5rem;
+}
+
+.oc-data-status-banner__body p:last-child {
+  margin-bottom: 0;
+}
+
 @media (max-width: 900px) {
   .oc-dossier-shell {
     flex-direction: column;
@@ -695,6 +734,85 @@ a.oc-btn-sidebar {
 .oc-accordion-body {
   padding: 0 1rem 1rem;
   border-top: 1px solid var(--border);
+}
+
+.oc-entity-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.oc-entity-block {
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  margin-top: 0.35rem;
+}
+
+.oc-entity-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.55rem 0.75rem;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+}
+
+.oc-entity-name {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+}
+
+.oc-entity-count {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.oc-entity-chevron {
+  font-size: 0.55rem;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.oc-entity-body {
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+
+.oc-entity-sources {
+  margin-bottom: 0.65rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.oc-entity-sources-label {
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.oc-entity-sources-list {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.oc-entity-sources-list a {
+  color: var(--accent-blue);
+}
+
+.oc-claim-card--nested {
+  margin-top: 0.5rem;
 }
 
 .oc-claim-card {

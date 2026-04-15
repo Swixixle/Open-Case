@@ -7,9 +7,10 @@ calendar so detectors work before seeding (tests, fresh DBs).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -302,11 +303,68 @@ def _applies_to_state(span: _CalSpan, filter_state: str | None) -> bool:
     return span.state_code == filter_state
 
 
+def _legislative_context_spans(
+    committee_codes: Sequence[str] | None,
+    chair_committee_codes: Sequence[str] | None,
+) -> list[_CalSpan]:
+    """
+    Approximate Senate session / chair workload windows when we know committee
+    assignments (from Senate.gov, or FEC principal-committee metadata as fallback).
+    Only applied when committee_codes is non-empty so unknown members keep prior behavior.
+    """
+    codes = [str(c).strip().upper() for c in (committee_codes or []) if c and str(c).strip()]
+    if not codes:
+        return []
+    chairs = {
+        str(c).strip().upper() for c in (chair_committee_codes or []) if c and str(c).strip()
+    }
+    out: list[_CalSpan] = []
+    for year in range(2022, 2028):
+        for sm, sd, em, ed, base_lbl, disc, et in (
+            (2, 1, 6, 30, "Feb–Jun (approx.)", 0.90, "LEGISLATIVE_SESSION"),
+            (9, 1, 12, 15, "Sep–mid-Dec (approx.)", 0.90, "LEGISLATIVE_SESSION"),
+        ):
+            eff_s = date(year, sm, sd)
+            eff_e = date(year, em, ed)
+            out.append(
+                _CalSpan(
+                    discount_factor=disc,
+                    event_type=et,
+                    event_name=f"{year} Senate legislative calendar — {base_lbl}",
+                    state_code=None,
+                    eff_start=eff_s,
+                    eff_end=eff_e,
+                )
+            )
+    if chairs:
+        for year in range(2022, 2028):
+            for sm, sd, em, ed, base_lbl in (
+                (2, 1, 6, 30, "committee chair workload (approx.)"),
+                (9, 1, 12, 15, "committee chair workload (approx.)"),
+            ):
+                eff_s = date(year, sm, sd)
+                eff_e = date(year, em, ed)
+                out.append(
+                    _CalSpan(
+                        discount_factor=0.78,
+                        event_type="COMMITTEE_CHAIR_SESSION",
+                        event_name=f"{year} Senate — {base_lbl}",
+                        state_code=None,
+                        eff_start=eff_s,
+                        eff_end=eff_e,
+                    )
+                )
+    return out
+
+
 def get_calendar_discount(
     db: Session,
     window_start: date,
     window_end: date,
     state_code: str | None = None,
+    *,
+    committee_codes: Sequence[str] | None = None,
+    chair_committee_codes: Sequence[str] | None = None,
 ) -> tuple[float, str | None, str | None]:
     """
     Strongest (lowest) discount_factor for any political event overlapping
@@ -323,7 +381,18 @@ def get_calendar_discount(
     best_type: str | None = None
     best_name: str | None = None
 
-    for span in _active_spans(db):
+    spans = list(_active_spans(db))
+    # Calibration / A-B: set OPEN_CASE_DISABLE_LEGISLATIVE_CALENDAR_SPANS=1 to drop
+    # chair/member legislative spans only (FEC + election embedded calendar unchanged).
+    _no_leg = os.environ.get("OPEN_CASE_DISABLE_LEGISLATIVE_CALENDAR_SPANS", "").strip().lower()
+    if _no_leg not in ("1", "true", "yes", "on"):
+        spans.extend(
+            _legislative_context_spans(
+                list(committee_codes) if committee_codes is not None else None,
+                list(chair_committee_codes) if chair_committee_codes is not None else None,
+            )
+        )
+    for span in spans:
         if not _applies_to_state(span, st):
             continue
         if not (window_end >= span.eff_start and window_start <= span.eff_end):

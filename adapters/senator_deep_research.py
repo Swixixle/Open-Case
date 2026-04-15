@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from adapters.cache import get_cached_raw_json, store_cached_raw_json
+from services.dossier_claim_dedup import dedupe_merge_claims
 from services.enrichment_service import validate_narrative
 from utils.http_retry import http_request_with_retry
 
@@ -185,6 +186,9 @@ def fetch_senator_deep_research_category(
     if cached is not None and isinstance(cached, dict):
         out = dict(cached)
         out["from_cache"] = True
+        cl = out.get("claims")
+        if isinstance(cl, list):
+            out["claims"] = dedupe_merge_claims(cl, threshold=0.85)
         return out
 
     api_key = (os.environ.get("PERPLEXITY_API_KEY") or "").strip()
@@ -237,6 +241,8 @@ def fetch_senator_deep_research_category(
             row["_query"] = query
             row["_category"] = cat
             phase_1_claims.append(row)
+
+    phase_1_claims = dedupe_merge_claims(phase_1_claims, threshold=0.85)
 
     narrative = ""
     if phase_1_claims:

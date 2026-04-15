@@ -1,0 +1,2667 @@
+{
+  "senator": {
+    "primary": [
+      {
+        "id": "fec",
+        "status": "implemented"
+      },
+      {
+        "id": "congress",
+        "status": "implemented"
+      },
+      {
+        "id": "lda",
+        "status": "implemented"
+      },
+      {
+        "id": "regulations",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo_hearings",
+        "status": "implemented"
+      },
+      {
+        "id": "congress_amendments",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_jfc",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_schedule_b",
+        "status": "implemented"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "opensecrets",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "fec_historical",
+        "status": "implemented"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "house_member": {
+    "primary": [
+      {
+        "id": "fec",
+        "status": "implemented"
+      },
+      {
+        "id": "congress",
+        "status": "implemented"
+      },
+      {
+        "id": "lda",
+        "status": "implemented"
+      },
+      {
+        "id": "regulations",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo_hearings",
+        "status": "implemented"
+      },
+      {
+        "id": "congress_amendments",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_jfc",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_schedule_b",
+        "status": "implemented"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "opensecrets",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "fec_historical",
+        "status": "implemented"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "executive": {
+    "primary": [
+      {
+        "id": "fec",
+        "status": "implemented"
+      },
+      {
+        "id": "usaspending",
+        "status": "implemented"
+      },
+      {
+        "id": "congress",
+        "status": "implemented"
+      },
+      {
+        "id": "lda",
+        "status": "implemented"
+      },
+      {
+        "id": "regulations",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo_hearings",
+        "status": "implemented"
+      },
+      {
+        "id": "congress_amendments",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_jfc",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_schedule_b",
+        "status": "implemented"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "opensecrets",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "fec_historical",
+        "status": "implemented"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      },
+      {
+        "id": "prior_employment",
+        "status": "planned"
+      }
+    ]
+  },
+  "vp": {
+    "primary": [
+      {
+        "id": "fec",
+        "status": "implemented"
+      },
+      {
+        "id": "usaspending",
+        "status": "implemented"
+      },
+      {
+        "id": "congress",
+        "status": "implemented"
+      },
+      {
+        "id": "lda",
+        "status": "implemented"
+      },
+      {
+        "id": "regulations",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo_hearings",
+        "status": "implemented"
+      },
+      {
+        "id": "congress_amendments",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_jfc",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_schedule_b",
+        "status": "implemented"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "opensecrets",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "fec_historical",
+        "status": "implemented"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      },
+      {
+        "id": "prior_employment",
+        "status": "planned"
+      }
+    ]
+  },
+  "federal_judge_scotus": {
+    "primary": [
+      {
+        "id": "fjc_biographical",
+        "status": "implemented"
+      },
+      {
+        "id": "courtlistener",
+        "status": "implemented"
+      },
+      {
+        "id": "free_law_project_judge_db",
+        "status": "planned"
+      },
+      {
+        "id": "pacer",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_disclosure",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      },
+      {
+        "id": "senate_confirmation",
+        "status": "planned"
+      }
+    ],
+    "judicial": [
+      {
+        "id": "reversal_rate",
+        "status": "planned"
+      },
+      {
+        "id": "recusal_history",
+        "status": "planned"
+      },
+      {
+        "id": "sanctions_issued",
+        "status": "planned"
+      },
+      {
+        "id": "courtlistener_opinions",
+        "status": "planned"
+      },
+      {
+        "id": "fjc_reversal_stats",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_ptrs",
+        "status": "planned"
+      }
+    ],
+    "local": [],
+    "historical": [
+      {
+        "id": "law_school_records",
+        "status": "planned"
+      },
+      {
+        "id": "bar_admission",
+        "status": "planned"
+      },
+      {
+        "id": "pre_bench_career",
+        "status": "planned"
+      }
+    ]
+  },
+  "federal_judge_circuit": {
+    "primary": [
+      {
+        "id": "fjc_biographical",
+        "status": "implemented"
+      },
+      {
+        "id": "courtlistener",
+        "status": "implemented"
+      },
+      {
+        "id": "free_law_project_judge_db",
+        "status": "planned"
+      },
+      {
+        "id": "pacer",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_disclosure",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      },
+      {
+        "id": "senate_confirmation",
+        "status": "planned"
+      }
+    ],
+    "judicial": [
+      {
+        "id": "reversal_rate",
+        "status": "planned"
+      },
+      {
+        "id": "recusal_history",
+        "status": "planned"
+      },
+      {
+        "id": "sanctions_issued",
+        "status": "planned"
+      },
+      {
+        "id": "courtlistener_opinions",
+        "status": "planned"
+      },
+      {
+        "id": "fjc_reversal_stats",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_ptrs",
+        "status": "planned"
+      }
+    ],
+    "local": [],
+    "historical": [
+      {
+        "id": "law_school_records",
+        "status": "planned"
+      },
+      {
+        "id": "bar_admission",
+        "status": "planned"
+      },
+      {
+        "id": "pre_bench_career",
+        "status": "planned"
+      }
+    ]
+  },
+  "federal_judge_district": {
+    "primary": [
+      {
+        "id": "fjc_biographical",
+        "status": "implemented"
+      },
+      {
+        "id": "courtlistener",
+        "status": "implemented"
+      },
+      {
+        "id": "free_law_project_judge_db",
+        "status": "planned"
+      },
+      {
+        "id": "pacer",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_disclosure",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      },
+      {
+        "id": "senate_confirmation",
+        "status": "planned"
+      }
+    ],
+    "judicial": [
+      {
+        "id": "reversal_rate",
+        "status": "planned"
+      },
+      {
+        "id": "recusal_history",
+        "status": "planned"
+      },
+      {
+        "id": "sanctions_issued",
+        "status": "planned"
+      },
+      {
+        "id": "courtlistener_opinions",
+        "status": "planned"
+      },
+      {
+        "id": "fjc_reversal_stats",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_ptrs",
+        "status": "planned"
+      }
+    ],
+    "local": [],
+    "historical": [
+      {
+        "id": "law_school_records",
+        "status": "planned"
+      },
+      {
+        "id": "bar_admission",
+        "status": "planned"
+      },
+      {
+        "id": "pre_bench_career",
+        "status": "planned"
+      }
+    ]
+  },
+  "federal_judge_magistrate": {
+    "primary": [
+      {
+        "id": "fjc_biographical",
+        "status": "implemented"
+      },
+      {
+        "id": "courtlistener",
+        "status": "implemented"
+      },
+      {
+        "id": "free_law_project_judge_db",
+        "status": "planned"
+      },
+      {
+        "id": "pacer",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_disclosure",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      },
+      {
+        "id": "senate_confirmation",
+        "status": "planned"
+      }
+    ],
+    "judicial": [
+      {
+        "id": "reversal_rate",
+        "status": "planned"
+      },
+      {
+        "id": "recusal_history",
+        "status": "planned"
+      },
+      {
+        "id": "sanctions_issued",
+        "status": "planned"
+      },
+      {
+        "id": "courtlistener_opinions",
+        "status": "planned"
+      },
+      {
+        "id": "fjc_reversal_stats",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_ptrs",
+        "status": "planned"
+      }
+    ],
+    "local": [],
+    "historical": [
+      {
+        "id": "law_school_records",
+        "status": "planned"
+      },
+      {
+        "id": "bar_admission",
+        "status": "planned"
+      },
+      {
+        "id": "pre_bench_career",
+        "status": "planned"
+      }
+    ]
+  },
+  "federal_judge_bankruptcy": {
+    "primary": [
+      {
+        "id": "fjc_biographical",
+        "status": "implemented"
+      },
+      {
+        "id": "courtlistener",
+        "status": "implemented"
+      },
+      {
+        "id": "free_law_project_judge_db",
+        "status": "planned"
+      },
+      {
+        "id": "pacer",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_disclosure",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      },
+      {
+        "id": "senate_confirmation",
+        "status": "planned"
+      }
+    ],
+    "judicial": [
+      {
+        "id": "reversal_rate",
+        "status": "planned"
+      },
+      {
+        "id": "recusal_history",
+        "status": "planned"
+      },
+      {
+        "id": "sanctions_issued",
+        "status": "planned"
+      },
+      {
+        "id": "courtlistener_opinions",
+        "status": "planned"
+      },
+      {
+        "id": "fjc_reversal_stats",
+        "status": "planned"
+      },
+      {
+        "id": "ejudiciary_ptrs",
+        "status": "planned"
+      }
+    ],
+    "local": [],
+    "historical": [
+      {
+        "id": "law_school_records",
+        "status": "planned"
+      },
+      {
+        "id": "bar_admission",
+        "status": "planned"
+      },
+      {
+        "id": "pre_bench_career",
+        "status": "planned"
+      }
+    ]
+  },
+  "administrative_law_judge": {
+    "primary": [
+      {
+        "id": "ejudiciary_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "fjc_biographical",
+        "status": "implemented"
+      },
+      {
+        "id": "courtlistener",
+        "status": "implemented"
+      },
+      {
+        "id": "free_law_project_judge_db",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "judicial": [
+      {
+        "id": "recusal_history",
+        "status": "planned"
+      },
+      {
+        "id": "sanctions_issued",
+        "status": "planned"
+      }
+    ],
+    "local": [],
+    "historical": [
+      {
+        "id": "bar_admission",
+        "status": "planned"
+      },
+      {
+        "id": "pre_bench_career",
+        "status": "planned"
+      }
+    ]
+  },
+  "state_governor": {
+    "primary": [
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "state_ethics",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "state_contracts",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "state_budget",
+        "status": "planned"
+      },
+      {
+        "id": "executive_orders",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_candidacies",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "state_legislator": {
+    "primary": [
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "state_votes",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "lda",
+        "status": "implemented"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "state_bills",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "state_judge": {
+    "primary": [
+      {
+        "id": "court_records",
+        "status": "planned"
+      },
+      {
+        "id": "free_law_project_judge_db",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      },
+      {
+        "id": "state_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "judicial": [
+      {
+        "id": "reversal_rate",
+        "status": "planned"
+      },
+      {
+        "id": "recusal_history",
+        "status": "planned"
+      }
+    ],
+    "local": [],
+    "historical": [
+      {
+        "id": "bar_admission",
+        "status": "planned"
+      },
+      {
+        "id": "prior_practice",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "state_ag": {
+    "primary": [
+      {
+        "id": "court_records",
+        "status": "planned"
+      },
+      {
+        "id": "state_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "case_priorities",
+        "status": "planned"
+      },
+      {
+        "id": "foia_records",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_practice",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "state_sos": {
+    "primary": [
+      {
+        "id": "campaign_finance_filings",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "business_registry",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "election_admin_records",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "mayor": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "foia_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "zoning_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "city_budget_votes",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_candidacies",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "official": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "foia_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "zoning_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "city_budget_votes",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_candidacies",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "city_council": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "foia_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "zoning_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "city_budget_votes",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_candidacies",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "city_executive": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "foia_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "zoning_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "city_budget_votes",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_candidacies",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "county_sheriff": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "doj_pattern_practice",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "use_of_force_records",
+        "status": "planned"
+      },
+      {
+        "id": "jail_inspection_reports",
+        "status": "planned"
+      },
+      {
+        "id": "department_discipline",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_law_enforcement",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "county_prosecutor": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "court_records",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "bar_complaints",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "charging_patterns",
+        "status": "planned"
+      },
+      {
+        "id": "conviction_integrity",
+        "status": "planned"
+      },
+      {
+        "id": "bail_recommendations",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_practice",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "county_clerk": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "election_records",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "foia_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "county_assessor": {
+    "primary": [
+      {
+        "id": "property_records",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "assessment_appeals",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "school_board": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "district_contracts",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "foia_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "board_votes",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_candidacies",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "airport_authority_member": {
+    "primary": [
+      {
+        "id": "utility_rate_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "outside_income_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "auditor_general": {
+    "primary": [
+      {
+        "id": "audit_reports",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "city_comptroller": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "audit_reports",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "corrections_commissioner": {
+    "primary": [
+      {
+        "id": "decision_pattern_records",
+        "status": "planned"
+      },
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      },
+      {
+        "id": "doj_findings",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "district_attorney": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "court_records",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "emergency_management_director": {
+    "primary": [
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "federal_marshal": {
+    "primary": [
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      },
+      {
+        "id": "doj_pattern_practice",
+        "status": "planned"
+      },
+      {
+        "id": "use_of_force_records",
+        "status": "planned"
+      },
+      {
+        "id": "department_discipline",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "fire_commissioner": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "flood_control_district_member": {
+    "primary": [
+      {
+        "id": "property_records",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "gaming_commission_member": {
+    "primary": [
+      {
+        "id": "audit_reports",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "historic_preservation_board_member": {
+    "primary": [
+      {
+        "id": "zoning_vote_records",
+        "status": "planned"
+      },
+      {
+        "id": "property_records",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "inspector_general": {
+    "primary": [
+      {
+        "id": "audit_reports",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "juvenile_court_officer": {
+    "primary": [
+      {
+        "id": "decision_pattern_records",
+        "status": "planned"
+      },
+      {
+        "id": "court_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "parole_board_member": {
+    "primary": [
+      {
+        "id": "decision_pattern_records",
+        "status": "planned"
+      },
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      },
+      {
+        "id": "doj_findings",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "planning_commission_member": {
+    "primary": [
+      {
+        "id": "zoning_vote_records",
+        "status": "planned"
+      },
+      {
+        "id": "property_records",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "police_chief": {
+    "primary": [
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      },
+      {
+        "id": "doj_pattern_practice",
+        "status": "planned"
+      },
+      {
+        "id": "use_of_force_records",
+        "status": "planned"
+      },
+      {
+        "id": "department_discipline",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "police_commissioner": {
+    "primary": [
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      },
+      {
+        "id": "doj_pattern_practice",
+        "status": "planned"
+      },
+      {
+        "id": "use_of_force_records",
+        "status": "planned"
+      },
+      {
+        "id": "department_discipline",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "port_authority_commissioner": {
+    "primary": [
+      {
+        "id": "utility_rate_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "outside_income_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "professional_licensing_board_member": {
+    "primary": [
+      {
+        "id": "audit_reports",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "public_defender_chief": {
+    "primary": [
+      {
+        "id": "court_records",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "public_health_officer": {
+    "primary": [
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "regional_planning_authority_member": {
+    "primary": [
+      {
+        "id": "zoning_vote_records",
+        "status": "planned"
+      },
+      {
+        "id": "property_records",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "school_board_member": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "district_contracts",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "board_votes",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_candidacies",
+        "status": "planned"
+      }
+    ]
+  },
+  "school_superintendent": {
+    "primary": [
+      {
+        "id": "district_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "sheriff": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "civil_settlements",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "doj_pattern_practice",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "use_of_force_records",
+        "status": "planned"
+      },
+      {
+        "id": "department_discipline",
+        "status": "planned"
+      }
+    ],
+    "historical": [
+      {
+        "id": "prior_law_enforcement",
+        "status": "planned"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "special_district_board_member": {
+    "primary": [
+      {
+        "id": "utility_rate_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "state_attorney_general": {
+    "primary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "court_records",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "state_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "state_treasurer": {
+    "primary": [
+      {
+        "id": "audit_reports",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "transit_board_member": {
+    "primary": [
+      {
+        "id": "utility_rate_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "outside_income_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "university_regent": {
+    "primary": [
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "utility_board_member": {
+    "primary": [
+      {
+        "id": "utility_rate_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "outside_income_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "water_board_member": {
+    "primary": [
+      {
+        "id": "utility_rate_decisions",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "outside_income_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "zoning_board_member": {
+    "primary": [
+      {
+        "id": "zoning_vote_records",
+        "status": "planned"
+      },
+      {
+        "id": "property_records",
+        "status": "planned"
+      },
+      {
+        "id": "local_campaign_finance",
+        "status": "planned"
+      },
+      {
+        "id": "city_contracts",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "liquor_control_board_member": {
+    "primary": [
+      {
+        "id": "audit_reports",
+        "status": "planned"
+      },
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "procurement_records",
+        "status": "planned"
+      },
+      {
+        "id": "news_search",
+        "status": "planned"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "financial_disclosure",
+        "status": "planned"
+      },
+      {
+        "id": "local_news",
+        "status": "planned"
+      }
+    ],
+    "judicial": [],
+    "local": [],
+    "historical": [
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  },
+  "public_official": {
+    "primary": [
+      {
+        "id": "fec",
+        "status": "implemented"
+      },
+      {
+        "id": "congress",
+        "status": "implemented"
+      },
+      {
+        "id": "lda",
+        "status": "implemented"
+      },
+      {
+        "id": "regulations",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo",
+        "status": "implemented"
+      },
+      {
+        "id": "govinfo_hearings",
+        "status": "implemented"
+      },
+      {
+        "id": "congress_amendments",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_jfc",
+        "status": "implemented"
+      },
+      {
+        "id": "fec_schedule_b",
+        "status": "implemented"
+      }
+    ],
+    "secondary": [
+      {
+        "id": "opensecrets",
+        "status": "planned"
+      },
+      {
+        "id": "followthemoney",
+        "status": "planned"
+      },
+      {
+        "id": "usaspending",
+        "status": "implemented"
+      }
+    ],
+    "judicial": [],
+    "local": [
+      {
+        "id": "indiana_cf",
+        "status": "implemented"
+      }
+    ],
+    "historical": [
+      {
+        "id": "fec_historical",
+        "status": "implemented"
+      },
+      {
+        "id": "news_archive",
+        "status": "planned"
+      }
+    ]
+  }
+}

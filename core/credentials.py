@@ -6,7 +6,7 @@ from typing import Any
 
 # Adapters that may read a key from CREDENTIAL_DATA_DIR (see POST .../credentials/register).
 _FILE_FALLBACK_ADAPTERS: frozenset[str] = frozenset(
-    {"fec", "congress", "regulations", "govinfo"}
+    {"fec", "congress", "regulations", "govinfo", "courtlistener"}
 )
 
 
@@ -60,6 +60,14 @@ class CredentialRegistry:
             "fallback": None,
             "rate_limit_per_hour": 2000,
             "note": "Free registration at api.govinfo.gov",
+            "file_rotatable": True,
+        },
+        "courtlistener": {
+            "env_var": "COURTLISTENER_API_KEY",
+            "required": False,
+            "fallback": None,
+            "rate_limit_per_hour": None,
+            "note": "Free registration at www.courtlistener.com/help/api/",
             "file_rotatable": True,
         },
         "open_case_signing": {

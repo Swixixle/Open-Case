@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, Query
 from pydantic import BaseModel, Field
 
+from core.admin_gate import require_admin_http
 from engines.entity_resolution import append_alias_entry, suggest_aliases_detail
 
 router = APIRouter(prefix="/api/v1/entity-resolution", tags=["entity-resolution"])
@@ -33,11 +33,7 @@ def append_alias(
     body: AliasAppendBody,
     x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> dict[str, Any]:
-    expected = os.getenv("ADMIN_SECRET", "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="Admin endpoint not configured.")
-    if not x_admin_secret or x_admin_secret != expected:
-        raise HTTPException(status_code=403, detail="Invalid admin secret.")
+    require_admin_http(x_admin_secret)
     entry = {
         "canonical_id": body.canonical_id.strip(),
         "canonical_name": body.canonical_name.strip(),

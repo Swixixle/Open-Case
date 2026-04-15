@@ -1,0 +1,48 @@
+{
+  "aliases": [
+    {
+      "jurisdiction": "testville",
+      "canonical_key": "acme plumbing services",
+      "alias": "acme plumbing llc",
+      "relationship_type": "alias",
+      "confidence": "high",
+      "source_note": "test suffix alias",
+      "public_explanation": "Formatting and suffix variation only",
+      "reviewed_by": "test",
+      "active": true
+    },
+    {
+      "jurisdiction": "testville",
+      "canonical_key": "omega holdings",
+      "alias": "omega construction inc",
+      "relationship_type": "affiliate",
+      "confidence": "medium",
+      "source_note": "test affiliate",
+      "public_explanation": "Related but not identical",
+      "reviewed_by": "test",
+      "active": true
+    },
+    {
+      "jurisdiction": "testville",
+      "canonical_key": "gamma construction",
+      "alias": "gamma construction indiana pac",
+      "relationship_type": "pac_of_vendor",
+      "confidence": "high",
+      "source_note": "test pac",
+      "public_explanation": "PAC of vendor family",
+      "reviewed_by": "test",
+      "active": true
+    },
+    {
+      "jurisdiction": "testville",
+      "canonical_key": "delta corp",
+      "alias": "epsilon llc",
+      "relationship_type": "alias",
+      "confidence": "high",
+      "source_note": "unrelated test pair — should never match real fixtures",
+      "public_explanation": "decoy",
+      "reviewed_by": "test",
+      "active": false
+    }
+  ]
+}

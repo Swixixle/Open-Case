@@ -24,6 +24,7 @@ from adapters.stock_act_trades import fetch_stock_act_trades_all_years
 from adapters.stock_trade_proximity import fetch_stock_trade_proximity_all_years
 from engines.pattern_engine import pattern_alert_to_payload, run_pattern_engine
 from models import CaseFile, SenatorDossier, SubjectProfile
+from services.case_auto_ingest import maybe_auto_ingest_case
 from services.gap_analysis import generate_gap_sentences
 from signing import pack_signed_hash, sign_payload
 
@@ -72,6 +73,8 @@ async def build_senator_dossier(bioguide_id: str, db: Session) -> dict[str, Any]
     case = db.get(CaseFile, prof.case_file_id)
     if case is None:
         raise ValueError("Case file missing for subject profile")
+
+    await maybe_auto_ingest_case(db, case.id, background_tasks=None)
 
     senator_name = (case.subject_name or prof.subject_name or "").strip()
     generated_at = _now_iso()

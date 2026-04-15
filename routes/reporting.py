@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -18,6 +18,7 @@ from sqlalchemy import nulls_last, select
 from sqlalchemy.orm import Session
 
 from auth import require_api_key, require_matching_handle
+from core.admin_gate import admin_authorized
 from database import get_db
 from engines.entity_resolution import resolve
 from engines.pattern_engine import pattern_alerts_for_case, run_pattern_engine
@@ -32,8 +33,14 @@ from models import (
     Signal,
     SignalAuditLog,
     SourceCheckLog,
+    SubjectProfile,
 )
-from payloads import METHODOLOGY_NOTE_TEXT
+from payloads import (
+    METHODOLOGY_LEGAL_LIABILITY_NOTE,
+    METHODOLOGY_NOTE_TEXT,
+    METHODOLOGY_NOTE_VERSION,
+    epistemic_distribution_from_entries,
+)
 from services.case_auto_ingest import case_needs_fec_refresh
 from server.services.report_stream import (
     report_pattern_refresh_task,
@@ -50,6 +57,14 @@ _TEMPLATES = Jinja2Templates(
 
 def get_base_url() -> str:
     return os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
+
+
+def _visible_evidence_rows(
+    entries: list[EvidenceEntry], include_unreviewed: bool
+) -> list[EvidenceEntry]:
+    if include_unreviewed:
+        return entries
+    return [e for e in entries if not getattr(e, "requires_human_review", False)]
 
 
 class ExposeSignalRequest(BaseModel):
@@ -71,6 +86,8 @@ def _evidence_dict(e: EvidenceEntry) -> dict[str, Any]:
         "entered_by": e.entered_by,
         "entered_at": e.entered_at.isoformat() if e.entered_at else None,
         "amount": e.amount,
+        "epistemic_level": getattr(e, "epistemic_level", "REPORTED"),
+        "requires_human_review": bool(getattr(e, "requires_human_review", False)),
     }
 
 
@@ -313,7 +330,11 @@ def _source_status_lines(case: CaseFile) -> list[dict[str, Any]]:
 
 
 def _signal_to_report_row(
-    db: Session, s: Signal, source_lines: list[dict[str, Any]]
+    db: Session,
+    s: Signal,
+    source_lines: list[dict[str, Any]],
+    *,
+    include_unreviewed: bool = False,
 ) -> dict[str, Any]:
     bd = _sig_breakdown(s)
     rel = float(getattr(s, "relevance_score", 0.0) or bd.get("relevance_score") or 0.0)
@@ -347,7 +368,11 @@ def _signal_to_report_row(
         "exposure_state": s.exposure_state,
         "repeat_count": s.repeat_count,
         "evidence_ids": _parse_signal_evidence_ids(s),
-        "supporting_evidence": _supporting_evidence_summaries(db, s),
+        "supporting_evidence": _supporting_evidence_summaries(
+            db, s, include_unreviewed=include_unreviewed
+        ),
+        "epistemic_level": getattr(s, "epistemic_level", "REPORTED"),
+        "requires_human_review": bool(getattr(s, "requires_human_review", False)),
         "parse_warning": s.parse_warning,
         "confirmed": s.confirmed,
         "dismissed": s.dismissed,
@@ -385,7 +410,9 @@ def _signal_to_report_row(
     }
 
 
-def _supporting_evidence_summaries(db: Session, signal: Signal) -> list[dict[str, Any]]:
+def _supporting_evidence_summaries(
+    db: Session, signal: Signal, *, include_unreviewed: bool = False
+) -> list[dict[str, Any]]:
     raw_ids = _parse_signal_evidence_ids(signal)
     if not raw_ids:
         return []
@@ -405,6 +432,8 @@ def _supporting_evidence_summaries(db: Session, signal: Signal) -> list[dict[str
     for u in uuids:
         e = by_id.get(str(u))
         if not e:
+            continue
+        if not include_unreviewed and getattr(e, "requires_human_review", False):
             continue
         display_source = e.source_name
         if e.entry_type == "lobbying_filing":
@@ -429,7 +458,96 @@ def _supporting_evidence_summaries(db: Session, signal: Signal) -> list[dict[str
     return ordered
 
 
-def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) -> dict[str, Any]:
+_REPORT_SECTION_KEYS = frozenset(
+    {"identity", "bench_record", "money", "politics", "conduct", "signals"}
+)
+
+
+def _build_report_sections(
+    db: Session,
+    case_id: uuid.UUID,
+    case: CaseFile,
+    all_evidence: list[EvidenceEntry],
+    financial: list[EvidenceEntry],
+    votes: list[EvidenceEntry],
+    signal_rows: list[dict[str, Any]],
+    pattern_rows: list[dict[str, Any]],
+    include_unreviewed: bool,
+) -> dict[str, Any]:
+    prof = db.scalar(select(SubjectProfile).where(SubjectProfile.case_file_id == case_id))
+    ev_vis = _visible_evidence_rows(all_evidence, include_unreviewed)
+    fin_vis = _visible_evidence_rows(financial, include_unreviewed)
+    politics_types = frozenset(
+        {"vote_record", "lobbying_filing", "timeline_event", "regulatory_comment"}
+    )
+    politics = [
+        _evidence_dict(e)
+        for e in ev_vis
+        if e.entry_type in politics_types and not e.is_absence
+    ]
+    conduct = [
+        _evidence_dict(e)
+        for e in ev_vis
+        if e.flagged_for_review
+        or "discipline" in (e.entry_type or "").lower()
+        or "complaint" in ((e.title or "") + (e.body or "")).lower()
+    ]
+    bench_types = frozenset({"hearing_witness", "court_opinion", "judicial_disclosure"})
+    bench = [
+        _evidence_dict(e)
+        for e in ev_vis
+        if e.entry_type in bench_types or "opinion" in (e.entry_type or "").lower()
+    ]
+    sig_vis = [
+        r
+        for r in signal_rows
+        if include_unreviewed or not r.get("requires_human_review")
+    ]
+    identity = {
+        "profile": None,
+        "summary": case.summary,
+        "case_government_level": getattr(case, "government_level", None),
+        "case_branch": getattr(case, "branch", None),
+        "pilot_cohort": getattr(case, "pilot_cohort", None),
+        "summary_epistemic_level": getattr(case, "summary_epistemic_level", "REPORTED"),
+    }
+    if prof:
+        identity["profile"] = {
+            "subject_name": prof.subject_name,
+            "subject_type": prof.subject_type,
+            "bioguide_id": prof.bioguide_id,
+            "government_level": prof.government_level,
+            "branch": prof.branch,
+            "historical_depth": prof.historical_depth,
+            "state": prof.state,
+            "district": prof.district,
+            "office": prof.office,
+        }
+    signals_tab = {
+        "signals": sig_vis,
+        "pattern_alerts": pattern_rows,
+        "epistemic_distribution": epistemic_distribution_from_entries(
+            [e for e in ev_vis if not e.is_absence]
+        ),
+    }
+    return {
+        "identity": [identity],
+        "bench_record": bench,
+        "money": [_evidence_dict(e) for e in fin_vis],
+        "politics": politics,
+        "conduct": conduct,
+        "signals": [signals_tab],
+    }
+
+
+def _collect_report_payload(
+    case_id: uuid.UUID,
+    db: Session,
+    bump_view: bool,
+    *,
+    include_unreviewed: bool = False,
+    section: str | None = None,
+) -> dict[str, Any]:
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -470,7 +588,10 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
     financial = [e for e in all_evidence if e.entry_type == "financial_connection"]
     votes = [e for e in all_evidence if e.entry_type == "vote_record"]
     gaps = [e for e in all_evidence if e.is_absence]
-    timeline = [e for e in all_evidence if not e.is_absence]
+    timeline_all = [e for e in all_evidence if not e.is_absence]
+    timeline = _visible_evidence_rows(timeline_all, include_unreviewed)
+    financial_pub = _visible_evidence_rows(financial, include_unreviewed)
+    votes_pub = _visible_evidence_rows(votes, include_unreviewed)
 
     display_recipient = case.subject_name
     for s in signals:
@@ -485,8 +606,16 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
 
     source_lines = _source_status_lines(case)
     signal_rows_active = [
-        _signal_to_report_row(db, s, source_lines) for s in signals if not s.dismissed
+        _signal_to_report_row(
+            db, s, source_lines, include_unreviewed=include_unreviewed
+        )
+        for s in signals
+        if not s.dismissed
     ]
+    if not include_unreviewed:
+        signal_rows_active = [
+            r for r in signal_rows_active if not r.get("requires_human_review")
+        ]
     qualified_leads = [
         r
         for r in signal_rows_active
@@ -504,7 +633,26 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
     signals_anticipatory.sort(key=lambda r: -float(r["weight"] or 0))
     signals_retrospective.sort(key=lambda r: -float(r["weight"] or 0))
 
-    return {
+    pal = run_pattern_engine(db)
+    pattern_rows = pattern_alerts_for_case(
+        case_id, pal, include_unreviewed=include_unreviewed
+    )
+    sections = _build_report_sections(
+        db,
+        case_id,
+        case,
+        all_evidence,
+        financial,
+        votes,
+        signal_rows_active,
+        pattern_rows,
+        include_unreviewed,
+    )
+    epistemic_distribution = epistemic_distribution_from_entries(
+        [e for e in _visible_evidence_rows(all_evidence, include_unreviewed) if not e.is_absence]
+    )
+
+    payload = {
         "case_id": str(case_id),
         "case_number": str(case.id).replace("-", "").upper()[:8],
         "title": case.title,
@@ -524,6 +672,8 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
         "signals_anticipatory": signals_anticipatory,
         "signals_retrospective": signals_retrospective,
         "methodology_note": METHODOLOGY_NOTE_TEXT,
+        "methodology_note_version": METHODOLOGY_NOTE_VERSION,
+        "legal_liability_note": METHODOLOGY_LEGAL_LIABILITY_NOTE,
         "dismissed_signals": [
             {
                 "id": str(s.id),
@@ -535,8 +685,8 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
             if s.dismissed
         ],
         "timeline": [_evidence_dict(e) for e in timeline],
-        "financial_connections": [_evidence_dict(e) for e in financial],
-        "vote_records": [_evidence_dict(e) for e in votes],
+        "financial_connections": [_evidence_dict(e) for e in financial_pub],
+        "vote_records": [_evidence_dict(e) for e in votes_pub],
         "gaps_documented": [
             {
                 "source": e.source_name,
@@ -590,8 +740,33 @@ def _collect_report_payload(case_id: uuid.UUID, db: Session, bump_view: bool) ->
         },
         "receipt_crypto": _receipt_crypto_block(case),
         "source_status_lines": _source_status_lines(case),
-        "pattern_alerts": pattern_alerts_for_case(case_id, run_pattern_engine(db)),
+        "pattern_alerts": pattern_rows,
+        "sections": sections,
+        "epistemic_distribution": epistemic_distribution,
     }
+    if section and section in _REPORT_SECTION_KEYS:
+        filtered_sec = {k: [] for k in _REPORT_SECTION_KEYS}
+        filtered_sec[section] = sections.get(section, [])
+        payload["sections"] = filtered_sec
+        payload["section_filter"] = section
+    return payload
+
+
+def _enforce_report_query_params(
+    section: str | None,
+    include_unreviewed: bool,
+    x_admin_secret: str | None,
+) -> None:
+    if section and section not in _REPORT_SECTION_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"section must be one of {sorted(_REPORT_SECTION_KEYS)}",
+        )
+    if include_unreviewed and not admin_authorized(x_admin_secret):
+        raise HTTPException(
+            status_code=403,
+            detail="include_unreviewed requires a valid X-Admin-Secret",
+        )
 
 
 def _attach_pattern_refresh_meta(
@@ -636,19 +811,82 @@ async def case_report_pattern_events(case_id: uuid.UUID) -> StreamingResponse:
     )
 
 
+@router.get("/methodology")
+def get_methodology() -> dict[str, Any]:
+    return {
+        "methodology_note_version": METHODOLOGY_NOTE_VERSION,
+        "methodology_note": METHODOLOGY_NOTE_TEXT,
+        "legal_liability_note": METHODOLOGY_LEGAL_LIABILITY_NOTE,
+    }
+
+
+@router.get("/cases")
+def list_cases_api(
+    db: Session = Depends(get_db),
+    government_level: str | None = Query(None),
+    branch: str | None = Query(None),
+    subject_type: str | None = Query(None),
+    pilot: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+) -> dict[str, Any]:
+    q = select(CaseFile).order_by(CaseFile.created_at.desc()).limit(limit)
+    if subject_type:
+        q = q.where(CaseFile.subject_type == subject_type.strip())
+    if pilot:
+        q = q.where(CaseFile.pilot_cohort == pilot.strip())
+    join_profile = government_level is not None or branch is not None
+    if join_profile:
+        q = q.join(SubjectProfile, SubjectProfile.case_file_id == CaseFile.id)
+        if government_level:
+            q = q.where(SubjectProfile.government_level == government_level.strip())
+        if branch:
+            q = q.where(SubjectProfile.branch == branch.strip())
+        q = q.distinct()
+    rows = db.scalars(q).all()
+    return {
+        "count": len(rows),
+        "cases": [
+            {
+                "id": str(c.id),
+                "slug": c.slug,
+                "title": c.title,
+                "subject_name": c.subject_name,
+                "subject_type": c.subject_type,
+                "jurisdiction": c.jurisdiction,
+                "status": c.status,
+                "government_level": getattr(c, "government_level", None),
+                "branch": getattr(c, "branch", None),
+                "pilot_cohort": getattr(c, "pilot_cohort", None),
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in rows
+        ],
+    }
+
+
 @router.get("/cases/{case_id}/report")
 async def get_case_report(
     case_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    section: str | None = Query(None),
+    include_unreviewed: bool = Query(False),
+    x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> dict[str, Any]:
+    _enforce_report_query_params(section, include_unreviewed, x_admin_secret)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     pending = case_needs_fec_refresh(db, case_id, case)
     if pending:
         background_tasks.add_task(report_pattern_refresh_task, case_id)
-    report = _collect_report_payload(case_id, db, bump_view=True)
+    report = _collect_report_payload(
+        case_id,
+        db,
+        bump_view=True,
+        include_unreviewed=include_unreviewed,
+        section=section,
+    )
     _attach_pattern_refresh_meta(report, case_id, pending)
     return report
 
@@ -659,14 +897,24 @@ async def get_case_report_html(
     case_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    section: str | None = Query(None),
+    include_unreviewed: bool = Query(False),
+    x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> Any:
+    _enforce_report_query_params(section, include_unreviewed, x_admin_secret)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     pending = case_needs_fec_refresh(db, case_id, case)
     if pending:
         background_tasks.add_task(report_pattern_refresh_task, case_id)
-    report = _collect_report_payload(case_id, db, bump_view=True)
+    report = _collect_report_payload(
+        case_id,
+        db,
+        bump_view=True,
+        include_unreviewed=include_unreviewed,
+        section=section,
+    )
     _attach_pattern_refresh_meta(report, case_id, pending)
     return _TEMPLATES.TemplateResponse(
         request,
@@ -681,14 +929,24 @@ async def get_case_receipt_card(
     case_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    section: str | None = Query(None),
+    include_unreviewed: bool = Query(False),
+    x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> HTMLResponse:
+    _enforce_report_query_params(section, include_unreviewed, x_admin_secret)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
     pending = case_needs_fec_refresh(db, case_id, case)
     if pending:
         background_tasks.add_task(report_pattern_refresh_task, case_id)
-    report = _collect_report_payload(case_id, db, bump_view=False)
+    report = _collect_report_payload(
+        case_id,
+        db,
+        bump_view=False,
+        include_unreviewed=include_unreviewed,
+        section=section,
+    )
     _attach_pattern_refresh_meta(report, case_id, pending)
     released = [
         s

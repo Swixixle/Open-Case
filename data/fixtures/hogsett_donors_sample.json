@@ -1,0 +1,119 @@
+{
+  "_meta": {
+    "description": "Verified contribution rows from Indiana IDIS statewide bulk CSV (campaignfinance.in.gov). Committee values are the recipient `Committee` field exactly as filed in IDIS; the mayoral principal committee name `Hogsett for Indianapolis` does not appear as a recipient Committee value in these extracts (those filings are with Marion County / City of Indianapolis). Several contributors deliberately overlap vendor strings in hogsett_procurement_sample.json for LOCAL_* join testing.",
+    "idis_bulk_base": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads",
+    "years_used": [2022, 2023]
+  },
+  "contributions": [
+    {
+      "fixture_key": "idis-2022-3014-morphey-build-indiana",
+      "contributor_name_raw": "Morphey Construction Inc",
+      "contributor_canonical": "MORPHEY CONSTRUCTION",
+      "contribution_amount": 1000.0,
+      "contribution_date": "2022-11-03",
+      "committee_name": "Build Indiana Political Action Committee",
+      "idis_year": 2022,
+      "idis_file_number": "3014",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-3014-rieth-pac-build-indiana",
+      "contributor_name_raw": "Rieth-Riley Construction Co., Inc. Indiana PAC",
+      "contributor_canonical": "RIETH-RILEY CONSTRUCTION CO INC INDIANA PAC",
+      "contribution_amount": 8000.0,
+      "contribution_date": "2022-06-24",
+      "committee_name": "Build Indiana Political Action Committee",
+      "idis_year": 2022,
+      "idis_file_number": "3014",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-3014-eb-paving-build-indiana",
+      "contributor_name_raw": "E & B Paving Inc",
+      "contributor_canonical": "E AND B PAVING",
+      "contribution_amount": 4000.0,
+      "contribution_date": "2022-11-03",
+      "committee_name": "Build Indiana Political Action Committee",
+      "idis_year": 2022,
+      "idis_file_number": "3014",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-1194-eagle-valley-merit-abc",
+      "contributor_name_raw": "Eagle Valley, Inc.",
+      "contributor_canonical": "EAGLE VALLEY",
+      "contribution_amount": 888.5,
+      "contribution_date": "2022-12-05",
+      "committee_name": "Indiana Merit Construction PAC of ABC",
+      "idis_year": 2022,
+      "idis_file_number": "1194",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-776-harding-multifamily-pac",
+      "contributor_name_raw": "HARDING GROUP",
+      "contributor_canonical": "HARDING GROUP",
+      "contribution_amount": 575.0,
+      "contribution_date": "2022-03-10",
+      "committee_name": "Indiana Multi Family Housing Political Action Committee",
+      "idis_year": 2022,
+      "idis_file_number": "776",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-42-milestone-heritage-pac",
+      "contributor_name_raw": "Milestone Contractors, LP",
+      "contributor_canonical": "MILESTONE CONTRACTORS L P",
+      "contribution_amount": 20000.0,
+      "contribution_date": "2022-06-05",
+      "committee_name": "Heritage Construction + Materials Political Action Committee",
+      "idis_year": 2022,
+      "idis_file_number": "42",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-188-thieneman-builders-pac",
+      "contributor_name_raw": "Thieneman Group LLC",
+      "contributor_canonical": "THIENEMAN GROUP",
+      "contribution_amount": 5000.0,
+      "contribution_date": "2022-06-08",
+      "committee_name": "Indiana Builders Political Action Committee",
+      "idis_year": 2022,
+      "idis_file_number": "188",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-4995-rieth-self-transfer",
+      "contributor_name_raw": "Rieth-Riley Construction Co., Inc.",
+      "contributor_canonical": "RIETH-RILEY CONSTRUCTION",
+      "contribution_amount": 22000.0,
+      "contribution_date": "2022-03-02",
+      "committee_name": "Rieth-Riley Construction Co, Inc. Indiana Political Action Committee",
+      "idis_year": 2022,
+      "idis_file_number": "4995",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2023-indems-hogsett-transfer",
+      "contributor_name_raw": "Hogsett for Indianapolis",
+      "contributor_canonical": "HOGSETT FOR INDIANAPOLIS",
+      "contribution_amount": 30000.0,
+      "contribution_date": "2023-10-25",
+      "committee_name": "Indiana Democratic State Central Committee",
+      "idis_year": 2023,
+      "idis_file_number": "26",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2023_ContributionData.csv.zip"
+    },
+    {
+      "fixture_key": "idis-2022-7579-beam-kristin-jones",
+      "contributor_name_raw": "Beam Longest and Neff LLC",
+      "contributor_canonical": "BEAM LONGEST AND NEFF",
+      "contribution_amount": 500.0,
+      "contribution_date": "2022-02-22",
+      "committee_name": "Kristin Jones For Indianapolis",
+      "idis_year": 2022,
+      "idis_file_number": "7579",
+      "source_url": "https://campaignfinance.in.gov/PublicSite/Docs/BulkDataDownloads/2022_ContributionData.csv.zip"
+    }
+  ]
+}

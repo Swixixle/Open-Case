@@ -209,11 +209,14 @@ def _lobbying(db, case_id: uuid.UUID, filing_year: int = 2026) -> None:
     )
 
 
-def _vote_pharma_day(db, case_id: uuid.UUID, day: date, pos: str) -> None:
+def _vote_pharma_day(
+    db, case_id: uuid.UUID, day: date, pos: str, *, bioguide_id: str
+) -> None:
     raw = {
         "member_vote": pos,
         "question": "Motion on pharmaceutical pricing reform bill",
         "congress": 119,
+        "bioguide_id": bioguide_id,
     }
     db.add(
         EvidenceEntry(
@@ -368,7 +371,9 @@ def test_baseline_anomaly_fires_on_spike(test_engine) -> None:
             entered_by="v2_tester",
             confidence="confirmed",
             date_of_event=date(2024, 4, 10),
-            raw_data_json=json.dumps({"congress": 119}, separators=(",", ":")),
+            raw_data_json=json.dumps(
+                {"congress": 119, "bioguide_id": "S99999999"}, separators=(",", ":")
+            ),
         )
     )
     db.commit()
@@ -401,7 +406,9 @@ def test_baseline_anomaly_not_fired_when_nearest_vote_over_180_days(test_engine)
             entered_by="v2_tester",
             confidence="confirmed",
             date_of_event=date(2025, 1, 15),
-            raw_data_json=json.dumps({"congress": 119}, separators=(",", ":")),
+            raw_data_json=json.dumps(
+                {"congress": 119, "bioguide_id": "S77777777"}, separators=(",", ":")
+            ),
         )
     )
     db.commit()
@@ -426,14 +433,16 @@ def test_alignment_anomaly_high_pharma_yea_rate(test_engine) -> None:
         _subject(db, c.id, bg, name)
         _lobbying(db, c.id, 2026)
         for i, pos in enumerate(positions):
-            _vote_pharma_day(db, c.id, date(2026, 2, 1 + i), pos)
+            _vote_pharma_day(db, c.id, date(2026, 2, 1 + i), pos, bioguide_id=bg)
         cases.append(c)
     ct = _case(db, f"al-t-{uuid.uuid4().hex[:8]}", "Senator Target")
     db.flush()
     _subject(db, ct.id, "STARGET01", "Senator Target")
     _lobbying(db, ct.id, 2026)
     for i in range(5):
-        _vote_pharma_day(db, ct.id, date(2026, 2, 10 + i), "YEA")
+        _vote_pharma_day(
+            db, ct.id, date(2026, 2, 10 + i), "YEA", bioguide_id="STARGET01"
+        )
     db.commit()
     target_uuid = str(ct.id)
     hits = [a for a in run_pattern_engine(db) if a.rule_id == RULE_ALIGNMENT_ANOMALY]
@@ -630,8 +639,8 @@ def test_hearing_testimony_skipped_without_govinfo(test_engine) -> None:
     assert hits == []
 
 
-def test_pattern_engine_version_is_2_3() -> None:
-    assert PATTERN_ENGINE_VERSION == "2.3"
+def test_pattern_engine_version_is_2_6() -> None:
+    assert PATTERN_ENGINE_VERSION == "2.6"
 
 
 def test_joint_fundraising_not_fired_without_principal_committee(test_engine) -> None:
@@ -706,7 +715,9 @@ def test_baseline_anomaly_not_fired_when_spike_below_multiplier(test_engine) -> 
             entered_by="v2_tester",
             confidence="confirmed",
             date_of_event=date(2024, 6, 3),
-            raw_data_json=json.dumps({"congress": 119}, separators=(",", ":")),
+            raw_data_json=json.dumps(
+                {"congress": 119, "bioguide_id": "S55555555"}, separators=(",", ":")
+            ),
         )
     )
     db.commit()
@@ -726,13 +737,17 @@ def test_alignment_not_fired_with_only_two_baseline_senators(test_engine) -> Non
         _subject(db, c.id, f"SBL2{idx:03d}", f"Sen B{idx}")
         _lobbying(db, c.id, 2026)
         for i in range(5):
-            _vote_pharma_day(db, c.id, date(2026, 3, 1 + i), "NAY")
+            _vote_pharma_day(
+                db, c.id, date(2026, 3, 1 + i), "NAY", bioguide_id=f"SBL2{idx:03d}"
+            )
     ct = _case(db, f"al2t-{uuid.uuid4().hex[:8]}", "Sen Target2")
     db.flush()
     _subject(db, ct.id, "STARG2", "Sen Target2")
     _lobbying(db, ct.id, 2026)
     for i in range(5):
-        _vote_pharma_day(db, ct.id, date(2026, 4, 1 + i), "YEA")
+        _vote_pharma_day(
+            db, ct.id, date(2026, 4, 1 + i), "YEA", bioguide_id="STARG2"
+        )
     db.commit()
     target_uuid = str(ct.id)
     hits = [a for a in run_pattern_engine(db) if a.rule_id == RULE_ALIGNMENT_ANOMALY]

@@ -1,12 +1,14 @@
 export default function LoadingScreen({
+  subjectName = "",
   senatorName = "",
   stateLine = "",
   sub = "",
 }) {
+  const display = subjectName || senatorName;
   return (
     <div className="oc-loading">
       <p className="oc-loading-brand">OPEN CASE</p>
-      <h1 className="oc-loading-name">{senatorName.toUpperCase()}</h1>
+      <h1 className="oc-loading-name">{display.toUpperCase()}</h1>
       <div className="oc-loading-dots" aria-hidden>
         <span />
         <span />

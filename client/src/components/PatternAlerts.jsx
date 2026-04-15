@@ -1,34 +1,38 @@
-export default function PatternAlerts({ alerts }) {
+import PatternAlertCard from "./PatternAlertCard.jsx";
+
+function sortAlerts(list) {
+  return [...list].sort((a, b) => {
+    const sa = Number(a?.score ?? a?.proximity_to_vote_score);
+    const sb = Number(b?.score ?? b?.proximity_to_vote_score);
+    const na = Number.isNaN(sa) ? -1 : sa;
+    const nb = Number.isNaN(sb) ? -1 : sb;
+    if (nb !== na) return nb - na;
+    const ra = String(a?.rule_id || "");
+    const rb = String(b?.rule_id || "");
+    return ra.localeCompare(rb);
+  });
+}
+
+export default function PatternAlerts({ alerts, newRuleIds }) {
   const list = Array.isArray(alerts) ? alerts : [];
+  const sorted = sortAlerts(list);
+  const fresh = newRuleIds instanceof Set ? newRuleIds : new Set();
 
   return (
     <section className="oc-section">
-      <h2 className="oc-section-title">PATTERN ENGINE ALERTS</h2>
-      {!list.length ? (
+      <h2 className="oc-section-title">Pattern alerts</h2>
+      {!sorted.length ? (
         <p className="oc-empty-note">
-          No pattern alerts. FEC signal ingestion required.
+          No pattern alerts. FEC signal ingestion may be required for this record.
         </p>
       ) : (
-        list.map((a, i) => {
-          const score =
-            a.proximity_to_vote_score != null
-              ? Number(a.proximity_to_vote_score).toFixed(3)
-              : "—";
-          return (
-            <div key={i} className="oc-alert-card">
-              <div className="oc-alert-head">
-                <span>{a.rule_id || "RULE"}</span>
-                <span>score: {score}</span>
-              </div>
-              <p className="oc-alert-body">{a.disclaimer || "—"}</p>
-              <p className="oc-alert-meta">
-                Donor: {a.donor_entity || "—"}
-                <br />
-                Window: {a.window_days != null ? `${a.window_days} days` : "—"}
-              </p>
-            </div>
-          );
-        })
+        sorted.map((a, i) => (
+          <PatternAlertCard
+            key={`${a.rule_id || "rule"}-${i}`}
+            alert={a}
+            isNew={fresh.has(a.rule_id)}
+          />
+        ))
       )}
     </section>
   );

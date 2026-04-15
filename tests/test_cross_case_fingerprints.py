@@ -139,7 +139,7 @@ def test_young_then_banks_cross_case_without_mutating_young(
     ctx = _seed_two_cases(test_engine)
     headers = {"Authorization": f"Bearer {ctx['api_key']}"}
 
-    async def resolve_principal(subject_name: str, jurisdiction: str):
+    async def resolve_principal(subject_name: str, jurisdiction: str, **_kwargs):
         _ = jurisdiction
         if "Young" in (subject_name or ""):
             return "C00459255"

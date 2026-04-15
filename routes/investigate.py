@@ -40,7 +40,13 @@ from adapters.govinfo_hearings import (
 )
 from adapters.lda import fetch_lda_filings
 from adapters.regulations import fetch_docket_comments
+from adapters.courtlistener import CourtListenerAdapter, courtlistener_court_ids_from_jurisdiction
+from adapters.fjc_biographical import FJCBiographicalAdapter
+from adapters.indiana_campaign_finance import IdisCampaignFinanceAdapter
 from adapters.indiana_cf import IndianaCFAdapter
+from adapters.indianapolis_contracts import IndianapolisContractsAdapter
+from adapters.indianapolis_procurement import IndianapolisProcurementAdapter
+from adapters.planned import log_planned_adapter
 from adapters.usa_spending import USASpendingAdapter
 from database import get_db
 from engines.contract_anomaly import detect_contract_anomalies
@@ -74,7 +80,24 @@ from models import (
 )
 from signals.dedup import upsert_signal
 from payloads import apply_case_file_signature, sign_evidence_entry
+from services.evidence_epistemic import apply_epistemic_metadata_to_entry
+from services.finding_audit import log_finding_audit
+from services.finding_policy import finalize_finding_after_sign, valid_http_url
+from services.research_profile import ResearchProfile
+from services.signal_epistemic import refresh_signal_epistemic_from_evidence
 from adapters.senate_committees import get_or_refresh_senator_committees
+from core.subject_taxonomy import (
+    JUDICIAL_SUBJECT_TYPES,
+    default_branch_for_subject_type,
+    default_government_level_for_subject_type,
+    subject_type_is_judicial,
+    subject_type_uses_fec_congress_pipeline,
+)
+
+# FJC bulk CSV is federal bench; state trial/appellate judges are out of scope.
+_FEDERAL_JUDICIAL_SUBJECT_TYPES: frozenset[str] = frozenset(JUDICIAL_SUBJECT_TYPES) - {
+    "state_judge",
+}
 from data.industry_jurisdiction_map import (
     get_chrg_codes_for_committees,
     get_jurisdictions_for_donor,
@@ -115,11 +138,38 @@ JFC_NAME_MARKERS: frozenset[str] = frozenset(
     }
 )
 
+_ORG_SUBJECT_TYPES = frozenset({"corporation", "organization"})
+_LEGACY_REGISTRY_ADAPTER_IDS = frozenset(
+    {
+        "fec",
+        "congress",
+        "usaspending",
+        "indiana_cf",
+        "courtlistener",
+        "fjc_biographical",
+        "fec_historical",
+        "lda",
+        "regulations",
+        "govinfo",
+        "govinfo_hearings",
+        "congress_amendments",
+        "fec_jfc",
+        "fec_schedule_b",
+        "idis",
+        "indy_tax_abatement",
+        "indy_procurement",
+    }
+)
+
 
 def _temporal_core_required_adapters(case: CaseFile) -> list[str]:
     """FEC plus Congress when the subject is a public official (Senate vote path)."""
+    if (getattr(case, "government_level", None) or "").strip().lower() == "local":
+        return ["idis", "indy_tax_abatement", "indy_procurement"]
+    if subject_type_is_judicial(case.subject_type):
+        return []
     req = ["fec"]
-    if case.subject_type == "public_official":
+    if subject_type_uses_fec_congress_pipeline(case.subject_type):
         req.append("congress")
     return req
 
@@ -171,6 +221,11 @@ def _empty_source_row_counts() -> dict[str, int]:
         "fec_evidence_written": 0,
         "congress_raw_results": 0,
         "congress_evidence_written": 0,
+        "courtlistener_raw_results": 0,
+        "fjc_biographical_raw_results": 0,
+        "idis_raw_results": 0,
+        "indy_tax_abatement_raw_results": 0,
+        "indy_procurement_raw_results": 0,
     }
 
 
@@ -198,6 +253,46 @@ def _connected_org_for_cluster(
     return ""
 
 
+def _complete_finding_entry(
+    db: Session,
+    entry: EvidenceEntry,
+    *,
+    case: CaseFile | None = None,
+    case_subject_type: str | None = None,
+) -> None:
+    c = case if case is not None else db.get(CaseFile, entry.case_file_id)
+    st = (
+        case_subject_type
+        if case_subject_type is not None
+        else (getattr(c, "subject_type", None) if c else None)
+    )
+    apply_epistemic_metadata_to_entry(entry, case_subject_type=st, case=c, db=db)
+    sign_evidence_entry(entry)
+    finalize_finding_after_sign(entry, c)
+    log_finding_audit(
+        db,
+        finding_id=entry.id,
+        event_type="classification",
+        detail={
+            "basis": getattr(entry, "classification_basis", ""),
+            "epistemic_level": entry.epistemic_level,
+            "source_type": getattr(entry, "source_type", ""),
+            "public": entry.is_publicly_renderable,
+        },
+    )
+    log_finding_audit(
+        db,
+        finding_id=entry.id,
+        event_type="render_decision",
+        detail={
+            "is_publicly_renderable": bool(entry.is_publicly_renderable),
+            "epistemic_level": entry.epistemic_level,
+            "review_status": getattr(entry, "review_status", "pending"),
+            "requires_human_review": bool(getattr(entry, "requires_human_review", False)),
+        },
+    )
+
+
 async def _ingest_regulations_and_hearings_for_clusters(
     db: Session,
     case_id: uuid.UUID,
@@ -206,6 +301,7 @@ async def _ingest_regulations_and_hearings_for_clusters(
     investigator: str,
     committee_names: list[str],
     source_statuses: list[dict[str, Any]],
+    case: CaseFile,
 ) -> None:
     reg_key = CredentialRegistry.get_credential("regulations")
     gov_key = CredentialRegistry.get_credential("govinfo")
@@ -288,7 +384,7 @@ async def _ingest_regulations_and_hearings_for_clusters(
                     )
                     db.add(entry)
                     db.flush()
-                    sign_evidence_entry(entry)
+                    _complete_finding_entry(db, entry, case=case)
                     created_entries.append(entry)
                     cluster.witness_evidence_ids.append(entry.id)
 
@@ -332,7 +428,7 @@ async def _ingest_regulations_and_hearings_for_clusters(
                         )
                         db.add(hent)
                         db.flush()
-                        sign_evidence_entry(hent)
+                        _complete_finding_entry(db, hent, case=case)
                         created_entries.append(hent)
                         cluster.witness_evidence_ids.append(hent.id)
                 else:
@@ -374,7 +470,7 @@ async def _ingest_regulations_and_hearings_for_clusters(
                         )
                         db.add(aent)
                         db.flush()
-                        sign_evidence_entry(aent)
+                        _complete_finding_entry(db, aent, case=case)
                         created_entries.append(aent)
                         cluster.witness_evidence_ids.append(aent.id)
 
@@ -409,6 +505,16 @@ def _adapter_registry_key(adapter: BaseAdapter) -> str:
         return "usaspending"
     if isinstance(adapter, IndianaCFAdapter):
         return "indiana_cf"
+    if isinstance(adapter, IdisCampaignFinanceAdapter):
+        return "idis"
+    if isinstance(adapter, IndianapolisContractsAdapter):
+        return "indy_tax_abatement"
+    if isinstance(adapter, IndianapolisProcurementAdapter):
+        return "indy_procurement"
+    if isinstance(adapter, CourtListenerAdapter):
+        return "courtlistener"
+    if isinstance(adapter, FJCBiographicalAdapter):
+        return "fjc_biographical"
     return "other"
 
 
@@ -498,7 +604,13 @@ def _append_source_status(
     else:
         st = "clean"
     detail_out = response.error
-    if detail_out is None and registry_key in ("fec", "congress", "fec_schedule_b"):
+    if detail_out is None and registry_key in (
+        "fec",
+        "congress",
+        "fec_schedule_b",
+        "courtlistener",
+        "fjc_biographical",
+    ):
         detail_out = response.parse_warning or (
             f"{len(response.results)} result row(s) returned"
         )
@@ -571,6 +683,7 @@ async def _ingest_lda_for_unique_donors(
     created_entries: list[EvidenceEntry],
     investigator: str,
     source_statuses: list[dict[str, Any]],
+    case: CaseFile,
 ) -> None:
     seen_pairs: set[tuple[str, str]] = set()
     for e in created_entries:
@@ -644,7 +757,7 @@ async def _ingest_lda_for_unique_donors(
             )
             db.add(entry)
             db.flush()
-            sign_evidence_entry(entry)
+            _complete_finding_entry(db, entry, case=case)
             created_entries.append(entry)
     source_statuses.append(
         {
@@ -1016,6 +1129,16 @@ def _sync_subject_profile(
     if request.bioguide_id:
         prof.bioguide_id = request.bioguide_id
         prof.updated_by = investigator
+    if (case.government_level or "").strip():
+        prof.government_level = case.government_level.strip()
+    elif not (prof.government_level or "").strip():
+        prof.government_level = default_government_level_for_subject_type(case.subject_type)
+    if (case.branch or "").strip():
+        prof.branch = case.branch.strip()
+    elif not (prof.branch or "").strip():
+        prof.branch = default_branch_for_subject_type(case.subject_type)
+    case.government_level = prof.government_level
+    case.branch = prof.branch
     return prof
 
 
@@ -1051,6 +1174,9 @@ def _ingest_parse_warning_note(
     query: str,
     warning: str,
     created: list[EvidenceEntry],
+    *,
+    case_subject_type: str | None,
+    case: CaseFile | None,
 ) -> None:
     eh = make_evidence_hash(
         case_id,
@@ -1077,7 +1203,15 @@ def _ingest_parse_warning_note(
     )
     db.add(entry)
     db.flush()
-    sign_evidence_entry(entry)
+    _complete_finding_entry(
+        db, entry, case=case, case_subject_type=case_subject_type
+    )
+    log_finding_audit(
+        db,
+        finding_id=entry.id,
+        event_type="parse_warning",
+        detail={"adapter": adapter.source_name, "query": query[:500], "note": warning[:2000]},
+    )
     created.append(entry)
 
 
@@ -1136,7 +1270,11 @@ def _ingest_adapter_results(
     query: str,
     created: list[EvidenceEntry],
     tracker: list[str] | None = None,
+    case_subject_type: str | None = None,
+    case: CaseFile | None = None,
 ) -> None:
+    if case is None:
+        case = db.get(CaseFile, case_id)
     if not response.found:
         _add_source_log(db, case_id, adapter.source_name, query, 0, investigator, "", tracker)
         return
@@ -1183,7 +1321,9 @@ def _ingest_adapter_results(
         )
         db.add(entry)
         db.flush()
-        sign_evidence_entry(entry)
+        _complete_finding_entry(
+            db, entry, case=case, case_subject_type=case_subject_type
+        )
         created.append(entry)
         return
 
@@ -1215,12 +1355,24 @@ def _ingest_adapter_results(
         if is_duplicate(db, case_id, eh):
             continue
 
+        allow_no_url = bool(getattr(result, "is_absence", False)) or (
+            (getattr(result, "entry_type", "") or "") == "gap_documented"
+        )
+        if not allow_no_url and not valid_http_url(result.source_url):
+            logger.warning(
+                "Skipped ingest without direct source URL (%s): %s",
+                adapter.source_name,
+                (result.title or "")[:120],
+            )
+            continue
+
         donor_type_db: str | None = None
         if isinstance(result.raw_data, dict):
             dt_raw = result.raw_data.get("donor_type")
             if dt_raw is not None and str(dt_raw).strip():
                 donor_type_db = str(dt_raw).strip()[:32]
 
+        row_adapter = (result.source_name or "").strip() or adapter.source_name
         entry = EvidenceEntry(
             case_file_id=case_id,
             entry_type=result.entry_type,
@@ -1228,7 +1380,7 @@ def _ingest_adapter_results(
             body=result.body,
             source_url=result.source_url,
             source_name=result.source_name,
-            adapter_name=adapter.source_name,
+            adapter_name=row_adapter,
             date_of_event=d,
             entered_by=investigator,
             confidence=confidence,
@@ -1242,19 +1394,30 @@ def _ingest_adapter_results(
         )
         db.add(entry)
         db.flush()
-        sign_evidence_entry(entry)
+        _complete_finding_entry(
+            db, entry, case=case, case_subject_type=case_subject_type
+        )
         created.append(entry)
 
-    if getattr(response, "parse_warning", None):
-        _ingest_parse_warning_note(
-            db,
-            case_id,
-            investigator,
-            adapter,
-            query,
-            str(response.parse_warning),
-            created,
-        )
+    pw = getattr(response, "parse_warning", None)
+    if pw:
+        # CourtListener returns substantive rows without an API key; parse_warning only
+        # explains skipped opinion/docket fetches — avoid duplicating that as gap evidence.
+        skip_parse_note = isinstance(adapter, CourtListenerAdapter) and getattr(
+            response, "credential_mode", None
+        ) == "credential_unavailable"
+        if not skip_parse_note:
+            _ingest_parse_warning_note(
+                db,
+                case_id,
+                investigator,
+                adapter,
+                query,
+                str(pw),
+                created,
+                case_subject_type=case_subject_type,
+                case=case,
+            )
 
 
 def _unique_batch_case_slug(db: Session, subject_name: str, bioguide_id: str) -> str:
@@ -1371,7 +1534,7 @@ async def execute_investigation_for_case(
         _ensure_investigator(db, request.investigator_handle)
         _bump_contributor(db, case_id, request.investigator_handle)
         prof: SubjectProfile | None = None
-        if case.subject_type == "public_official":
+        if (case.subject_type or "").strip() not in _ORG_SUBJECT_TYPES:
             prof = _sync_subject_profile(db, case, request, request.investigator_handle)
 
         # Reinvestigation: replace evidence so adapter fixes (e.g. matched_name) apply;
@@ -1440,6 +1603,7 @@ async def execute_investigation_for_case(
             created_entries,
             request.investigator_handle,
             source_statuses,
+            case,
         )
         await _enrich_fec_evidence_jurisdiction(db, bg_for_intel, created_entries)
 
@@ -1476,6 +1640,7 @@ async def execute_investigation_for_case(
             request.investigator_handle,
             committee_names_witness,
             source_statuses,
+            case,
         )
         contract_prox, contract_pairing_stats = detect_contract_proximity(substantive)
         contract_anomalies = detect_contract_anomalies(substantive)
@@ -1523,6 +1688,10 @@ async def execute_investigation_for_case(
         stored_signals = sorted(
             stored_by_id.values(), key=lambda s: s.weight or 0.0, reverse=True
         )
+        for s in stored_signals:
+            refresh_signal_epistemic_from_evidence(
+                s, db, case_subject_type=case.subject_type
+            )
 
         _apply_cross_case_baseline_and_fingerprints(
             db,
@@ -1613,7 +1782,7 @@ async def execute_investigation_for_case(
             )
 
         db.commit()
-        if case.subject_type == "public_official":
+        if subject_type_uses_fec_congress_pipeline(case.subject_type):
             log_post_investigate_evidence_snapshot(
                 db,
                 case_id=case_id,
@@ -1809,6 +1978,7 @@ async def _ingest_fec_historical_cycles(
     principal_committee_id: str,
     created_entries: list[EvidenceEntry],
     source_statuses: list[dict[str, Any]],
+    case: CaseFile,
 ) -> None:
     total = 0
     cid = (principal_committee_id or "").strip().upper()
@@ -1878,7 +2048,7 @@ async def _ingest_fec_historical_cycles(
             )
             db.add(entry)
             db.flush()
-            sign_evidence_entry(entry)
+            _complete_finding_entry(db, entry, case=case)
             created_entries.append(entry)
             total += 1
     source_statuses.append(
@@ -1898,6 +2068,7 @@ async def _ingest_amendment_vote_evidence(
     bioguide_id: str,
     created_entries: list[EvidenceEntry],
     source_statuses: list[dict[str, Any]],
+    case: CaseFile,
 ) -> None:
     bg = (bioguide_id or "").strip()
     if not bg:
@@ -1972,7 +2143,7 @@ async def _ingest_amendment_vote_evidence(
             )
             db.add(entry)
             db.flush()
-            sign_evidence_entry(entry)
+            _complete_finding_entry(db, entry, case=case)
             created_entries.append(entry)
             stored += 1
         except Exception as e:
@@ -1995,6 +2166,7 @@ async def _ingest_jfc_donor_schedule_a(
     principal_committee_id: str | None,
     created_entries: list[EvidenceEntry],
     source_statuses: list[dict[str, Any]],
+    case: CaseFile,
 ) -> None:
     disbursements = db.scalars(
         select(EvidenceEntry).where(
@@ -2080,7 +2252,7 @@ async def _ingest_jfc_donor_schedule_a(
             )
             db.add(entry)
             db.flush()
-            sign_evidence_entry(entry)
+            _complete_finding_entry(db, entry, case=case)
             created_entries.append(entry)
             total_rows += 1
     source_statuses.append(
@@ -2100,6 +2272,7 @@ async def _ingest_govinfo_committee_hearing_witnesses(
     bioguide_id: str,
     created_entries: list[EvidenceEntry],
     source_statuses: list[dict[str, Any]],
+    case: CaseFile,
 ) -> None:
     bg = (bioguide_id or "").strip()
     if not bg:
@@ -2207,7 +2380,7 @@ async def _ingest_govinfo_committee_hearing_witnesses(
             )
             db.add(entry)
             db.flush()
-            sign_evidence_entry(entry)
+            _complete_finding_entry(db, entry, case=case)
             created_entries.append(entry)
             stored += 1
         except Exception as e:
@@ -2222,6 +2395,45 @@ async def _ingest_govinfo_committee_hearing_witnesses(
             "detail": f"{stored} witness granule(s) stored",
         }
     )
+
+
+async def _run_registry_planned_adapters(
+    *,
+    case: CaseFile,
+    case_id: uuid.UUID,
+    prof: SubjectProfile | None,
+    source_statuses: list[dict[str, Any]],
+) -> None:
+    if not prof:
+        return
+    rp = ResearchProfile(prof)
+    for aid in rp.get_adapters():
+        if aid in _LEGACY_REGISTRY_ADAPTER_IDS:
+            continue
+        log_planned_adapter(aid, case_id=case_id)
+        source_statuses.append(
+            {
+                "adapter": aid,
+                "display_name": aid.replace("_", " ").title(),
+                "status": "planned_stub",
+                "detail": "adapter planned, not yet implemented",
+            }
+        )
+    for extra in rp.full_depth_extra_source_ids():
+        logger.info(
+            "historical_depth=full best-effort supplemental %s case_id=%s",
+            extra,
+            case_id,
+        )
+        log_planned_adapter(extra, case_id=case_id, detail="historical_depth=full")
+        source_statuses.append(
+            {
+                "adapter": extra,
+                "display_name": extra.replace("_", " ").title(),
+                "status": "planned_stub",
+                "detail": "historical_depth=full — adapter planned, not yet implemented",
+            }
+        )
 
 
 async def _run_investigation_adapters(
@@ -2279,6 +2491,8 @@ async def _run_investigation_adapters(
                     qkey,
                     created_entries,
                     source_check_tracker,
+                    case_subject_type=case.subject_type,
+                    case=case,
                 )
         except Exception as e:
             logger.warning("FEC Schedule B skipped (ingest): %s", e)
@@ -2337,6 +2551,16 @@ async def _run_investigation_adapters(
             source_row_counts["fec_raw_results"] = len(response.results)
         elif isinstance(adapter, CongressVotesAdapter):
             source_row_counts["congress_raw_results"] = len(response.results)
+        elif isinstance(adapter, CourtListenerAdapter):
+            source_row_counts["courtlistener_raw_results"] = len(response.results)
+        elif isinstance(adapter, FJCBiographicalAdapter):
+            source_row_counts["fjc_biographical_raw_results"] = len(response.results)
+        elif isinstance(adapter, IdisCampaignFinanceAdapter):
+            source_row_counts["idis_raw_results"] = len(response.results)
+        elif isinstance(adapter, IndianapolisContractsAdapter):
+            source_row_counts["indy_tax_abatement_raw_results"] = len(response.results)
+        elif isinstance(adapter, IndianapolisProcurementAdapter):
+            source_row_counts["indy_procurement_raw_results"] = len(response.results)
         _append_source_status(source_statuses, rk, response, from_cache)
         if from_cache:
             cache_hits.append(adapter.source_name)
@@ -2351,126 +2575,166 @@ async def _run_investigation_adapters(
             q,
             created_entries,
             source_check_tracker,
+            case_subject_type=case.subject_type,
+            case=case,
         )
 
     bg_for_extras = request.bioguide_id or (prof.bioguide_id if prof else None)
+    is_local = (getattr(case, "government_level", None) or "").strip().lower() == "local"
 
-    principal_cid: str | None = None
-    if request.fec_committee_id:
-        cid = request.fec_committee_id.strip().upper()
-        principal_cid = cid
-        await run_cached(FECAdapter(), cid, "committee")
-        await run_optional_fec_schedule_b(cid)
-    elif case.subject_type == "public_official":
-        resolved_committee = await resolve_principal_committee_id_for_official(
-            request.subject_name,
-            case.jurisdiction or "",
-            bioguide_id=bg_for_extras,
-        )
-        if resolved_committee:
-            principal_cid = resolved_committee.strip().upper()
-            await run_cached(FECAdapter(), resolved_committee, "committee")
-            await run_optional_fec_schedule_b(resolved_committee)
-        else:
-            errors.append(
-                f"credential_mode={fec_credential_source_label()} | committee resolution "
-                f"failed for {request.subject_name!r} — set fec_committee_id explicitly"
-            )
-            await run_cached(FECAdapter(), request.subject_name, "person")
+    if is_local:
+        await run_cached(IdisCampaignFinanceAdapter(), request.subject_name, "person")
+        await run_cached(IndianapolisContractsAdapter(), request.subject_name, "person")
+        await run_cached(IndianapolisProcurementAdapter(), request.subject_name, "person")
     else:
-        await run_cached(FECAdapter(), request.subject_name, "person")
-    await run_cached(USASpendingAdapter(), request.subject_name, "entity")
-    await run_cached(IndianaCFAdapter(), request.subject_name, "person")
-    if case.subject_type == "public_official":
-        cv = CongressVotesAdapter()
-        if bg_for_extras:
-            await run_cached(cv, bg_for_extras, "bioguide_id")
+        principal_cid: str | None = None
+        if request.fec_committee_id:
+            cid = request.fec_committee_id.strip().upper()
+            principal_cid = cid
+            await run_cached(FECAdapter(), cid, "committee")
+            await run_optional_fec_schedule_b(cid)
+        elif subject_type_uses_fec_congress_pipeline(case.subject_type):
+            resolved_committee = await resolve_principal_committee_id_for_official(
+                request.subject_name,
+                case.jurisdiction or "",
+                bioguide_id=bg_for_extras,
+            )
+            if resolved_committee:
+                principal_cid = resolved_committee.strip().upper()
+                await run_cached(FECAdapter(), resolved_committee, "committee")
+                await run_optional_fec_schedule_b(resolved_committee)
+            else:
+                errors.append(
+                    f"credential_mode={fec_credential_source_label()} | committee resolution "
+                    f"failed for {request.subject_name!r} — set fec_committee_id explicitly"
+                )
+                await run_cached(FECAdapter(), request.subject_name, "person")
+        elif subject_type_is_judicial(case.subject_type):
+            source_statuses.append(
+                {
+                    "adapter": "fec",
+                    "display_name": "FEC",
+                    "status": "skipped",
+                    "detail": (
+                        "Not used for judicial subjects — no candidate principal committee; "
+                        "CourtListener / FJC / disclosures are the intended finance bench sources."
+                    ),
+                }
+            )
         else:
-            await run_cached(cv, request.subject_name, "person")
+            await run_cached(FECAdapter(), request.subject_name, "person")
+        await run_cached(USASpendingAdapter(), request.subject_name, "entity")
+        await run_cached(IndianaCFAdapter(), request.subject_name, "person")
+        if subject_type_is_judicial(case.subject_type):
+            cids = courtlistener_court_ids_from_jurisdiction(case.jurisdiction)
+            cl = CourtListenerAdapter()
+            cl.court_ids = cids
+            cl_q = f"{request.subject_name}|{','.join(cids) if cids else 'nocourt'}"
+            await run_cached(cl, cl_q, "judge")
+            if (case.subject_type or "").strip() in _FEDERAL_JUDICIAL_SUBJECT_TYPES:
+                fj = FJCBiographicalAdapter()
+                fj.court_ids = cids
+                fj.jurisdiction_text = case.jurisdiction or ""
+                fj_q = f"{request.subject_name}|{','.join(cids) if cids else 'nocourt'}|{case.jurisdiction or ''}"
+                await run_cached(fj, fj_q, "person")
+        if subject_type_uses_fec_congress_pipeline(case.subject_type):
+            cv = CongressVotesAdapter()
+            if bg_for_extras:
+                await run_cached(cv, bg_for_extras, "bioguide_id")
+            else:
+                await run_cached(cv, request.subject_name, "person")
 
-    try:
-        if principal_cid:
-            await _ingest_fec_historical_cycles(
-                db,
-                case_id,
-                request.investigator_handle,
-                principal_cid,
-                created_entries,
-                source_statuses,
+        try:
+            if principal_cid:
+                await _ingest_fec_historical_cycles(
+                    db,
+                    case_id,
+                    request.investigator_handle,
+                    principal_cid,
+                    created_entries,
+                    source_statuses,
+                    case,
+                )
+        except Exception as e:
+            logger.warning("fec_historical block failed (non-blocking): %s", e)
+            source_statuses.append(
+                {
+                    "adapter": "fec_historical",
+                    "display_name": "FEC (historical Schedule A)",
+                    "status": "processing_failure",
+                    "detail": str(e),
+                }
             )
-    except Exception as e:
-        logger.warning("fec_historical block failed (non-blocking): %s", e)
-        source_statuses.append(
-            {
-                "adapter": "fec_historical",
-                "display_name": "FEC (historical Schedule A)",
-                "status": "processing_failure",
-                "detail": str(e),
-            }
-        )
 
-    try:
-        if case.subject_type == "public_official" and bg_for_extras:
-            await _ingest_amendment_vote_evidence(
-                db,
-                case_id,
-                request.investigator_handle,
-                bg_for_extras,
-                created_entries,
-                source_statuses,
+        try:
+            if subject_type_uses_fec_congress_pipeline(case.subject_type) and bg_for_extras:
+                await _ingest_amendment_vote_evidence(
+                    db,
+                    case_id,
+                    request.investigator_handle,
+                    bg_for_extras,
+                    created_entries,
+                    source_statuses,
+                    case,
+                )
+        except Exception as e:
+            logger.warning("amendment_vote block failed (non-blocking): %s", e)
+            source_statuses.append(
+                {
+                    "adapter": "congress_amendments",
+                    "display_name": "Congress.gov (amendment votes)",
+                    "status": "processing_failure",
+                    "detail": str(e),
+                }
             )
-    except Exception as e:
-        logger.warning("amendment_vote block failed (non-blocking): %s", e)
-        source_statuses.append(
-            {
-                "adapter": "congress_amendments",
-                "display_name": "Congress.gov (amendment votes)",
-                "status": "processing_failure",
-                "detail": str(e),
-            }
-        )
 
-    try:
-        if principal_cid:
-            await _ingest_jfc_donor_schedule_a(
-                db,
-                case_id,
-                request.investigator_handle,
-                principal_cid,
-                created_entries,
-                source_statuses,
+        try:
+            if principal_cid:
+                await _ingest_jfc_donor_schedule_a(
+                    db,
+                    case_id,
+                    request.investigator_handle,
+                    principal_cid,
+                    created_entries,
+                    source_statuses,
+                    case,
+                )
+        except Exception as e:
+            logger.warning("fec_jfc block failed (non-blocking): %s", e)
+            source_statuses.append(
+                {
+                    "adapter": "fec_jfc",
+                    "display_name": "FEC (JFC upstream Schedule A)",
+                    "status": "processing_failure",
+                    "detail": str(e),
+                }
             )
-    except Exception as e:
-        logger.warning("fec_jfc block failed (non-blocking): %s", e)
-        source_statuses.append(
-            {
-                "adapter": "fec_jfc",
-                "display_name": "FEC (JFC upstream Schedule A)",
-                "status": "processing_failure",
-                "detail": str(e),
-            }
-        )
 
-    try:
-        if case.subject_type == "public_official" and bg_for_extras:
-            await _ingest_govinfo_committee_hearing_witnesses(
-                db,
-                case_id,
-                request.investigator_handle,
-                bg_for_extras,
-                created_entries,
-                source_statuses,
+        try:
+            if subject_type_uses_fec_congress_pipeline(case.subject_type) and bg_for_extras:
+                await _ingest_govinfo_committee_hearing_witnesses(
+                    db,
+                    case_id,
+                    request.investigator_handle,
+                    bg_for_extras,
+                    created_entries,
+                    source_statuses,
+                    case,
+                )
+        except Exception as e:
+            logger.warning("govinfo_hearings block failed (non-blocking): %s", e)
+            source_statuses.append(
+                {
+                    "adapter": "govinfo_hearings",
+                    "display_name": "GovInfo (committee hearings)",
+                    "status": "processing_failure",
+                    "detail": str(e),
+                }
             )
-    except Exception as e:
-        logger.warning("govinfo_hearings block failed (non-blocking): %s", e)
-        source_statuses.append(
-            {
-                "adapter": "govinfo_hearings",
-                "display_name": "GovInfo (committee hearings)",
-                "status": "processing_failure",
-                "detail": str(e),
-            }
-        )
+
+    await _run_registry_planned_adapters(
+        case=case, case_id=case_id, prof=prof, source_statuses=source_statuses
+    )
 
 
 @router.get("/cases/{case_id}/signals")

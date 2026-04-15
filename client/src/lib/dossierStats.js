@@ -1,6 +1,6 @@
 /** Derive card stats from GET /api/v1/senators/:bioguide_id/dossier payload. */
 
-import { concernTierFromDossier } from "./dossierParse.js";
+import { concernTierFromDossier, topPatternAlertScore } from "./dossierParse.js";
 
 function countClaims(categories) {
   if (!categories || typeof categories !== "object") return 0;
@@ -31,6 +31,7 @@ export function statsFromDossier(data) {
       last_updated: "",
       dossier_id: data.dossier_id,
       is_building: true,
+      pattern_top_score: null,
     };
   }
 
@@ -60,5 +61,6 @@ export function statsFromDossier(data) {
     last_updated,
     dossier_id: data.dossier_id,
     is_building: false,
+    pattern_top_score: topPatternAlertScore(data),
   };
 }
