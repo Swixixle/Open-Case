@@ -33,6 +33,10 @@ build an adapter from.
 
 ## How to Contribute Code
 
+When you work on the React client (`client/`), case pages combine sidebar stats, markdown narrative, and structured “Other details” claim lists. Example (financial-disclosure facts):
+
+![Case page — other details, financial category](docs/assets/ui/03-case-other-details-financial.png)
+
 ### 1. Find something to work on
 
 Check the [Issues](https://github.com/Swixixle/Open-Case/issues) tab.

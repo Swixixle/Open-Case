@@ -640,7 +640,7 @@ def test_hearing_testimony_skipped_without_govinfo(test_engine) -> None:
 
 
 def test_pattern_engine_version_is_2_6() -> None:
-    assert PATTERN_ENGINE_VERSION == "2.6"
+    assert PATTERN_ENGINE_VERSION == "2.7"
 
 
 def test_joint_fundraising_not_fired_without_principal_committee(test_engine) -> None:

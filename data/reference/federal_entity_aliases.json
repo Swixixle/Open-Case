@@ -1,0 +1,49 @@
+{
+  "description": "Curated federal PAC / affiliate / trade-name links for legislative related-entity donor matching (explicit rows only).",
+  "aliases": [
+    {
+      "jurisdiction": "federal",
+      "canonical_key": "lockheed martin corporation",
+      "alias": "lockheed martin corporation employees political action committee",
+      "relationship_type": "pac_of_donor",
+      "confidence": "high",
+      "source_note": "Defense prime and employee PAC naming pattern; public FEC committee records",
+      "public_explanation": "Employee PAC is a related political account of the corporation; not the same entity as the prime contractor",
+      "reviewed_by": "system",
+      "active": true
+    },
+    {
+      "jurisdiction": "federal",
+      "canonical_key": "boeing",
+      "alias": "boeing political action committee",
+      "relationship_type": "pac_of_donor",
+      "confidence": "high",
+      "source_note": "Aerospace manufacturer vs corporate PAC naming on Schedule A",
+      "public_explanation": "Corporate PAC affiliated with Boeing; distinct filer from operating company",
+      "reviewed_by": "system",
+      "active": true
+    },
+    {
+      "jurisdiction": "federal",
+      "canonical_key": "jpmorgan chase co",
+      "alias": "jpmorgan chase co federal pac",
+      "relationship_type": "pac_of_donor",
+      "confidence": "high",
+      "source_note": "Financial services cluster narrative (Cotton-adjacent sector mix); PAC suffix pattern",
+      "public_explanation": "Bank federal PAC is a related political account of the institution",
+      "reviewed_by": "system",
+      "active": true
+    },
+    {
+      "jurisdiction": "federal",
+      "canonical_key": "northrop grumman corporation",
+      "alias": "northrop grumman innovation systems inc",
+      "relationship_type": "subsidiary",
+      "confidence": "medium",
+      "source_note": "Historical subsidiary / segment naming vs parent (illustrative curated row)",
+      "public_explanation": "Subsidiary or segment name; not asserted identical to parent filer",
+      "reviewed_by": "system",
+      "active": true
+    }
+  ]
+}

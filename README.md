@@ -14,6 +14,8 @@ Open Case cross-references public records — campaign finance, lobbying filings
 
 FEC records document a cluster of financial services and defense sector donations to Cotton's principal committee on February 9–11, 2026, within the proximity window of a Senate vote on S.J.Res. 95. Score reflects donation timing, sector concentration, and committee jurisdiction alignment.
 
+![React client — federal legislative directory and featured finding](docs/assets/ui/01-home-directory-federal-senate.png)
+
 ---
 
 ## What it does
@@ -44,7 +46,7 @@ A court filing is VERIFIED as a document. The accusation inside it is ALLEGED un
 
 ## Pattern engine
 
-The engine ships **17 pattern rules** (see `RULE_*` and `PATTERN_RULE_IDS` in `engines/pattern_engine.py`):
+The engine ships **18 pattern rules** (see `RULE_*` and `PATTERN_RULE_IDS` in `engines/pattern_engine.py`):
 
 | Rule | Signal |
 |------|--------|
@@ -61,6 +63,7 @@ The engine ships **17 pattern rules** (see `RULE_*` and `PATTERN_RULE_IDS` in `e
 | `AMENDMENT_TELL_V1` | Amendment timing vs donor activity |
 | `HEARING_TESTIMONY_V1` | Testimony/donor overlap |
 | `REVOLVING_DOOR_V1` | LDA / employment transition overlap with donors |
+| `LEGISLATIVE_RELATED_ENTITY_DONOR_V1` | Curated PAC/affiliate vs donor-of-record near roll-call votes (federal legislative) |
 | `LOCAL_CONTRACTOR_DONOR_LOOP_V1` | Local procurement vendor ↔ donor (direct / curated alias) |
 | `LOCAL_CONTRACT_DONATION_TIMING_V1` | Donation timing vs contract award (local, award-only) |
 | `LOCAL_VENDOR_CONCENTRATION_V1` | Top vendor vs top donor overlap (local) |

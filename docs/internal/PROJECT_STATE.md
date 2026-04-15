@@ -5,6 +5,10 @@
 
 **Canonical product docs:** [README.md](../../README.md), [ARCHITECTURE.md](../../ARCHITECTURE.md), [PHILOSOPHY.md](../../PHILOSOPHY.md), [CONSTITUTION.md](../../CONSTITUTION.md).
 
+UI reference screenshots live under [`docs/assets/ui/`](../assets/ui/); this handoff uses one representative ethics / investigations slice:
+
+![Case page — other details, ethics category](../assets/ui/04-case-other-details-ethics.png)
+
 ---
 
 ## 1. Repository structure

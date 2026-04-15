@@ -29,6 +29,12 @@ Each layer is independently useful. Layers 1 and 2 form the core that
 everything else depends on. Layers 4 and 5 are social features that sit
 on top of a working detection layer.
 
+### Client UI (dossier)
+
+The Vite React app under `client/` renders signed case payloads: tabbed evidence, timeline, and deep-research categories. Example senator dossier (timeline + tabs):
+
+![Dossier view — timeline and category tabs](docs/assets/ui/02-case-timeline-tabs.png)
+
 ---
 
 ## The Data Flow

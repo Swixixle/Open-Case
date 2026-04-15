@@ -25,6 +25,7 @@ from adapters.indianapolis_procurement import normalize_vendor_name
 from engines.entity_resolution import canonicalize, resolve
 from utils.local_entity_matching import (
     MATCH_RELATED_ENTITY,
+    _load_curated_aliases,
     _local_match_type,
     local_jurisdiction_alias_key,
     local_match_eligible_for_loop_and_timing,
@@ -43,7 +44,7 @@ from models import (
     SubjectProfile,
 )
 
-PATTERN_ENGINE_VERSION = "2.6"
+PATTERN_ENGINE_VERSION = "2.7"
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ RULE_LOCAL_CONTRACTOR_DONOR_LOOP = "LOCAL_CONTRACTOR_DONOR_LOOP_V1"
 RULE_LOCAL_CONTRACT_DONATION_TIMING = "LOCAL_CONTRACT_DONATION_TIMING_V1"
 RULE_LOCAL_VENDOR_CONCENTRATION = "LOCAL_VENDOR_CONCENTRATION_V1"
 RULE_LOCAL_RELATED_ENTITY_DONOR = "LOCAL_RELATED_ENTITY_DONOR_V1"
+RULE_LEGISLATIVE_RELATED_ENTITY_DONOR = "LEGISLATIVE_RELATED_ENTITY_DONOR_V1"
 
 # Enumerated rule ids (diagnostics, QA, client allowlists).
 PATTERN_RULE_IDS: frozenset[str] = frozenset(
@@ -86,7 +88,25 @@ PATTERN_RULE_IDS: frozenset[str] = frozenset(
         RULE_LOCAL_CONTRACT_DONATION_TIMING,
         RULE_LOCAL_VENDOR_CONCENTRATION,
         RULE_LOCAL_RELATED_ENTITY_DONOR,
+        RULE_LEGISLATIVE_RELATED_ENTITY_DONOR,
     }
+)
+
+RULE_FAMILIES: dict[str, dict[str, Any]] = {
+    "related_entity_influence": {
+        "members": [
+            RULE_LOCAL_RELATED_ENTITY_DONOR,
+            RULE_LEGISLATIVE_RELATED_ENTITY_DONOR,
+        ],
+    },
+}
+
+LEGISLATIVE_RELATED_ENTITY_WINDOW_DAYS = 180
+
+_VOICE_VOTE_PHRASES = (
+    "voice vote",
+    "viva voce",
+    "without objection",
 )
 
 # Populated each run by _detect_local_related_entity_donor (read-only telemetry for POC / tests).
@@ -654,6 +674,157 @@ def _vote_qualifies_for_nearest_vote_map(
     if cn is None:
         return True
     return cn == CURRENT_CONGRESS_FOR_VOTE_CONTEXT
+
+
+def _vote_question_blob_lower(raw: dict[str, Any]) -> str:
+    return " ".join(
+        str(raw.get(k) or "")
+        for k in ("question", "voteQuestion", "vote_question", "description")
+    ).lower()
+
+
+def vote_qualifies(raw: dict[str, Any], case_subject_bioguide: str | None) -> bool:
+    """
+    Episode gate for auditable vote proximity: recorded vote context (not voice vote),
+    current congress when known, member bioguide present and aligned to the case subject.
+    """
+    if not isinstance(raw, dict):
+        return False
+    qlow = _vote_question_blob_lower(raw)
+    if any(p in qlow for p in _VOICE_VOTE_PHRASES):
+        return False
+    vt = str(
+        raw.get("vote_type") or raw.get("voteType") or raw.get("method") or ""
+    ).strip().lower()
+    if vt and "voice" in vt and "roll" not in vt:
+        return False
+    subj = (case_subject_bioguide or "").strip().upper() or None
+    vote_bg = _vote_record_bioguide_raw(raw)
+    if subj:
+        if not vote_bg or vote_bg != subj:
+            return False
+    else:
+        if not _vote_bioguide_aligns_with_subject(raw, case_subject_bioguide):
+            return False
+    cn = _vote_raw_congress_number(raw)
+    if cn is not None and cn != CURRENT_CONGRESS_FOR_VOTE_CONTEXT:
+        return False
+    return True
+
+
+def _count_skipped_votes_for_cases(
+    db: Session,
+    case_ids: set[uuid.UUID],
+    prof_by_case: dict[uuid.UUID, str | None],
+) -> int:
+    """Votes present on case that fail ``vote_qualifies`` (audit only; does not change selection)."""
+    if not case_ids:
+        return 0
+    n = 0
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id.in_(case_ids),
+            EvidenceEntry.entry_type.in_(("vote_record", "amendment_vote")),
+        )
+    ).all():
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        subj = prof_by_case.get(ent.case_file_id)
+        if not vote_qualifies(raw, subj):
+            n += 1
+    return n
+
+
+def _nearest_vote_within_days_for_case(
+    db: Session,
+    case_id: uuid.UUID,
+    reference_day: date,
+    prof_by_case: dict[uuid.UUID, str | None],
+    max_days: int,
+) -> tuple[str | None, str | None, int | None]:
+    """Nearest vote evidence that passes ``vote_qualifies`` within ``max_days``."""
+    best_id: str | None = None
+    best_day: date | None = None
+    best_dist: int | None = None
+    for ent in db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            EvidenceEntry.entry_type.in_(("vote_record", "amendment_vote")),
+            EvidenceEntry.date_of_event.isnot(None),
+        )
+    ).all():
+        d = ent.date_of_event
+        if d is None:
+            continue
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        subj = prof_by_case.get(case_id)
+        if not vote_qualifies(raw, subj):
+            continue
+        dist = abs((reference_day - d).days)
+        if dist > max_days:
+            continue
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_id = str(ent.id)
+            best_day = d
+    if best_id is None or best_day is None or best_dist is None:
+        return None, None, None
+    return best_id, best_day.isoformat(), best_dist
+
+
+def _legislative_related_entity_amount_score(amount: float | None) -> float:
+    d = max(0.0, float(amount or 0))
+    nd = min(1.0, math.log10(d + 1.0) / 6.0)
+    return max(0.35, min(0.75, 0.35 + 0.40 * nd))
+
+
+def _federal_indirect_match_label(relationship_type: str | None) -> str:
+    rt = (relationship_type or "").strip().lower()
+    mapping = {
+        "pac_of_donor": "PAC affiliated with donor",
+        "affiliate": "Corporate affiliate of donor",
+        "subsidiary": "Subsidiary of donor",
+        "parent": "Parent company of donor",
+        "trade_name": "Trade name of donor",
+    }
+    return mapping.get(rt, "Related entity of donor")
+
+
+def _fec_financial_evidence_rows(db: Session, case_id: uuid.UUID) -> list[EvidenceEntry]:
+    return list(
+        db.scalars(
+            select(EvidenceEntry).where(
+                EvidenceEntry.case_file_id == case_id,
+                EvidenceEntry.entry_type == "financial_connection",
+                EvidenceEntry.is_absence.is_(False),
+                or_(
+                    EvidenceEntry.source_name == "FEC",
+                    EvidenceEntry.adapter_name == "FEC",
+                ),
+            )
+        ).all()
+    )
+
+
+def _fec_contributor_display(raw: dict[str, Any]) -> str:
+    for k in (
+        "contributor_name",
+        "contributor_name_text",
+        "contributor_display",
+    ):
+        v = raw.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    return ""
 
 
 def _case_ids_with_current_congress_votes(db: Session) -> set[uuid.UUID]:
@@ -1507,6 +1678,9 @@ def _detect_sector_convergence(db: Session, fired_at: datetime) -> list[PatternA
         preview = ", ".join(donor_labels[:5])
         if len(donor_labels) > 5:
             preview = f"{preview}, +{len(donor_labels) - 5} more"
+        ev_sec = sorted({str(e.signal_id) for e in sector_rows})
+        prof_sec = _subject_bioguides_by_case(db)
+        skipped_sec = _count_skipped_votes_for_cases(db, case_uuids, prof_sec)
         alerts.append(
             PatternAlert(
                 rule_id=RULE_SECTOR_CONVERGENCE,
@@ -1516,7 +1690,7 @@ def _detect_sector_convergence(db: Session, fired_at: datetime) -> list[PatternA
                 matched_case_ids=sorted({str(e.case_file_id) for e in sector_rows}),
                 committee=sector_rows[0].committee_display,
                 window_days=int((d1 - d0).days),
-                evidence_refs=sorted({str(e.signal_id) for e in sector_rows}),
+                evidence_refs=ev_sec,
                 fired_at=fired_at,
                 donation_window_start=d0,
                 donation_window_end=d1,
@@ -1540,6 +1714,18 @@ def _detect_sector_convergence(db: Session, fired_at: datetime) -> list[PatternA
                 sector_aggregate=float(s_agg),
                 sector_concentration=float(conc),
                 sector_vote_match=vm,
+                payload_extra={
+                    "match_type": "direct",
+                    "epistemic_basis": "fec_sector_donor_cluster_vote_text",
+                    "evidence_refs": ev_sec,
+                    "score_components": {
+                        "sector_concentration": conc,
+                        "proximity_to_vote": prof,
+                        "calendar_discount": dl_disc,
+                        "vote_text_sector_multiplier": mult,
+                    },
+                    "skipped_votes": skipped_sec,
+                },
             )
         )
     return alerts
@@ -2247,6 +2433,39 @@ def _compute_case_sector_alignment_rates(
     return out
 
 
+def _alignment_vote_evidence_refs_for_sector(
+    db: Session, case_id: uuid.UUID, sector: str
+) -> list[str]:
+    """Vote evidence entry IDs that contributed to sector alignment buckets (epistemic trace)."""
+    votes = db.scalars(
+        select(EvidenceEntry).where(
+            EvidenceEntry.case_file_id == case_id,
+            EvidenceEntry.entry_type == "vote_record",
+            EvidenceEntry.date_of_event.isnot(None),
+        )
+    ).all()
+    ids: list[str] = []
+    for ent in votes:
+        d = ent.date_of_event
+        if d is None:
+            continue
+        try:
+            raw = json.loads(ent.raw_data_json or "{}")
+        except json.JSONDecodeError:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        pos = _senator_vote_position_from_record(raw)
+        if not pos:
+            continue
+        yn = "yea" if pos in ("YEA", "YES", "AYE") else ("nay" if pos in ("NAY", "NO") else "")
+        if yn not in ("yea", "nay"):
+            continue
+        if _lda_active_for_sector_on_date(db, case_id, sector, d):
+            ids.append(str(ent.id))
+    return ids
+
+
 def _chamber_sector_baseline(db: Session, sector: str) -> dict[str, Any] | None:
     rates: list[float] = []
     seen_bg: set[str] = set()
@@ -2293,6 +2512,9 @@ def _detect_alignment_anomaly(
                 continue
             case_row = db.get(CaseFile, cid)
             subj = (case_row.subject_name if case_row else "Official").strip() or "Official"
+            vrefs = _alignment_vote_evidence_refs_for_sector(db, cid, sector)
+            prof_by = _subject_bioguides_by_case(db)
+            skip_n = _count_skipped_votes_for_cases(db, {cid}, prof_by)
             alerts.append(
                 PatternAlert(
                     rule_id=RULE_ALIGNMENT_ANOMALY,
@@ -2302,12 +2524,22 @@ def _detect_alignment_anomaly(
                     matched_case_ids=[str(cid)],
                     committee="",
                     window_days=None,
-                    evidence_refs=[],
+                    evidence_refs=list(vrefs),
                     fired_at=fired_at,
                     sector=sector,
                     suspicion_score=min(1.0, z / 3.0),
                     vote_context_available=True,
                     payload_extra={
+                        "match_type": "direct",
+                        "epistemic_basis": "vote_record_sector_lda_temporal_overlap",
+                        "evidence_refs": list(vrefs),
+                        "score_components": {
+                            "alignment_rate": rate,
+                            "z_score": z,
+                            "chamber_mean_rate": base["mean"],
+                            "chamber_std_dev": base["std_dev"],
+                        },
+                        "skipped_votes": skip_n,
                         "senator_alignment_rate": rate,
                         "chamber_mean_rate": base["mean"],
                         "chamber_std_dev": base["std_dev"],
@@ -2463,6 +2695,9 @@ def _detect_amendment_tell(
                 sig,
                 (fp.canonical_id or fp.normalized_donor_key or "").strip(),
             )
+            ev_am = sorted({str(sig.id), str(ent.id)})
+            prof_am = _subject_bioguides_by_case(db)
+            skipped_am = _count_skipped_votes_for_cases(db, {case_id}, prof_am)
             alerts.append(
                 PatternAlert(
                     rule_id=RULE_AMENDMENT_TELL,
@@ -2472,7 +2707,7 @@ def _detect_amendment_tell(
                     matched_case_ids=[str(case_id)],
                     committee=str(bd.get("committee_label") or ""),
                     window_days=AMENDMENT_TELL_WINDOW_DAYS,
-                    evidence_refs=sorted({str(sig.id), str(ent.id)}),
+                    evidence_refs=ev_am,
                     fired_at=fired_at,
                     aggregate_amount=float(sig.amount or 0.0),
                     suspicion_score=min(1.0, suspicion),
@@ -2483,6 +2718,16 @@ def _detect_amendment_tell(
                     calendar_event_name=cen,
                     vote_context_available=True,
                     payload_extra={
+                        "match_type": "direct",
+                        "epistemic_basis": "fec_donor_cluster_amendment_vote_temporal",
+                        "evidence_refs": ev_am,
+                        "score_components": {
+                            "proximity_to_vote": float(prof),
+                            "calendar_discount": dl_disc,
+                            "inconsistent_record_multiplier": 1.5 if inc else 1.0,
+                            "donor_alignment_multiplier": 1.1 if donor_align else 1.0,
+                        },
+                        "skipped_votes": skipped_am,
                         "amendment_number": str(raw.get("amendment_number") or ""),
                         "amendment_description": desc[:500],
                         "amendment_vote_position": pos,
@@ -2682,6 +2927,11 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
                 by_reg[reg].append(m)
         lda_match_count = len(by_reg)
         evidence_ids = sorted({str(s.id) for _, s in pairs})
+        lda_hit_ids: set[str] = set()
+        for ent in lda_list:
+            if len(match_donor_to_lda(display, emp, [ent])) > 0:
+                lda_hit_ids.add(str(ent.id))
+        evidence_ids_full = sorted(set(evidence_ids) | lda_hit_ids)
         officials = sorted(
             {
                 (fp.official_name or sig.actor_b or "").strip() or "Unknown"
@@ -2690,6 +2940,8 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
         )
         bd = _signal_breakdown_json(sig0)
         cl = str(bd.get("committee_label") or "")
+        prof_rd = _subject_bioguides_by_case(db)
+        skipped_rd = _count_skipped_votes_for_cases(db, {case_id}, prof_rd)
         for reg, reg_matches in sorted(by_reg.items()):
             codes_set: set[str] = set()
             fy_best: int | None = None
@@ -2712,6 +2964,7 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
                 if s_sec:
                     lda_sectors.add(s_sec)
             rel = _revolving_door_vote_relevant(vdesc, vq, vres, lda_sectors)
+            base_score = 1.0 if rel else 0.6
             alerts.append(
                 PatternAlert(
                     rule_id=RULE_REVOLVING_DOOR,
@@ -2734,7 +2987,18 @@ def _detect_revolving_door(db: Session, fired_at: datetime) -> list[PatternAlert
                     revolving_door_vote_relevant=rel,
                     lda_filing_year=fy_best,
                     lda_match_count=lda_match_count,
-                    suspicion_score=1.0 if rel else 0.6,
+                    suspicion_score=base_score,
+                    payload_extra={
+                        "match_type": "direct",
+                        "epistemic_basis": "fec_donor_signals_lda_substring_overlap",
+                        "evidence_refs": evidence_ids_full,
+                        "score_components": {
+                            "vote_relevance_gate": base_score,
+                            "lda_registrant_distinct_count": lda_match_count,
+                            "issue_code_count": len(codes),
+                        },
+                        "skipped_votes": skipped_rd,
+                    },
                 )
             )
     return alerts
@@ -2824,6 +3088,9 @@ def _detect_soft_bundles(
         div_f = float(div) if div is not None else 0.0
         size_factor = min(int(n_donors) / 10.0, 1.0)
         suspicion = div_f * prof * dl_discount * size_factor
+        ev_ids = sorted({str(e.signal_id) for e in window})
+        prof_by_sb = _subject_bioguides_by_case(db)
+        skipped_v = _count_skipped_votes_for_cases(db, case_uuids, prof_by_sb)
         alerts.append(
             PatternAlert(
                 rule_id=RULE_SOFT_BUNDLE,
@@ -2833,7 +3100,7 @@ def _detect_soft_bundles(
                 matched_case_ids=sorted({str(e.case_file_id) for e in window}),
                 committee=sample_row.committee_display,
                 window_days=int(span_days),
-                evidence_refs=sorted({str(e.signal_id) for e in window}),
+                evidence_refs=ev_ids,
                 fired_at=fired_at,
                 donation_window_start=d0,
                 donation_window_end=d1,
@@ -2854,6 +3121,18 @@ def _detect_soft_bundles(
                 calendar_event_name=cen,
                 vote_context_available=True,
                 suspicion_score=suspicion,
+                payload_extra={
+                    "match_type": "direct",
+                    "epistemic_basis": "fec_donor_cluster_signals",
+                    "evidence_refs": ev_ids,
+                    "score_components": {
+                        "amount_diversification": div_f,
+                        "proximity_to_vote": prof,
+                        "calendar_discount": dl_discount,
+                        "cluster_size_factor": size_factor,
+                    },
+                    "skipped_votes": skipped_v,
+                },
             )
         )
     return alerts
@@ -3055,6 +3334,22 @@ def _detect_soft_bundle_v2(
             "window_end": d1.isoformat(),
             "bioguide_id": bg,
         }
+        ev_ids_v2 = sorted({str(e.signal_id) for e in window})
+        prof_v2 = _subject_bioguides_by_case(db)
+        skipped_v2 = _count_skipped_votes_for_cases(db, case_uuids, prof_v2)
+        pe_v2: dict[str, Any] = {
+            "match_type": "direct",
+            "epistemic_basis": "fec_donor_cluster_signals_v2",
+            "evidence_refs": ev_ids_v2,
+            "score_components": {
+                "final_weight": final_weight,
+                "base_weight": base_weight,
+                "adjustments": adjustments,
+                "proximity_to_vote": prof,
+                "calendar_discount": dl_discount,
+            },
+            "skipped_votes": skipped_v2,
+        }
 
         alerts.append(
             PatternAlert(
@@ -3065,7 +3360,7 @@ def _detect_soft_bundle_v2(
                 matched_case_ids=sorted({str(e.case_file_id) for e in window}),
                 committee=sample_row.committee_display,
                 window_days=int(span_days),
-                evidence_refs=sorted({str(e.signal_id) for e in window}),
+                evidence_refs=ev_ids_v2,
                 fired_at=fired_at,
                 donation_window_start=d0,
                 donation_window_end=d1,
@@ -3086,6 +3381,7 @@ def _detect_soft_bundle_v2(
                 vote_context_available=True,
                 suspicion_score=final_weight,
                 diagnostics_json=json.dumps(diagnostics, separators=(",", ":"), default=str),
+                payload_extra=pe_v2,
             )
         )
     return alerts
@@ -3856,6 +4152,209 @@ def _detect_local_vendor_concentration(
     return alerts
 
 
+_LEGISLATIVE_RELATED_ENTITY_ROW_TYPES = frozenset(
+    {"affiliate", "pac_of_donor", "subsidiary", "parent", "trade_name"}
+)
+
+
+def _detect_legislative_related_entity_donor(
+    db: Session, fired_at: datetime
+) -> list[PatternAlert]:
+    """Federal legislative only: curated related-entity PAC/affiliate vs known donor canonical."""
+    alerts: list[PatternAlert] = []
+    prof_by = _subject_bioguides_by_case(db)
+    fed_related_rows = [
+        r
+        for r in _load_curated_aliases("federal")
+        if str(r.get("relationship_type") or "").strip().lower() in _LEGISLATIVE_RELATED_ENTITY_ROW_TYPES
+    ]
+    if not fed_related_rows:
+        return alerts
+
+    lda_by_case: dict[uuid.UUID, list[EvidenceEntry]] = {}
+    for ent in db.scalars(
+        select(EvidenceEntry).where(EvidenceEntry.entry_type == "lobbying_filing")
+    ).all():
+        lda_by_case.setdefault(ent.case_file_id, []).append(ent)
+
+    seen: set[tuple[str, str, str, str]] = set()
+
+    for case in db.scalars(select(CaseFile)).all():
+        gl = (case.government_level or "federal").strip().lower()
+        br = (case.branch or "legislative").strip().lower()
+        if gl != "federal" or br != "legislative":
+            continue
+        cid = case.id
+        official = (case.subject_name or "").strip() or "Unknown official"
+
+        for ent in _fec_financial_evidence_rows(db, cid):
+            try:
+                raw = json.loads(ent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            contrib = _fec_contributor_display(raw)
+            if not contrib:
+                continue
+            don_date = ent.date_of_event
+            if don_date is None:
+                continue
+            try:
+                amt = float(ent.amount or raw.get("contribution_receipt_amount") or 0.0)
+            except (TypeError, ValueError):
+                amt = 0.0
+
+            for row in fed_related_rows:
+                canon = str(row.get("canonical_key") or "").strip()
+                if not canon:
+                    continue
+                rt_row = str(row.get("relationship_type") or "").strip().lower()
+                mt, rt, note = _local_match_type(canon, contrib, "federal", db)
+                if mt != MATCH_RELATED_ENTITY or rt != rt_row:
+                    continue
+                vid, vday, dd = _nearest_vote_within_days_for_case(
+                    db, cid, don_date, prof_by, LEGISLATIVE_RELATED_ENTITY_WINDOW_DAYS
+                )
+                if not vid or vday is None or dd is None:
+                    continue
+                key = (str(cid), str(ent.id), "fec", canon)
+                if key in seen:
+                    continue
+                seen.add(key)
+                label = _federal_indirect_match_label(rt)
+                score = _legislative_related_entity_amount_score(amt)
+                note_s = str(note or row.get("source_note") or "").strip()
+                alerts.append(
+                    PatternAlert(
+                        rule_id=RULE_LEGISLATIVE_RELATED_ENTITY_DONOR,
+                        pattern_version=PATTERN_ENGINE_VERSION,
+                        donor_entity=(
+                            f"Legislative related-entity donor — {contrib} ({label}) vs {canon}"
+                        ),
+                        matched_officials=[official],
+                        matched_case_ids=[str(cid)],
+                        committee=str(row.get("alias") or "")[:512],
+                        window_days=LEGISLATIVE_RELATED_ENTITY_WINDOW_DAYS,
+                        evidence_refs=sorted({str(ent.id), vid}),
+                        fired_at=fired_at,
+                        aggregate_amount=float(amt),
+                        suspicion_score=score,
+                        nearest_vote_id=vid,
+                        nearest_vote_date=vday,
+                        vote_context_available=True,
+                        payload_extra={
+                            "match_type": "related_entity",
+                            "relationship_type": rt,
+                            "relationship_source_note": note_s,
+                            "donor_canonical": canon,
+                            "related_entity_canonical": str(row.get("alias") or ""),
+                            "donor_name_raw": canon,
+                            "related_entity_name_raw": contrib,
+                            "contribution_amount": float(amt),
+                            "contribution_date": don_date.isoformat(),
+                            "adjacent_vote_id": vid,
+                            "adjacent_vote_date": vday,
+                            "days_contribution_to_vote": int(dd),
+                            "indirect_match_label": label,
+                            "epistemic_basis": "fec_schedule_a_contribution",
+                            "evidence_refs": sorted({str(ent.id), vid}),
+                            "score_components": {
+                                "base": 0.35,
+                                "amount_log_scaled": float(score),
+                            },
+                        },
+                    )
+                )
+                break
+
+        for lent in lda_by_case.get(cid, []):
+            try:
+                lraw = json.loads(lent.raw_data_json or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(lraw, dict):
+                continue
+            reg = str(lraw.get("registrant_name") or "").strip()
+            if not reg:
+                continue
+            lda_day = lent.date_of_event
+            if lda_day is None:
+                fy = lraw.get("filing_year")
+                try:
+                    y = int(fy) if fy is not None else None
+                except (TypeError, ValueError):
+                    y = None
+                if y is None:
+                    continue
+                lda_day = date(y, 6, 15)
+
+            for row in fed_related_rows:
+                canon = str(row.get("canonical_key") or "").strip()
+                if not canon:
+                    continue
+                rt_row = str(row.get("relationship_type") or "").strip().lower()
+                mt, rt, note = _local_match_type(canon, reg, "federal", db)
+                if mt != MATCH_RELATED_ENTITY or rt != rt_row:
+                    continue
+                vid, vday, dd = _nearest_vote_within_days_for_case(
+                    db, cid, lda_day, prof_by, LEGISLATIVE_RELATED_ENTITY_WINDOW_DAYS
+                )
+                if not vid or vday is None or dd is None:
+                    continue
+                key = (str(cid), str(lent.id), "lda", canon)
+                if key in seen:
+                    continue
+                seen.add(key)
+                label = _federal_indirect_match_label(rt)
+                score = _legislative_related_entity_amount_score(0.0)
+                note_s = str(note or row.get("source_note") or "").strip()
+                alerts.append(
+                    PatternAlert(
+                        rule_id=RULE_LEGISLATIVE_RELATED_ENTITY_DONOR,
+                        pattern_version=PATTERN_ENGINE_VERSION,
+                        donor_entity=(
+                            f"Legislative related-entity LDA — {reg} ({label}) vs {canon}"
+                        ),
+                        matched_officials=[official],
+                        matched_case_ids=[str(cid)],
+                        committee=str(row.get("alias") or "")[:512],
+                        window_days=LEGISLATIVE_RELATED_ENTITY_WINDOW_DAYS,
+                        evidence_refs=sorted({str(lent.id), vid}),
+                        fired_at=fired_at,
+                        aggregate_amount=0.0,
+                        suspicion_score=score,
+                        nearest_vote_id=vid,
+                        nearest_vote_date=vday,
+                        vote_context_available=True,
+                        payload_extra={
+                            "match_type": "related_entity",
+                            "relationship_type": rt,
+                            "relationship_source_note": note_s,
+                            "donor_canonical": canon,
+                            "related_entity_canonical": str(row.get("alias") or ""),
+                            "donor_name_raw": canon,
+                            "related_entity_name_raw": reg,
+                            "contribution_amount": 0.0,
+                            "contribution_date": lda_day.isoformat(),
+                            "adjacent_vote_id": vid,
+                            "adjacent_vote_date": vday,
+                            "days_contribution_to_vote": int(dd),
+                            "indirect_match_label": label,
+                            "epistemic_basis": "lda_lobbying_filing_registrant",
+                            "evidence_refs": sorted({str(lent.id), vid}),
+                            "score_components": {
+                                "base": 0.35,
+                                "amount_log_scaled": float(score),
+                            },
+                        },
+                    )
+                )
+                break
+
+    return alerts
+
+
 def run_pattern_engine(db: Session) -> list[PatternAlert]:
     """
     Run all pattern rules against the current fingerprint table.
@@ -3883,6 +4382,7 @@ def run_pattern_engine(db: Session) -> list[PatternAlert]:
     alerts.extend(_detect_amendment_tell(db, fired_at, cases_with_votes))
     alerts.extend(_detect_hearing_testimony(db, fired_at))
     alerts.extend(_detect_revolving_door(db, fired_at))
+    alerts.extend(_detect_legislative_related_entity_donor(db, fired_at))
     alerts.extend(_detect_local_contractor_donor_loop(db, fired_at))
     alerts.extend(_detect_local_related_entity_donor(db, fired_at))
     alerts.extend(_detect_local_contract_donation_timing(db, fired_at))
@@ -4113,6 +4613,16 @@ def pattern_alert_to_report_dict(a: PatternAlert) -> dict[str, Any]:
         rule_line = (
             f"Related entity donor — {d} ({rel}) linked to vendor {v}; "
             f"not a direct same-entity donation."
+        )
+    elif a.rule_id == RULE_LEGISLATIVE_RELATED_ENTITY_DONOR:
+        pe = a.payload_extra or {}
+        rel = pe.get("indirect_match_label") or "related entity"
+        rawn = pe.get("related_entity_name_raw") or ""
+        canon = pe.get("donor_canonical") or ""
+        badge = "Legislative related entity"
+        rule_line = (
+            f"Related-entity contribution or LDA filer — {rawn} ({rel}) "
+            f"documented vs donor-of-record {canon}"
         )
     else:
         badge = "Cross-Case Donor"

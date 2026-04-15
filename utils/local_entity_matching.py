@@ -1,7 +1,6 @@
 """
-Curated local entity relationships for procurement ↔ donor matching (non-fuzzy).
-
-Only explicit JSON rows qualify; no string similarity or phonetic matching.
+Curated entity relationships for procurement ↔ donor (local) and federal legislative
+related-entity matching (non-fuzzy). Only explicit JSON rows qualify; no string similarity.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from engines.entity_resolution import canonicalize, resolve
 
 _ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOCAL_ALIASES_PATH = _ROOT / "data" / "reference" / "local_entity_aliases.json"
+DEFAULT_FEDERAL_ALIASES_PATH = _ROOT / "data" / "reference" / "federal_entity_aliases.json"
 
 MATCH_DIRECT = "direct"
 MATCH_ALIAS = "alias"
@@ -24,16 +24,19 @@ MATCH_RELATED_ENTITY = "related_entity"
 MATCH_NONE = "none"
 
 _REL_TYPES_ALIAS = frozenset({"alias"})
-_REL_TYPES_RELATED = frozenset({
-    "affiliate",
-    "pac_of_vendor",
-    "subsidiary",
-    "parent",
-    "trade_name",
-})
+_REL_TYPES_RELATED = frozenset(
+    {
+        "affiliate",
+        "pac_of_vendor",
+        "pac_of_donor",
+        "subsidiary",
+        "parent",
+        "trade_name",
+    }
+)
 
 
-def _resolved_aliases_path(aliases_path: Path | None = None) -> Path:
+def _resolved_local_aliases_path(aliases_path: Path | None = None) -> Path:
     if aliases_path is not None:
         return aliases_path
     env = os.environ.get("OPEN_CASE_LOCAL_ENTITY_ALIASES")
@@ -42,12 +45,35 @@ def _resolved_aliases_path(aliases_path: Path | None = None) -> Path:
     return DEFAULT_LOCAL_ALIASES_PATH
 
 
-def _load_local_aliases(
+def _resolved_federal_aliases_path(aliases_path: Path | None = None) -> Path:
+    if aliases_path is not None:
+        return aliases_path
+    env = os.environ.get("OPEN_CASE_FEDERAL_ENTITY_ALIASES")
+    if env:
+        return Path(env)
+    return DEFAULT_FEDERAL_ALIASES_PATH
+
+
+def aliases_path_for_jurisdiction(
+    jurisdiction: str,
+    *,
+    aliases_path: Path | None = None,
+) -> Path:
+    """Which JSON file backs curated rows for this jurisdiction slug."""
+    if aliases_path is not None:
+        return aliases_path
+    j = (jurisdiction or "").strip().lower()
+    if j == "federal":
+        return _resolved_federal_aliases_path()
+    return _resolved_local_aliases_path()
+
+
+def _load_curated_aliases(
     jurisdiction: str,
     *,
     aliases_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    path = _resolved_aliases_path(aliases_path)
+    path = aliases_path_for_jurisdiction(jurisdiction, aliases_path=aliases_path)
     if not path.is_file():
         return []
     try:
@@ -71,6 +97,15 @@ def _load_local_aliases(
     return out
 
 
+def _load_local_aliases(
+    jurisdiction: str,
+    *,
+    aliases_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Backward-compatible name: loads rows for a jurisdiction slug from the appropriate file."""
+    return _load_curated_aliases(jurisdiction, aliases_path=aliases_path)
+
+
 def local_jurisdiction_alias_key(case_jurisdiction: str) -> str:
     """Map CaseFile.jurisdiction to alias file jurisdiction slug."""
     j = (case_jurisdiction or "").strip().lower()
@@ -81,7 +116,7 @@ def local_jurisdiction_alias_key(case_jurisdiction: str) -> str:
     return j[:120] or "unknown"
 
 
-def _lookup_local_relationship(
+def _lookup_curated_relationship(
     left_label: str,
     right_label: str,
     jurisdiction: str,
@@ -92,7 +127,7 @@ def _lookup_local_relationship(
     dr = canonicalize(right_label)
     if not vl or not dr:
         return None
-    for row in _load_local_aliases(jurisdiction, aliases_path=aliases_path):
+    for row in _load_curated_aliases(jurisdiction, aliases_path=aliases_path):
         ck = canonicalize(str(row.get("canonical_key") or ""))
         al = canonicalize(str(row.get("alias") or ""))
         if not ck or not al:
@@ -100,6 +135,18 @@ def _lookup_local_relationship(
         if (vl == ck and dr == al) or (vl == al and dr == ck):
             return row
     return None
+
+
+def _lookup_local_relationship(
+    left_label: str,
+    right_label: str,
+    jurisdiction: str,
+    *,
+    aliases_path: Path | None = None,
+) -> dict[str, Any] | None:
+    return _lookup_curated_relationship(
+        left_label, right_label, jurisdiction, aliases_path=aliases_path
+    )
 
 
 def _local_match_type(
@@ -113,6 +160,10 @@ def _local_match_type(
     """
     Returns (match_type, relationship_type, relationship_source_note).
     match_type: direct | alias | related_entity | none
+
+    ``jurisdiction`` is a slug: ``federal``, ``indianapolis``, ``testville``, etc.
+    Loads ``federal_entity_aliases.json`` when jurisdiction is ``federal``,
+    otherwise ``local_entity_aliases.json`` (filtered by row jurisdiction).
     """
     a = (vendor_label or "").strip()
     b = (donor_label or "").strip()
@@ -125,7 +176,7 @@ def _local_match_type(
     if bool(ra.canonical_id) and ra.canonical_id == rb.canonical_id:
         return MATCH_DIRECT, None, None
 
-    row = _lookup_local_relationship(a, b, jurisdiction, aliases_path=aliases_path)
+    row = _lookup_curated_relationship(a, b, jurisdiction, aliases_path=aliases_path)
     if row is None:
         return MATCH_NONE, None, None
     rt = str(row.get("relationship_type") or "").strip().lower()

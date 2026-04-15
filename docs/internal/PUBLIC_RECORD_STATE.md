@@ -11,6 +11,10 @@
 
 Public Record (Open Case) is a **backend-first investigation engine** for people who need defensible links between **money, decisions, and institutions**—journalists, researchers, and civic investigators. A user opens a **case** for a subject (e.g., a senator, a mayor, a judge), runs an **investigation** that pulls from configured public sources into **evidence rows**, derives **signals** (e.g., donation–vote proximity) and **pattern alerts** (cross-case and rule-based), tags everything with **epistemic levels**, and produces **Ed25519-signed bundles** so a third party can verify the frozen payload. The system deliberately avoids legal conclusions; it mirrors records and surfaces proximity, not verdicts.
 
+Enrichment narratives (e.g., deep-research markdown) render in the same dark dossier shell:
+
+![Dossier — narrative markdown body](../assets/ui/05-case-narrative-markdown.png)
+
 ---
 
 ## 2. Full annotated file tree (significant paths)
