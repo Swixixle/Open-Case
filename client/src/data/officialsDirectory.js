@@ -26,6 +26,16 @@ export const DIRECTORY_OFFICIALS = [
   { name: "Maria Cantwell", bioguide_id: "C000127", state: "WA", party: "D", subject_type: "senator", branch: "legislative", government_level: "federal" },
   /* Illustrative non-senate rows — open a case in Open Case to populate real IDs */
   { name: "Sample district judge", bioguide_id: "", state: "DC", party: "—", subject_type: "federal_judge_district", branch: "judicial", government_level: "federal", case_id: null },
-  { name: "Sample mayor", bioguide_id: "", state: "—", party: "—", subject_type: "mayor", branch: "executive", government_level: "local", case_id: null },
+  {
+    name: "Sample mayor",
+    bioguide_id: "",
+    state: "IN",
+    party: "—",
+    subject_type: "mayor",
+    branch: "executive",
+    government_level: "local",
+    jurisdiction: "Indianapolis, IN",
+    case_id: null,
+  },
   { name: "Sample state AG", bioguide_id: "", state: "—", party: "—", subject_type: "state_attorney_general", branch: "executive", government_level: "state", case_id: null },
 ];

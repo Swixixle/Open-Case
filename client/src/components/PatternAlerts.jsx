@@ -18,22 +18,18 @@ export default function PatternAlerts({ alerts, newRuleIds }) {
   const sorted = sortAlerts(list);
   const fresh = newRuleIds instanceof Set ? newRuleIds : new Set();
 
+  if (!sorted.length) return null;
+
   return (
     <section className="oc-section">
       <h2 className="oc-section-title">Pattern alerts</h2>
-      {!sorted.length ? (
-        <p className="oc-empty-note">
-          No pattern alerts. FEC signal ingestion may be required for this record.
-        </p>
-      ) : (
-        sorted.map((a, i) => (
-          <PatternAlertCard
-            key={`${a.rule_id || "rule"}-${i}`}
-            alert={a}
-            isNew={fresh.has(a.rule_id)}
-          />
-        ))
-      )}
+      {sorted.map((a, i) => (
+        <PatternAlertCard
+          key={`${a.rule_id || "rule"}-${i}`}
+          alert={a}
+          isNew={fresh.has(a.rule_id)}
+        />
+      ))}
     </section>
   );
 }

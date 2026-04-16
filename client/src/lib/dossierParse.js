@@ -169,3 +169,35 @@ export function formatDisplayDate(iso) {
     return String(iso);
   }
 }
+
+/** Government level for senator dossier shell (API subject, dossier root, or directory row). */
+export function dossierGovernmentLevel(dossier, dirMeta) {
+  const sub = dossier?.subject;
+  const fromSub =
+    sub && typeof sub === "object" ? String(sub.government_level || "").trim() : "";
+  return (
+    fromSub ||
+    String(dossier?.government_level || "").trim() ||
+    String(dirMeta?.government_level || "").trim() ||
+    ""
+  );
+}
+
+/** Minimal “report” shape for DataStatusBanner when rendering from dossier JSON. */
+export function dataStatusBannerReportFromDossier(dossier, dirMeta, displayName) {
+  const sub = dossier?.subject;
+  let jurisdiction = "";
+  if (sub && typeof sub === "object") {
+    jurisdiction = String(sub.jurisdiction || "").trim();
+  }
+  if (!jurisdiction) jurisdiction = String(dossier?.jurisdiction || "").trim();
+  if (!jurisdiction) jurisdiction = String(dirMeta?.jurisdiction || "").trim();
+  if (!jurisdiction && String(dirMeta?.government_level || "").toLowerCase() === "local") {
+    jurisdiction = "Indianapolis, IN";
+  }
+  return {
+    jurisdiction,
+    subject: displayName,
+    title: displayName,
+  };
+}

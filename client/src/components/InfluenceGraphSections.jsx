@@ -13,13 +13,13 @@ export default function InfluenceGraphSections({ dossier }) {
     ? dossier.committee_witnesses
     : [];
 
+  if (!dark.length && !travel.length && !witnesses.length) return null;
+
   return (
     <>
-      <section className="oc-section" id="dark-money">
-        <h2 className="oc-section-title">DARK MONEY — NONPROFIT CONNECTIONS</h2>
-        {!dark.length ? (
-          <p className="oc-empty-note">No data available.</p>
-        ) : (
+      {dark.length ? (
+        <section className="oc-section" id="dark-money">
+          <h2 className="oc-section-title">DARK MONEY — NONPROFIT CONNECTIONS</h2>
           <div className="oc-table-wrap">
             <table className="oc-table">
               <thead>
@@ -56,14 +56,12 @@ export default function InfluenceGraphSections({ dossier }) {
               </tbody>
             </table>
           </div>
-        )}
-      </section>
+        </section>
+      ) : null}
 
-      <section className="oc-section" id="ethics-travel">
-        <h2 className="oc-section-title">GIFTS &amp; SPONSORED TRAVEL</h2>
-        {!travel.length ? (
-          <p className="oc-empty-note">No data available.</p>
-        ) : (
+      {travel.length ? (
+        <section className="oc-section" id="ethics-travel">
+          <h2 className="oc-section-title">GIFTS &amp; SPONSORED TRAVEL</h2>
           <div className="oc-table-wrap">
             <table className="oc-table">
               <thead>
@@ -98,14 +96,12 @@ export default function InfluenceGraphSections({ dossier }) {
               </tbody>
             </table>
           </div>
-        )}
-      </section>
+        </section>
+      ) : null}
 
-      <section className="oc-section" id="committee-witnesses">
-        <h2 className="oc-section-title">COMMITTEE WITNESSES — DONOR OVERLAP</h2>
-        {!witnesses.length ? (
-          <p className="oc-empty-note">No data available.</p>
-        ) : (
+      {witnesses.length ? (
+        <section className="oc-section" id="committee-witnesses">
+          <h2 className="oc-section-title">COMMITTEE WITNESSES — DONOR OVERLAP</h2>
           <div className="oc-table-wrap">
             <table className="oc-table">
               <thead>
@@ -138,8 +134,8 @@ export default function InfluenceGraphSections({ dossier }) {
               </tbody>
             </table>
           </div>
-        )}
-      </section>
+        </section>
+      ) : null}
     </>
   );
 }

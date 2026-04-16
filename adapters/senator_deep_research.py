@@ -16,6 +16,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from adapters.cache import get_cached_raw_json, store_cached_raw_json
+from services.citation_maps import (
+    enrich_claim_sources_from_references,
+    ordered_urls_from_perplexity_response,
+    references_payload_from_ordered_urls,
+)
 from services.dossier_claim_dedup import dedupe_merge_claims
 from services.enrichment_service import validate_narrative
 from utils.http_retry import http_request_with_retry
@@ -189,6 +194,11 @@ def fetch_senator_deep_research_category(
         cl = out.get("claims")
         if isinstance(cl, list):
             out["claims"] = dedupe_merge_claims(cl, threshold=0.85)
+        refs = out.get("references")
+        if not isinstance(refs, list) or not refs:
+            refs = out.get("source_citations")
+        if isinstance(refs, list) and refs and isinstance(out.get("claims"), list):
+            enrich_claim_sources_from_references(out["claims"], refs)
         return out
 
     api_key = (os.environ.get("PERPLEXITY_API_KEY") or "").strip()
@@ -233,6 +243,9 @@ def fetch_senator_deep_research_category(
         query_errors.append(f"phase1: {e!s}")
         data = {}
 
+    phase1_urls = ordered_urls_from_perplexity_response(data if isinstance(data, dict) else {})
+    source_citations = references_payload_from_ordered_urls(phase1_urls)
+
     raw_text = _assistant_text(data)
     arr = _extract_json_array(raw_text)
     for item in arr:
@@ -243,6 +256,8 @@ def fetch_senator_deep_research_category(
             phase_1_claims.append(row)
 
     phase_1_claims = dedupe_merge_claims(phase_1_claims, threshold=0.85)
+    if source_citations:
+        enrich_claim_sources_from_references(phase_1_claims, source_citations)
 
     narrative = ""
     if phase_1_claims:
@@ -268,6 +283,10 @@ def fetch_senator_deep_research_category(
         "narrative_validation_flags": banned_flags,
         "needs_human_review": needs_human_review,
         "from_cache": False,
+        # Category-scoped citation table for this research block only (phase 1 / Perplexity).
+        "source_citations": list(source_citations),
+        # Alias for frontend resolver — same indices as bracket markers in this category.
+        "references": list(source_citations),
     }
     try:
         store_cached_raw_json(db, CACHE_ADAPTER, qkey, result, CACHE_TTL_HOURS)

@@ -8,16 +8,12 @@ function yearLeft(endDate) {
 export default function StaffNetwork({ staff }) {
   const rows = Array.isArray(staff) ? staff : [];
 
+  if (!rows.length) return null;
+
   return (
     <section className="oc-section">
       <h2 className="oc-section-title">REVOLVING DOOR — STAFF NETWORK</h2>
-      {!rows.length ? (
-        <p className="oc-empty-note">
-          Staff network data unavailable. Congress.gov API key required for
-          staff ingestion.
-        </p>
-      ) : (
-        <div className="oc-table-wrap">
+      <div className="oc-table-wrap">
           <table className="oc-table">
             <thead>
               <tr>
@@ -50,7 +46,6 @@ export default function StaffNetwork({ staff }) {
             </tbody>
           </table>
         </div>
-      )}
     </section>
   );
 }

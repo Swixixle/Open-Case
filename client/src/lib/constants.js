@@ -5,6 +5,13 @@ export const CATEGORY_LABELS = {
   public_statements_vs_votes: "Statements vs Votes",
   revolving_door: "Revolving Door",
   recent_news: "Recent News",
+  /** Editorial (render-only) dossier buckets */
+  editorial_financial_disclosures: "Financial Disclosures",
+  editorial_campaign_finance: "Campaign Finance",
+  editorial_revolving_door: "Revolving Door",
+  editorial_allegations_controversies: "Allegations & Controversies",
+  editorial_committee_authority: "Committee & Authority",
+  editorial_other_records: "Other Records",
 };
 
 export function categoryLabel(key) {

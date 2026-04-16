@@ -248,6 +248,63 @@
   color: var(--amber-bright);
 }
 
+/* Home jurisdiction filters — gold border / dark fill (matches sidebar CTAs) */
+.oc-home-filter-nav {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1.5rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.oc-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.oc-filter-row--tier2,
+.oc-filter-row--tier3 {
+  animation: oc-filter-row-in 0.22s ease forwards;
+}
+
+@keyframes oc-filter-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.oc-filter-btn {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  letter-spacing: 0.05em;
+  padding: 0.55rem 0.85rem;
+  cursor: pointer;
+  border: 1px solid var(--amber-dim);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+  text-align: center;
+}
+
+.oc-filter-btn:hover {
+  border-color: var(--amber-bright);
+  color: var(--amber-bright);
+}
+
+.oc-filter-btn.is-active {
+  color: var(--amber-gold);
+  border-color: var(--amber-bright);
+  background: rgba(212, 160, 23, 0.08);
+}
+
 .oc-home-status {
   text-align: center;
   font-size: 0.8rem;
@@ -585,6 +642,89 @@ a.oc-btn-sidebar {
   margin: 0 0 1.25rem;
 }
 
+/* Markdown prose (dossier narratives, summaries) */
+.oc-markdown :first-child {
+  margin-top: 0;
+}
+.oc-markdown :last-child {
+  margin-bottom: 0;
+}
+.oc-markdown h1,
+.oc-markdown h2,
+.oc-markdown h3 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  letter-spacing: 0.04em;
+  line-height: 1.25;
+  margin: 1.25rem 0 0.65rem;
+}
+.oc-markdown h1 {
+  font-size: 1.35rem;
+}
+.oc-markdown h2 {
+  font-size: 1.15rem;
+}
+.oc-markdown h3 {
+  font-size: 1rem;
+}
+.oc-markdown p {
+  margin: 0 0 0.85rem;
+}
+.oc-markdown ul,
+.oc-markdown ol {
+  margin: 0 0 0.85rem;
+  padding-left: 1.35rem;
+  color: var(--text-muted);
+}
+.oc-markdown li {
+  margin: 0.35rem 0;
+}
+.oc-markdown a {
+  color: var(--amber-bright);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.oc-markdown a:hover {
+  color: var(--amber-gold);
+}
+.oc-markdown hr {
+  border: 0;
+  height: 1px;
+  margin: 1.25rem 0;
+  background: linear-gradient(90deg, var(--amber-dim), transparent);
+}
+.oc-markdown blockquote {
+  margin: 0.85rem 0;
+  padding: 0.5rem 0 0.5rem 1rem;
+  border-left: 3px solid var(--amber-dim);
+  color: var(--text-dim);
+}
+.oc-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 0.12em 0.35em;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 3px;
+}
+.oc-markdown pre {
+  margin: 0.85rem 0;
+  padding: 0.75rem 1rem;
+  overflow: auto;
+  font-size: 0.82rem;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.oc-markdown pre code {
+  padding: 0;
+  background: none;
+}
+
+.oc-six-tab-summary {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
 /* Category chips */
 .oc-chips {
   display: flex;
@@ -822,6 +962,21 @@ a.oc-btn-sidebar {
   background: var(--bg-secondary);
 }
 
+.oc-claim-card--interactive {
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.oc-claim-card--interactive:hover {
+  border-color: var(--amber-dim);
+  background: rgba(212, 160, 23, 0.06);
+}
+
+.oc-claim-card--interactive:focus-visible {
+  outline: 2px solid var(--amber-bright);
+  outline-offset: 2px;
+}
+
 .oc-claim-meta {
   display: flex;
   flex-wrap: wrap;
@@ -876,6 +1031,35 @@ a.oc-btn-sidebar {
 
 .oc-claim-source a {
   color: var(--accent-blue);
+}
+
+.oc-source-ref-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  vertical-align: middle;
+}
+
+.oc-source-ref-badge {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  cursor: default;
+  padding: 0.1rem 0.2rem;
+}
+
+.oc-source-ref-badge--link {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.oc-source-ref-badge--link:hover {
+  color: var(--amber-gold);
+  border-bottom-color: var(--amber-dim);
 }
 
 /* Gap analysis */

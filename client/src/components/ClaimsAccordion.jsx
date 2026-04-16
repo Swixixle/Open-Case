@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { categoryLabel } from "../lib/constants.js";
+import { EDITORIAL_CATEGORY_ORDER } from "../lib/dossierCategoryNormalize.js";
 import EntityGroupedClaimList from "./EntityGroupedClaimList.jsx";
 
-export default function ClaimsAccordion({ categories }) {
+export default function ClaimsAccordion({ categories, refUrlMap, dossier }) {
   const keys = useMemo(() => {
-    return Object.keys(categories || {}).filter((k) => {
+    const raw = Object.keys(categories || {}).filter((k) => {
       const claims = categories[k]?.claims;
       return Array.isArray(claims) && claims.length > 0;
     });
+    const ordered = EDITORIAL_CATEGORY_ORDER.filter((k) => raw.includes(k));
+    const rest = raw.filter((k) => !EDITORIAL_CATEGORY_ORDER.includes(k));
+    return [...ordered, ...rest];
   }, [categories]);
 
   const initialOpen = useMemo(() => {
@@ -56,7 +60,12 @@ export default function ClaimsAccordion({ categories }) {
             </button>
             {isOpen ? (
               <div className="oc-accordion-body">
-                <EntityGroupedClaimList claims={claims} categoryKey={key} />
+                <EntityGroupedClaimList
+                  claims={claims}
+                  categoryKey={key}
+                  refUrlMap={refUrlMap}
+                  dossier={dossier}
+                />
               </div>
             ) : null}
           </div>

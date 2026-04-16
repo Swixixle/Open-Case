@@ -152,6 +152,9 @@ async def build_senator_dossier(bioguide_id: str, db: Session) -> dict[str, Any]
         "subject": subject_meta,
         "generated_at": generated_at,
         "completed_at": generated_at,
+        # Category blocks may include scoped "references" / "source_citations" from
+        # senator_deep_research (Perplexity). No top-level dossier "references" aggregate:
+        # indices are meaningful per category only to avoid cross-category mis-mapping.
         "deep_research": {
             "categories": deep.get("categories") or {},
             "needs_human_review": bool(deep.get("needs_human_review")),

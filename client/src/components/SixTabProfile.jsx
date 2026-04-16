@@ -1,6 +1,17 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { categoryLabel } from "../lib/constants.js";
+import {
+  EDITORIAL_ALLEGATIONS,
+  EDITORIAL_CAMPAIGN,
+  EDITORIAL_COMMITTEE,
+  EDITORIAL_FINANCIAL,
+  EDITORIAL_REVOLVING,
+  collectClaimsBySourceKey,
+  normalizeDossierCategories,
+} from "../lib/dossierCategoryNormalize.js";
+import { buildRefUrlMap } from "../lib/sourceRefResolve.js";
 import EntityGroupedClaimList from "./EntityGroupedClaimList.jsx";
+import MarkdownBlock from "./MarkdownBlock.jsx";
 import { JUDICIAL_SUBJECT_TYPES, subjectTypeLabel } from "../lib/subjectLabels.js";
 
 const TABS = [
@@ -81,7 +92,12 @@ function IdentityPanelReport({ sections }) {
         </dl>
       ) : null}
       {block.summary ? (
-        <p style={{ marginTop: "1rem", lineHeight: 1.55 }}>{block.summary}</p>
+        <MarkdownBlock
+          className="oc-six-tab-summary"
+          style={{ marginTop: "1rem", lineHeight: 1.55 }}
+        >
+          {block.summary}
+        </MarkdownBlock>
       ) : null}
     </div>
   );
@@ -112,8 +128,9 @@ function IdentityPanelDossier({ subject }) {
   );
 }
 
-function DossierCategoryPanel({ categories, keys }) {
-  const cats = categories || {};
+function DossierCategoryPanel({ normalizedCategories, keys, refUrlMap, dossier }) {
+  const cats = normalizedCategories || {};
+  const map = refUrlMap instanceof Map ? refUrlMap : new Map();
   const sections = [];
   for (const k of keys) {
     const claims = cats[k]?.claims;
@@ -123,18 +140,50 @@ function DossierCategoryPanel({ categories, keys }) {
         <div className="oc-sidebar-section-title" style={{ marginBottom: "0.5rem" }}>
           {categoryLabel(k).toUpperCase()}
         </div>
-        <EntityGroupedClaimList claims={claims} categoryKey={k} />
+        <EntityGroupedClaimList claims={claims} categoryKey={k} refUrlMap={map} />
       </div>
     );
   }
-  if (!sections.length) {
-    return (
-      <p className="oc-empty-note" style={{ margin: 0 }}>
-        Nothing in this section yet.
-      </p>
-    );
-  }
+  if (!sections.length) return null;
   return <div>{sections}</div>;
+}
+
+function PoliticsStatementsPanel({ normalized, refUrlMap, dossier }) {
+  const claims = collectClaimsBySourceKey(normalized, "public_statements_vs_votes");
+  if (!claims.length) return null;
+  const map = refUrlMap instanceof Map ? refUrlMap : new Map();
+  return (
+    <div style={{ marginBottom: "1.25rem" }}>
+      <div className="oc-sidebar-section-title" style={{ marginBottom: "0.5rem" }}>
+        {categoryLabel("public_statements_vs_votes").toUpperCase()}
+      </div>
+      <EntityGroupedClaimList
+        claims={claims}
+        categoryKey="public_statements_vs_votes"
+        refUrlMap={map}
+        dossier={dossier}
+      />
+    </div>
+  );
+}
+
+function BenchNewsPanel({ normalized, refUrlMap, dossier }) {
+  const claims = collectClaimsBySourceKey(normalized, "recent_news");
+  if (!claims.length) return null;
+  const map = refUrlMap instanceof Map ? refUrlMap : new Map();
+  return (
+    <div style={{ marginBottom: "1.25rem" }}>
+      <div className="oc-sidebar-section-title" style={{ marginBottom: "0.5rem" }}>
+        {categoryLabel("recent_news").toUpperCase()}
+      </div>
+      <EntityGroupedClaimList
+        claims={claims}
+        categoryKey="recent_news"
+        refUrlMap={map}
+        dossier={dossier}
+      />
+    </div>
+  );
 }
 
 function SignalsPanelReport({ sections }) {
@@ -167,16 +216,40 @@ function SignalsPanelReport({ sections }) {
  * @param {"report" | "dossier"} mode
  * @param {object} [report] full GET /cases/:id/report
  * @param {object} [dossier] senator dossier shape
+ * @param {object} [displayCategories] normalized editorial categories (dossier render)
+ * @param {Map<number, string>} [refUrlMap] bracket ref index → URL
  */
-export default function SixTabProfile({ mode = "report", report, dossier, subjectType }) {
+export default function SixTabProfile({
+  mode = "report",
+  report,
+  dossier,
+  subjectType,
+  displayCategories = null,
+   refUrlMap = null,
+}) {
   const [active, setActive] = useState("identity");
 
   const judicial =
     subjectType && JUDICIAL_SUBJECT_TYPES.has(subjectType);
 
   const sections = report?.sections;
-  const categories = dossier?.deep_research?.categories;
   const subject = dossier?.subject;
+  const dossierDoc = dossier;
+  const norm = useMemo(() => {
+    if (displayCategories && typeof displayCategories === "object") {
+      return displayCategories;
+    }
+    if (mode === "dossier") {
+      return normalizeDossierCategories(dossier?.deep_research?.categories || {});
+    }
+    return {};
+  }, [displayCategories, mode, dossier?.deep_research?.categories]);
+
+  const sourceRefMap = useMemo(() => {
+    if (refUrlMap instanceof Map) return refUrlMap;
+    if (mode === "dossier" && dossierDoc) return buildRefUrlMap(dossierDoc);
+    return new Map();
+  }, [refUrlMap, mode, dossierDoc]);
 
   return (
     <section className="oc-section oc-six-tab-profile">
@@ -207,26 +280,39 @@ export default function SixTabProfile({ mode = "report", report, dossier, subjec
             <EvidenceList rows={sections?.money} />
           ) : (
             <DossierCategoryPanel
-              categories={categories}
-              keys={["financial_disclosures"]}
+              normalizedCategories={norm}
+              keys={[EDITORIAL_FINANCIAL, EDITORIAL_CAMPAIGN]}
+              refUrlMap={sourceRefMap}
+              dossier={dossierDoc}
             />
           )
         ) : active === "politics" ? (
           mode === "report" ? (
             <EvidenceList rows={sections?.politics} />
           ) : (
-            <DossierCategoryPanel
-              categories={categories}
-              keys={["donor_vs_vote_record", "public_statements_vs_votes"]}
-            />
+            <>
+              <DossierCategoryPanel
+                normalizedCategories={norm}
+                keys={[EDITORIAL_COMMITTEE]}
+                refUrlMap={sourceRefMap}
+                dossier={dossierDoc}
+              />
+              <PoliticsStatementsPanel
+                normalized={norm}
+                refUrlMap={sourceRefMap}
+                dossier={dossierDoc}
+              />
+            </>
           )
         ) : active === "conduct" ? (
           mode === "report" ? (
             <EvidenceList rows={sections?.conduct} />
           ) : (
             <DossierCategoryPanel
-              categories={categories}
-              keys={["ethics_and_investigations", "revolving_door"]}
+              normalizedCategories={norm}
+              keys={[EDITORIAL_ALLEGATIONS, EDITORIAL_REVOLVING]}
+              refUrlMap={sourceRefMap}
+              dossier={dossierDoc}
             />
           )
         ) : active === "bench_record" ? (
@@ -234,7 +320,11 @@ export default function SixTabProfile({ mode = "report", report, dossier, subjec
             mode === "report" ? (
               <EvidenceList rows={sections?.bench_record} />
             ) : (
-              <DossierCategoryPanel categories={categories} keys={["recent_news"]} />
+              <BenchNewsPanel
+                normalized={norm}
+                refUrlMap={sourceRefMap}
+                dossier={dossierDoc}
+              />
             )
           ) : (
             <p className="oc-empty-note" style={{ margin: 0 }}>
@@ -247,8 +337,8 @@ export default function SixTabProfile({ mode = "report", report, dossier, subjec
             <SignalsPanelReport sections={sections} />
           ) : (
             <p className="oc-empty-note" style={{ margin: 0 }}>
-              See pattern alerts above for quantitative signals. Dossier signals may also
-              appear in story angles and gap analysis below.
+              Quantitative signals appear under pattern alerts when this record includes
+              them. Supporting context may also appear in story angles or documented gaps.
             </p>
           )
         ) : null}

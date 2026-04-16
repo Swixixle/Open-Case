@@ -12,10 +12,7 @@ import {
 } from "../lib/api.js";
 import { statsFromDossier } from "../lib/dossierStats.js";
 import {
-  DEFAULT_FEDERAL_SENATE_NAV,
   GOVERNMENT_NAV_TREE,
-  TOP_LEVELS,
-  flattenNavLeaves,
   navMatchesSelection,
 } from "../lib/navigationTaxonomy.js";
 import { subjectTypeLabel } from "../lib/subjectLabels.js";
@@ -33,6 +30,17 @@ async function tryFetchDossierList() {
   if (!res.ok) return null;
   const data = await res.json();
   return Array.isArray(data) ? data : data?.dossiers ?? null;
+}
+
+function navTreeForLevel(levelKey) {
+  if (!levelKey) return null;
+  return GOVERNMENT_NAV_TREE.find((t) => t.levelId === levelKey) || null;
+}
+
+function branchGroupMatchesUrl(br, branch, level) {
+  return br.items.some(
+    (it) => it.branch === branch && it.government_level === level
+  );
 }
 
 async function fetchDossierForCard(bg) {
@@ -105,11 +113,7 @@ export default function HomePage() {
   const level = params.get("level") || "";
   const type = params.get("type") || "";
 
-  const [activeTop, setActiveTop] = useState("federal");
-  const [allRecordsMode, setAllRecordsMode] = useState(false);
-  const [expandedNavGroups, setExpandedNavGroups] = useState(
-    () => new Set(["legislative"])
-  );
+  const isAllView = !branch && !level && !type;
   const [searchDraft, setSearchDraft] = useState("");
   const [query, setQuery] = useState("");
   const [searchPayload, setSearchPayload] = useState(null);
@@ -117,57 +121,28 @@ export default function HomePage() {
   const [cards, setCards] = useState([]);
   const [loadNote, setLoadNote] = useState("Loading directory…");
 
-  useEffect(() => {
-    if (branch && level && type) {
-      setAllRecordsMode(false);
-      return;
-    }
-    if (allRecordsMode) return;
-    if (activeTop !== "federal") return;
-    const next = new URLSearchParams();
-    next.set("branch", DEFAULT_FEDERAL_SENATE_NAV.branch);
-    next.set("level", DEFAULT_FEDERAL_SENATE_NAV.government_level);
-    next.set("type", DEFAULT_FEDERAL_SENATE_NAV.subject_type);
-    setParams(next, { replace: true });
-  }, [branch, level, type, activeTop, allRecordsMode, setParams]);
+  const setTopLevelOnly = useCallback(
+    (levelId) => {
+      const next = new URLSearchParams();
+      next.set("level", levelId);
+      setParams(next, { replace: true });
+    },
+    [setParams]
+  );
 
-  useEffect(() => {
-    if (!branch && !level && !type) return;
-    const hit = flattenNavLeaves().find(
-      (i) =>
-        i.branch === branch &&
-        i.government_level === level &&
-        i.subject_type === type
-    );
-    if (hit) setActiveTop(hit.topLevelId);
-  }, [branch, level, type]);
+  const selectBranchGroup = useCallback(
+    (br) => {
+      const it = br.items[0];
+      const next = new URLSearchParams();
+      next.set("branch", it.branch);
+      next.set("level", it.government_level);
+      setParams(next, { replace: true });
+    },
+    [setParams]
+  );
 
-  useEffect(() => {
-    const tree = GOVERNMENT_NAV_TREE.find((x) => x.levelId === activeTop);
-    if (!tree?.branches?.length) {
-      setExpandedNavGroups(new Set());
-      return;
-    }
-    const hit = tree.branches.find((br) =>
-      br.items.some((it) => navMatchesSelection(it, branch, level, type))
-    );
-    if (hit) {
-      setExpandedNavGroups(new Set([hit.branchId]));
-    } else {
-      setExpandedNavGroups(new Set());
-    }
-  }, [activeTop, branch, level, type]);
-
-  const toggleNavGroup = useCallback((branchId) => {
-    setExpandedNavGroups((prev) => {
-      if (prev.has(branchId) && prev.size === 1) return new Set();
-      return new Set([branchId]);
-    });
-  }, []);
-
-  const setNavFilter = useCallback(
+  const setNavLeaf = useCallback(
     (item) => {
-      setAllRecordsMode(false);
       const next = new URLSearchParams();
       next.set("branch", item.branch);
       next.set("level", item.government_level);
@@ -254,7 +229,7 @@ export default function HomePage() {
       const list = await tryFetchDossierList().catch(() => null);
       if (cancelled) return;
 
-      if (list && list.length && !branch && !level && !type) {
+      if (list && list.length && isAllView) {
         const merged = list.slice(0, 8).map((row) => ({
           name: row.name || row.senator_name || "Unknown",
           title: "U.S. Senator",
@@ -318,7 +293,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [branch, level, type]);
+  }, [branch, level, type, isAllView]);
 
   const filteredCards = useMemo(() => {
     const q = searchDraft.trim().toLowerCase();
@@ -331,9 +306,11 @@ export default function HomePage() {
     );
   }, [cards, searchDraft]);
 
-  const subTree = GOVERNMENT_NAV_TREE.find((t) => t.levelId === activeTop);
-  const selectValue =
-    branch && level && type ? `${branch}|${level}|${type}` : "__all";
+  const subTree = navTreeForLevel(level);
+  const activeBranchGroup =
+    subTree && branch && level
+      ? subTree.branches.find((br) => branchGroupMatchesUrl(br, branch, level))
+      : null;
 
   return (
     <div className="oc-home">
@@ -412,117 +389,78 @@ export default function HomePage() {
         </div>
       </div>
 
-      <nav className="oc-branch-nav" aria-label="Government branches">
-        <div className="oc-branch-tabs">
-          {TOP_LEVELS.map((t) => {
-            const isFed = t.id === "federal";
-            const active = isFed
-              ? activeTop === "federal" && !allRecordsMode
-              : activeTop === t.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                className={`oc-branch-tab ${active ? "is-active" : ""}`}
-                onClick={() => {
-                  if (t.id === activeTop && !allRecordsMode) return;
-                  setActiveTop(t.id);
-                  setAllRecordsMode(false);
-                  clearNavFilter();
-                }}
-              >
-                {t.label}
-              </button>
-            );
-          })}
+      <nav className="oc-home-filter-nav" aria-label="Jurisdiction filters">
+        <div className="oc-filter-row oc-filter-row--tier1">
           <button
             type="button"
-            className={`oc-branch-tab oc-branch-tab--ghost ${allRecordsMode ? "is-active" : ""}`}
-            onClick={() => {
-              setAllRecordsMode(true);
-              setActiveTop("federal");
-              clearNavFilter();
-            }}
+            className={`oc-filter-btn ${isAllView ? "is-active" : ""}`}
+            onClick={() => clearNavFilter()}
           >
             All
           </button>
-        </div>
-
-        <div className="oc-branch-mobile">
-          <label className="sr-only" htmlFor="oc-branch-select">
-            Branch navigation
-          </label>
-          <select
-            id="oc-branch-select"
-            className="oc-branch-select"
-            value={selectValue}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === "__all") {
-                setAllRecordsMode(true);
-                setActiveTop("federal");
-                clearNavFilter();
-                return;
-              }
-              setAllRecordsMode(false);
-              const [b, l, ty] = v.split("|");
-              const next = new URLSearchParams();
-              next.set("branch", b);
-              next.set("level", l);
-              next.set("type", ty);
-              setParams(next, { replace: true });
-            }}
+          <button
+            type="button"
+            className={`oc-filter-btn ${level === "federal" ? "is-active" : ""}`}
+            onClick={() => setTopLevelOnly("federal")}
           >
-            <option value="__all">All records</option>
-            {flattenNavForSelect().map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+            Federal
+          </button>
+          <button
+            type="button"
+            className={`oc-filter-btn ${level === "state" ? "is-active" : ""}`}
+            onClick={() => setTopLevelOnly("state")}
+          >
+            State
+          </button>
+          <button
+            type="button"
+            className={`oc-filter-btn ${level === "local" ? "is-active" : ""}`}
+            onClick={() => setTopLevelOnly("local")}
+          >
+            Local
+          </button>
         </div>
 
-        {subTree ? (
-          <div className="oc-subnav">
+        {subTree?.branches?.length ? (
+          <div
+            className="oc-filter-row oc-filter-row--tier2"
+            key={`tier2-${level}`}
+          >
             {subTree.branches.map((br) => {
-              const open = expandedNavGroups.has(br.branchId);
+              const active =
+                Boolean(branch && level) && branchGroupMatchesUrl(br, branch, level);
               return (
-                <div
+                <button
                   key={br.branchId}
-                  className={`oc-subnav-group ${open ? "" : "is-collapsed"}`}
+                  type="button"
+                  className={`oc-filter-btn ${active ? "is-active" : ""}`}
+                  onClick={() => selectBranchGroup(br)}
                 >
-                  <button
-                    type="button"
-                    className="oc-subnav-group-toggle"
-                    aria-expanded={open}
-                    onClick={() => toggleNavGroup(br.branchId)}
-                  >
-                    <span>{br.label}</span>
-                    <span className="oc-subnav-chevron" aria-hidden>
-                      {open ? "\u25BC" : "\u25B6"}
-                    </span>
-                  </button>
-                  <div className="oc-subnav-links">
-                    {br.items.map((item) => {
-                      const active = navMatchesSelection(
-                        item,
-                        branch,
-                        level,
-                        type
-                      );
-                      return (
-                        <button
-                          key={`${item.subject_type}-${item.label}`}
-                          type="button"
-                          className={`oc-subnav-link ${active ? "is-active" : ""}`}
-                          onClick={() => setNavFilter(item)}
-                        >
-                          {item.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                  {br.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {activeBranchGroup?.items?.length ? (
+          <div
+            className="oc-filter-row oc-filter-row--tier3"
+            key={`tier3-${branch}-${level}`}
+          >
+            {activeBranchGroup.items.map((item) => {
+              const active =
+                Boolean(type) &&
+                navMatchesSelection(item, branch, level, type);
+              return (
+                <button
+                  key={`${item.subject_type}-${item.label}`}
+                  type="button"
+                  className={`oc-filter-btn ${active ? "is-active" : ""}`}
+                  onClick={() => setNavLeaf(item)}
+                >
+                  {item.label}
+                </button>
               );
             })}
           </div>
@@ -577,11 +515,4 @@ export default function HomePage() {
       <BottomBar />
     </div>
   );
-}
-
-function flattenNavForSelect() {
-  return flattenNavLeaves().map((item) => ({
-    value: `${item.branch}|${item.government_level}|${item.subject_type}`,
-    label: `${item.topLevelId.toUpperCase()} · ${item.branchGroupLabel} · ${item.label}`,
-  }));
 }

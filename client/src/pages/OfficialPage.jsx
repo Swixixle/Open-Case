@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import BottomBar from "../components/BottomBar.jsx";
 import CategoryChips from "../components/CategoryChips.jsx";
@@ -9,6 +9,7 @@ import GapAnalysis from "../components/GapAnalysis.jsx";
 import InfluenceGraphSections from "../components/InfluenceGraphSections.jsx";
 import InvestigationReceipt from "../components/InvestigationReceipt.jsx";
 import LoadingScreen from "../components/LoadingScreen.jsx";
+import MarkdownBlock from "../components/MarkdownBlock.jsx";
 import DataStatusBanner from "../components/DataStatusBanner.jsx";
 import PatternAlerts from "../components/PatternAlerts.jsx";
 import SixTabProfile from "../components/SixTabProfile.jsx";
@@ -25,9 +26,16 @@ import {
   epistemicDistributionFromDossier,
   firstNarrativeParagraph,
   formatDisplayDate,
+  dataStatusBannerReportFromDossier,
+  dossierGovernmentLevel,
   timelineClaims,
   topPatternAlertScore,
 } from "../lib/dossierParse.js";
+import {
+  firstEditorialNarrative,
+  normalizeDossierCategories,
+} from "../lib/dossierCategoryNormalize.js";
+import { buildRefUrlMap } from "../lib/sourceRefResolve.js";
 import { subjectTypeLabel } from "../lib/subjectLabels.js";
 
 const CASE_UUID_RE =
@@ -242,6 +250,7 @@ function OfficialCasePage({ caseId }) {
   const lastInv = formatDisplayDate(report?.opened_at || "");
   const tlines = reportTimelineToClaims(report?.timeline);
   const alerts = report?.pattern_alerts || [];
+  const refUrlMap = useMemo(() => buildRefUrlMap(report || {}), [report]);
 
   return (
     <div className="oc-dossier-wrap">
@@ -311,10 +320,10 @@ function OfficialCasePage({ caseId }) {
             </p>
             <hr className="oc-hero-rule" />
             <EpistemicBar distribution={epDist} />
-            <p className="oc-hero-narrative" style={{ marginTop: "1rem" }}>
+            <MarkdownBlock className="oc-hero-narrative" style={{ marginTop: "1rem" }}>
               {report?.summary ||
                 "Public records case file. Review pattern alerts and tabbed evidence below."}
-            </p>
+            </MarkdownBlock>
           </section>
 
           {String(reportCaseGovernmentLevel(report)).toLowerCase() === "local" ? (
@@ -327,6 +336,8 @@ function OfficialCasePage({ caseId }) {
 
           <Timeline
             claims={tlines}
+            refUrlMap={refUrlMap}
+            dossier={report}
             defaultCollapsed
             maxItemsWhenCollapsed={3}
             criticalOnlyWhenCollapsed
@@ -656,15 +667,21 @@ function OfficialSenatorDossierPage({ bioguideId }) {
       ? new Date().getFullYear() - yearsInOffice
       : null;
 
-  const cats = data.deep_research?.categories || {};
+  const rawCats = data.deep_research?.categories || {};
+  const displayCategories = useMemo(
+    () => normalizeDossierCategories(rawCats),
+    [rawCats]
+  );
+  const refUrlMap = useMemo(() => buildRefUrlMap(data), [data]);
   const narrative =
-    firstNarrativeParagraph(cats) ||
+    firstEditorialNarrative(displayCategories) ||
+    firstNarrativeParagraph(rawCats) ||
     "Public records research in progress for this official.";
   const tier = concernTierFromDossier(data);
   const epDist = epistemicDistributionFromDossier(data);
-  const nFind = countTotalFindings(cats);
-  const nCat = categoriesWithClaims(cats).length;
-  const tlines = timelineClaims(cats);
+  const nFind = countTotalFindings(displayCategories);
+  const nCat = categoriesWithClaims(displayCategories).length;
+  const tlines = timelineClaims(displayCategories);
   const updated = formatDisplayDate(
     data.completed_at || data.generated_at || ""
   );
@@ -781,12 +798,18 @@ function OfficialSenatorDossierPage({ bioguideId }) {
             </div>
             <hr className="oc-hero-rule" />
             {epDist ? <EpistemicBar distribution={epDist} /> : null}
-            <p className="oc-hero-narrative">{narrative}</p>
+            <MarkdownBlock className="oc-hero-narrative">{narrative}</MarkdownBlock>
             <CategoryChips
-              categories={cats}
+              categories={displayCategories}
               onNavigate={(anchor) => scrollToAnchor(anchor)}
             />
           </section>
+
+          {String(dossierGovernmentLevel(data, dirMeta)).toLowerCase() === "local" ? (
+            <DataStatusBanner
+              report={dataStatusBannerReportFromDossier(data, dirMeta, displayName)}
+            />
+          ) : null}
 
           <PatternAlerts alerts={data.pattern_alerts} />
 
@@ -794,16 +817,24 @@ function OfficialSenatorDossierPage({ bioguideId }) {
             mode="dossier"
             dossier={data}
             subjectType={subjectType}
+            displayCategories={displayCategories}
+            refUrlMap={refUrlMap}
           />
 
           <Timeline
             claims={tlines}
+            refUrlMap={refUrlMap}
+            dossier={data}
             defaultCollapsed
             maxItemsWhenCollapsed={3}
             criticalOnlyWhenCollapsed
           />
 
-          <ClaimsAccordion categories={cats} />
+          <ClaimsAccordion
+            categories={displayCategories}
+            refUrlMap={refUrlMap}
+            dossier={data}
+          />
           <GapAnalysis gaps={data.gap_analysis} />
           <StaffNetwork staff={data.staff_network} />
           <InfluenceGraphSections dossier={data} />

@@ -3,6 +3,13 @@
  * Heuristic only (display + ingest hints); not a substitute for NER.
  */
 
+import {
+  OTHER_DETAILS_LABEL,
+  displayNameValid,
+  foldToMentionedValidLabel,
+  sanitizeEntityDisplayName,
+} from "./entityDisplayNormalize.js";
+
 const BANNED_FIRST = new Set([
   "The",
   "This",
@@ -116,14 +123,34 @@ function claimDateSortValue(dateStr) {
 export function groupClaimsByEntity(claims) {
   if (!Array.isArray(claims) || !claims.length) return [];
 
-  const map = new Map();
-  const order = [];
-
+  const prepared = [];
   for (const c of claims) {
     if (!c || typeof c !== "object") continue;
     const text = String(c.claim || c.text || "").trim();
     if (!text) continue;
-    const label = extractPrimaryEntity(text);
+    const raw = extractPrimaryEntity(text);
+    const sanitized = sanitizeEntityDisplayName(raw);
+    prepared.push({ claim: c, text, sanitized });
+  }
+
+  const validLabels = [
+    ...new Set(
+      prepared
+        .map((p) => p.sanitized)
+        .filter((s) => displayNameValid(s, {}))
+    ),
+  ];
+
+  const map = new Map();
+  const order = [];
+
+  for (const { claim: c, text, sanitized } of prepared) {
+    let label = sanitized;
+    if (!displayNameValid(label, { claimText: text })) {
+      const folded = foldToMentionedValidLabel(label, text, validLabels);
+      label = folded || OTHER_DETAILS_LABEL;
+    }
+    label = sanitizeEntityDisplayName(label) || OTHER_DETAILS_LABEL;
     const key = label.toLowerCase();
     if (!map.has(key)) {
       map.set(key, { entityLabel: label, entityKey: key, claims: [] });
