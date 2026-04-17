@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
+import "./HomePage.css";
 import OfficialCard from "../components/OfficialCard.jsx";
+
+/** Shown on landing trust strip; update when pytest count changes meaningfully. */
+const PYTEST_FLOOR_DISPLAY = 311;
 import BottomBar from "../components/BottomBar.jsx";
 import ConcernBadge from "../components/ConcernBadge.jsx";
 import { DIRECTORY_OFFICIALS } from "../data/officialsDirectory.js";
@@ -313,27 +317,63 @@ export default function HomePage() {
       : null;
 
   return (
-    <div className="oc-home">
-      <header className="oc-header-bar">
-        <div>
-          <div className="oc-header-brand">OPEN CASE</div>
-          <p className="oc-header-sub">
-            Public records. Signed findings. No verdicts.
+    <div className="oc-home oc-reporter-home">
+      <header className="oc-reporter-hero">
+        <div className="oc-reporter-hero-inner">
+          <p className="oc-reporter-eyebrow">Open Case · Investigative infrastructure</p>
+          <h1 className="oc-reporter-headline">
+            Money-and-vote pattern detection on live public records
+          </h1>
+          <p className="oc-reporter-sub">
+            Surface proximity between filings, votes, and disclosures — with epistemic labels and
+            Ed25519-signed receipts. This engine documents patterns; it does not deliver legal
+            verdicts.
           </p>
+          <p className="oc-reporter-live" aria-live="polite">
+            <span className="oc-reporter-live-dot" aria-hidden />
+            Pipeline runs on your deployment: investigate, seal, verify
+          </p>
+          <div className="oc-reporter-hero-meta">
+            <span className="oc-reporter-pill oc-reporter-pill--accent">
+              Pattern engine + adapters
+            </span>
+            <span className="oc-reporter-pill">FEC · Congress · LDA · Courts · Local (pilot)</span>
+          </div>
         </div>
-        <span className="oc-header-tag">VERIFIED RECORDS</span>
       </header>
+
+      <div className="oc-reporter-trust" aria-label="Quality and integrity indicators">
+        <div className="oc-reporter-trust-item">
+          <span>
+            <strong>{PYTEST_FLOOR_DISPLAY}</strong> automated tests in CI
+          </span>
+        </div>
+        <div className="oc-reporter-trust-item">
+          <span>
+            <strong>Ed25519</strong> signed case bundles &amp; dossiers
+          </span>
+        </div>
+        <div className="oc-reporter-trust-item">
+          <span>Source-linked evidence, not narrative-only AI claims</span>
+        </div>
+      </div>
+
+      <p className="oc-reporter-search-hint">
+        Search ties into{" "}
+        <code className="oc-mono">GET /api/v1/subjects/search</code> (name + filters). Open a
+        profile to see pattern alerts and the signed report.
+      </p>
 
       <div className="oc-search-wrap oc-search-wrap--home">
         <label className="sr-only" htmlFor="oc-search">
-          Search any public official
+          Search officials by name
         </label>
         <div className="oc-search-with-results">
           <input
             id="oc-search"
             className="oc-search"
             type="search"
-            placeholder="Search any public official"
+            placeholder="Enter politician or official name (e.g. Tom Cotton)"
             value={searchDraft}
             onChange={(e) => {
               setSearchDraft(e.target.value);
@@ -467,20 +507,21 @@ export default function HomePage() {
         ) : null}
       </nav>
 
-      <section className="oc-featured-finding" aria-label="Featured finding">
+      <section className="oc-featured-finding" aria-label="Featured example pattern">
         <div className="oc-featured-inner">
-          <p className="oc-featured-kicker">Featured finding</p>
+          <p className="oc-featured-kicker">Live example · Federal Senate</p>
           <div className="oc-featured-row">
             <span className="oc-featured-name">Tom Cotton</span>
             <span className="oc-mono oc-featured-rule">SOFT_BUNDLE_V1</span>
             <span className="oc-mono oc-featured-score">Score 0.921</span>
           </div>
           <p className="oc-featured-quote">
-            &ldquo;A cluster of financial services donations arrived within days of a
-            Senate vote&rdquo;
+            &ldquo;A cluster of financial services and defense-sector donations landed within
+            the proximity window of a Senate vote on S.J.Res. 95.&rdquo; — documented from FEC
+            and roll-call context, not a finding of wrongdoing.
           </p>
           <Link className="oc-featured-cta" to="/official/C001095">
-            View case →
+            Open Cotton profile (/official/C001095) →
           </Link>
         </div>
       </section>
@@ -508,8 +549,8 @@ export default function HomePage() {
       </div>
 
       <footer id="receipt" className="oc-footer-disclaimer">
-        All findings are documented from public records. Open Case does not
-        assert causation or wrongdoing.
+        All findings are documented from public records. Open Case does not assert causation,
+        corruption, or wrongdoing — only proximity and timing that reporters can verify.
       </footer>
 
       <BottomBar />
