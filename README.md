@@ -22,9 +22,10 @@ FEC records document a cluster of financial services and defense sector donation
 
 1. Create a case for any public official — senator, judge, mayor, sheriff, zoning board member
 2. The investigation pipeline ingests public records from relevant sources
-3. The pattern engine scores proximity between financial relationships and public decisions
+3. The pattern engine scores proximity between financial relationships and public decisions (**corruption-adjacent pattern detection** — proximity and timing, not legal findings)
 4. Every finding is classified by epistemic level
 5. A cryptographically signed receipt is generated — shareable, verifiable, tamper-evident
+6. **Optional:** Tiered **LLM assist** for reporter-facing story angles (`POST /api/v1/assist/story-angles`) and routed **Perplexity / Gemini / Claude** calls for senator deep-research enrichment — core detection stays deterministic without these keys
 
 ---
 
@@ -124,14 +125,14 @@ Sullivan (R-AK) · Cotton (R-AR) · Ernst (R-IA) · Wyden (D-OR) · Crapo (R-ID)
 ```
 adapters/       FEC, CourtListener, FJC, LDA, Congress, USASpending, and more
 alembic/        Database migrations (14 phases)
-client/         React/Vite frontend
+client/         React/Vite frontend (build to client/dist for /app static mount)
 core/           Subject taxonomy, credentials, admin gate
 data/           Source registry, entity aliases, industry maps
 engines/        Pattern engine, signal scorer, entity resolution, temporal proximity
-routes/         API endpoints
+routes/         API endpoints (incl. optional assist)
 scripts/        CI floor, epistemic classifier, calendar calibration, pilot seed
-services/       Dossier, report stream, epistemic classifier, human review
-tests/          245 passing
+services/       Dossier, report stream, epistemic classifier, LLM/research routers, human review
+tests/          311 passing (PYTHONPATH=. pytest tests/)
 main.py         FastAPI entry point
 models.py       SQLAlchemy models
 payloads.py     Receipt signing and sealing
@@ -143,6 +144,8 @@ payloads.py     Receipt signing and sealing
 
 Case file CRUD, evidence, and snapshots use the `/cases` prefix; reports and the investigation pipeline use `/api/v1`.
 
+**OpenAPI:** `GET /openapi.json` — currently **~43 paths / 44 HTTP operations** (full surface includes admin, auth, patterns, reporting, etc.).
+
 ```
 POST   /cases                                      Create a case (Bearer)
 GET    /cases/{case_id}                            Case with evidence
@@ -152,11 +155,17 @@ GET    /api/v1/cases/{case_id}/report              Signed report (JSON)
 GET    /api/v1/cases/{case_id}/report/view         HTML report
 GET    /api/v1/cases/{case_id}/report/pattern-events  SSE stream for async pattern alerts
 POST   /api/v1/findings/{finding_id}/dispute       Submit dispute or correction (Bearer)
+POST   /api/v1/assist/story-angles               Optional narrative story angles from dossier (Bearer; tiered Gemini → Claude)
 GET    /api/v1/subjects/search                     Search subject profiles
 GET    /api/v1/methodology                         Methodology and legal liability text
 ```
 
 Admin routes require `X-Admin-Secret` (and API key issuance / cache flush require `ADMIN_SECRET` to be set).
+
+**Smart routing (committed in `services/`):**
+
+- **`llm_router.py`** — classifies dossier complexity and routes story-angle generation (e.g. Gemini for lighter tiers, Claude for heavy vote–money patterns).
+- **`perplexity_router.py`** — research-phase routing for senator enrichment (Perplexity Sonar / deep research vs Gemini-first by category; phase-2 narrative prefers Claude when configured).
 
 ---
 
@@ -181,8 +190,10 @@ alembic upgrade head
 uvicorn main:app --reload
 
 # Test
-PYTHONPATH=. pytest
+PYTHONPATH=. pytest tests/
 ```
+
+**Deployment:** see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Render-friendly checklist, static client, env vars).
 
 ---
 

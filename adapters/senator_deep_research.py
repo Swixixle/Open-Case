@@ -23,11 +23,16 @@ from services.citation_maps import (
 )
 from services.dossier_claim_dedup import dedupe_merge_claims
 from services.enrichment_service import validate_narrative
-from utils.http_retry import http_request_with_retry
+from services.perplexity_router import (
+    ROUTER_CACHE_BUMP,
+    classify_senator_deep_research_phase1,
+    enrich_claims_with_inline_urls,
+    run_phase1_extraction,
+    run_phase2_narrative,
+)
 
 logger = logging.getLogger(__name__)
 
-PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions"
 CACHE_ADAPTER = "senator_deep_research"
 CACHE_TTL_HOURS = 48
 
@@ -94,15 +99,12 @@ Required disclaimer at end: "These findings document public records only. They d
 prove causation or wrongdoing. All findings are for further human review."
 Return plain text only."""
 
-SONAR_DEEP_RESEARCH_MODEL = "sonar-deep-research"
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _cache_query_string(bioguide_id: str, category: str) -> str:
-    return f"{bioguide_id}:{category}"
+    return f"{bioguide_id}:{category}:{ROUTER_CACHE_BUMP}"
 
 
 def _extract_json_array(text: str) -> list[Any]:
@@ -137,29 +139,6 @@ def _assistant_text(data: dict[str, Any]) -> str:
     if not isinstance(msg, dict):
         return ""
     return str(msg.get("content") or "")
-
-
-def _call_perplexity(system_prompt: str, user_content: str, api_key: str) -> dict[str, Any]:
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": SONAR_DEEP_RESEARCH_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-    }
-    resp = http_request_with_retry(
-        "POST",
-        PERPLEXITY_API_URL,
-        headers=headers,
-        json=body,
-        timeout=300.0,
-    )
-    data = resp.json()
-    return data if isinstance(data, dict) else {}
 
 
 def fetch_senator_deep_research_category(
@@ -236,10 +215,19 @@ def fetch_senator_deep_research_category(
         f"Subject: {name} (bioguide {bg})\n"
         "Using only retrieved sources, output the JSON array of fact objects as specified."
     )
+    phase1_kind = classify_senator_deep_research_phase1(cat)
+    data: dict[str, Any] = {}
+    route_trail: list[str] = []
     try:
-        data = _call_perplexity(PHASE_1_SYSTEM, user_p1, api_key)
+        data, route_trail = run_phase1_extraction(
+            PHASE_1_SYSTEM,
+            user_p1,
+            classification=phase1_kind,
+            perplexity_api_key=api_key,
+            timeout=300.0,
+        )
     except Exception as e:
-        logger.warning("Perplexity phase-1 failed category=%s: %s", cat, e)
+        logger.warning("Research phase-1 failed category=%s: %s", cat, e)
         query_errors.append(f"phase1: {e!s}")
         data = {}
 
@@ -255,6 +243,9 @@ def fetch_senator_deep_research_category(
             row["_category"] = cat
             phase_1_claims.append(row)
 
+    if route_trail and route_trail[0] == "gemini":
+        enrich_claims_with_inline_urls(phase_1_claims)
+
     phase_1_claims = dedupe_merge_claims(phase_1_claims, threshold=0.85)
     if source_citations:
         enrich_claim_sources_from_references(phase_1_claims, source_citations)
@@ -266,10 +257,15 @@ def fetch_senator_deep_research_category(
             + json.dumps(phase_1_claims, ensure_ascii=False, default=str)
         )
         try:
-            data2 = _call_perplexity(PHASE_2_SYSTEM, user_p2, api_key)
-            narrative = _assistant_text(data2).strip()
+            narrative, _trail2 = run_phase2_narrative(
+                PHASE_2_SYSTEM,
+                user_p2,
+                perplexity_api_key=api_key,
+                timeout=120.0,
+            )
+            narrative = (narrative or "").strip()
         except Exception as e:
-            logger.warning("Perplexity phase-2 failed category=%s: %s", cat, e)
+            logger.warning("Phase-2 narrative failed category=%s: %s", cat, e)
             query_errors.append(f"phase2: {e!s}")
 
     _, banned_flags = validate_narrative(narrative)

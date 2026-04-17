@@ -44,3 +44,24 @@ export async function fetchCaseReport(caseId) {
   if (!res.ok) return null;
   return res.json();
 }
+
+/** Server-routed LLM (Gemini / Claude) for story angles; requires API key + server LLM env. */
+export async function fetchStoryAngles(dossier) {
+  const res = await fetch(apiUrl("/api/v1/assist/story-angles"), {
+    method: "POST",
+    headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ dossier: dossier || {} }),
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { detail: text?.slice(0, 500) || res.statusText };
+  }
+  if (!res.ok) {
+    const detail = data?.detail ?? data ?? res.statusText;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return data;
+}

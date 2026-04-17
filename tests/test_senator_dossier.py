@@ -260,7 +260,7 @@ def test_deep_research_cache_skips_second_http(test_engine) -> None:
         )
 
     with patch.dict(os.environ, {"PERPLEXITY_API_KEY": "test-key"}):
-        with patch("adapters.senator_deep_research.http_request_with_retry", side_effect=fake_http):
+        with patch("services.perplexity_router.http_request_with_retry", side_effect=fake_http):
             fetch_senator_deep_research_category(db, "X000001", "Senator X", "recent_news")
             fetch_senator_deep_research_category(db, "X000001", "Senator X", "recent_news")
     db.close()

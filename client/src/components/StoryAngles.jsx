@@ -1,100 +1,28 @@
 import { useState } from "react";
-
-function stripJsonFences(text) {
-  let t = (text || "").trim();
-  t = t.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-  return t.trim();
-}
+import { fetchStoryAngles } from "../lib/api.js";
 
 export default function StoryAngles({ dossier }) {
   const [loading, setLoading] = useState(false);
   const [angles, setAngles] = useState([]);
+  const [tier, setTier] = useState("");
   const [err, setErr] = useState("");
 
   const run = async () => {
-    const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+    const apiKey = import.meta.env.VITE_OPEN_CASE_API_KEY;
     if (!apiKey) {
-      setErr("Add VITE_ANTHROPIC_API_KEY to client .env to generate angles.");
+      setErr(
+        "Set VITE_OPEN_CASE_API_KEY for the API, and GEMINI_API_KEY / ANTHROPIC_API_KEY on the server (.env) for routed story angles."
+      );
       return;
     }
     setErr("");
     setLoading(true);
     setAngles([]);
+    setTier("");
     try {
-      const sub = dossier?.subject || {};
-      const name = sub.name || "Senator";
-      const state = sub.state || "";
-      const cats = dossier?.deep_research?.categories || {};
-      const gaps = dossier?.gap_analysis || [];
-      const alerts = dossier?.pattern_alerts || [];
-      const darkMoney = dossier?.dark_money || [];
-      const ethicsTravel = dossier?.ethics_travel || [];
-      const committeeWitnesses = dossier?.committee_witnesses || [];
-
-      const prompt = `You are an investigative journalism assistant.
-
-Given this senator dossier data, generate 3-5 specific newsworthy story angles.
-
-Senator: ${name} (${state})
-
-Deep research findings:
-${JSON.stringify(cats, null, 2).slice(0, 3000)}
-
-Gap analysis:
-${JSON.stringify(gaps, null, 2).slice(0, 1000)}
-
-Pattern alerts:
-${JSON.stringify(alerts, null, 2).slice(0, 1000)}
-
-Dark money connections:
-${JSON.stringify(darkMoney, null, 2).slice(0, 500)}
-
-Ethics and travel:
-${JSON.stringify(ethicsTravel, null, 2).slice(0, 500)}
-
-Committee witness overlaps:
-${JSON.stringify(committeeWitnesses, null, 2).slice(0, 500)}
-
-Return ONLY a JSON array, no prose, no markdown:
-[{
-  "headline": "Short punchy headline",
-  "angle": "2-3 sentence story description with specific facts from the dossier",
-  "why_now": "One sentence on timeliness",
-  "source_types": ["FEC", "LDA", "Ethics filing"]
-}]
-
-Rules:
-- Use only facts present in the dossier data
-- No causal language — say "coincides with" not "because of"
-- No accusations — document patterns only
-- If data is sparse, say so and suggest what reporting would reveal
-- Always note findings require independent verification`;
-
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1200,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t.slice(0, 200) || res.statusText);
-      }
-
-      const data = await res.json();
-      const text = data?.content?.[0]?.text || "";
-      const cleaned = stripJsonFences(text);
-      const parsed = JSON.parse(cleaned);
-      if (!Array.isArray(parsed)) throw new Error("Model did not return an array");
-      setAngles(parsed);
+      const data = await fetchStoryAngles(dossier || {});
+      setAngles(Array.isArray(data?.angles) ? data.angles : []);
+      if (data?.tier) setTier(String(data.tier));
     } catch (e) {
       setErr(e.message || String(e));
     } finally {
@@ -105,6 +33,10 @@ Rules:
   return (
     <section className="oc-section">
       <h2 className="oc-section-title">STORY ANGLES — AI-ASSISTED LEADS</h2>
+      <p className="oc-empty-note">
+        Angles use the server&apos;s tiered model router (Gemini for lighter dossiers,
+        Claude for dense vote–money patterns); investigation outputs are unchanged.
+      </p>
       <button
         type="button"
         className="oc-story-btn"
@@ -124,6 +56,11 @@ Rules:
             Analyzing public records for story leads...
           </p>
         </div>
+      ) : null}
+      {tier ? (
+        <p className="oc-empty-note">
+          Routing tier: <strong>{tier}</strong>
+        </p>
       ) : null}
       {err ? <p className="oc-story-err">{err}</p> : null}
       {angles.map((a, i) => (

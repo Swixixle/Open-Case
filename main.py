@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from database import init_db
 from routes.admin import router as admin_router
+from routes.assist import router as assist_router
 from routes.auth import router as auth_router
 from routes.cases import router as cases_router
 from routes.entity_resolution import router as entity_resolution_router
@@ -130,6 +131,7 @@ def health():
 
 
 app.include_router(admin_router)
+app.include_router(assist_router)
 app.include_router(auth_router)
 app.include_router(cases_router)
 app.include_router(entity_resolution_router)

@@ -21,6 +21,12 @@ from sqlalchemy.orm import Session
 from adapters.cache import get_cached_raw_json, store_cached_raw_json
 from core.credentials import CredentialRegistry
 from models import EvidenceEntry
+from services.perplexity_router import (
+    ROUTER_CACHE_BUMP,
+    ResearchPhase1Kind,
+    classify_staff_network_phase1,
+    run_phase1_extraction,
+)
 from utils.http_retry import async_http_request_with_retry, http_request_with_retry
 
 logger = logging.getLogger(__name__)
@@ -28,8 +34,6 @@ logger = logging.getLogger(__name__)
 CONGRESS_MEMBER_URL = "https://api.congress.gov/v3/member/{bioguide_id}"
 LDA_LOBBYIST_SEARCH = "https://lda.senate.gov/api/v1/lobbyists/"
 LDA_FILINGS_URL = "https://lda.senate.gov/api/v1/filings/"
-PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions"
-
 CACHE_ADAPTER = "senator_staff_network"
 CACHE_TTL_HOURS = 7 * 24
 
@@ -242,25 +246,23 @@ def _perplexity_sonar_staff_sync(senator_name: str, context_snippet: str, api_ke
     if (context_snippet or "").strip():
         user += f"Optional public bioguide/office page excerpt:\n{context_snippet[:12000]}\n\n"
     user += f"Senator: {senator_name}. Return only the JSON array specified in the system message."
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": "sonar",
-        "messages": [
-            {"role": "system", "content": PERPLEXITY_STAFF_SYSTEM},
-            {"role": "user", "content": user},
-        ],
-    }
-    resp = http_request_with_retry(
-        "POST",
-        PERPLEXITY_API_URL,
-        headers=headers,
-        json=body,
-        timeout=120.0,
-    )
-    data = resp.json()
+    kind = classify_staff_network_phase1()
+    gemini_ok = bool((os.environ.get("GEMINI_API_KEY") or "").strip())
+    if not (api_key or "").strip() and not (
+        kind == ResearchPhase1Kind.gemini_first and gemini_ok
+    ):
+        return ""
+    try:
+        data, _trail = run_phase1_extraction(
+            PERPLEXITY_STAFF_SYSTEM,
+            user,
+            classification=kind,
+            perplexity_api_key=api_key,
+            timeout=120.0,
+        )
+    except Exception as e:
+        logger.warning("Staff seed LLM failed: %s", e)
+        return ""
     return _assistant_text(data if isinstance(data, dict) else {})
 
 
@@ -268,8 +270,12 @@ async def _staff_seed_from_perplexity_sonar(
     senator_name: str, context_snippet: str
 ) -> list[dict[str, Any]]:
     api_key = (os.environ.get("PERPLEXITY_API_KEY") or "").strip()
-    if not api_key:
-        logger.warning("PERPLEXITY_API_KEY missing; staff names from sonar search skipped")
+    kind = classify_staff_network_phase1()
+    gemini_ok = bool((os.environ.get("GEMINI_API_KEY") or "").strip())
+    if not api_key and not (kind == ResearchPhase1Kind.gemini_first and gemini_ok):
+        logger.warning(
+            "PERPLEXITY_API_KEY missing and Gemini staff path unavailable; staff seed skipped"
+        )
         return []
     loop = asyncio.get_running_loop()
     try:
@@ -441,7 +447,7 @@ async def fetch_staff_network(
     Cached7 days per bioguide (donor overlap recomputed per case on cache hit).
     """
     bg = (bioguide_id or "").strip()
-    cache_key = bg
+    cache_key = f"{bg}:{ROUTER_CACHE_BUMP}"
     cached = get_cached_raw_json(db, CACHE_ADAPTER, cache_key)
     if cached is not None and isinstance(cached, dict):
         fec = _fec_donor_strings_for_case(db, case_file_id)

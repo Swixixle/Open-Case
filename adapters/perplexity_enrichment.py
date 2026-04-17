@@ -12,11 +12,14 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
+from services.perplexity_router import (
+    classify_enrichment_phase1_template_index,
+    enrich_claims_with_inline_urls,
+    run_phase1_extraction,
+    run_phase2_narrative,
+)
 
 logger = logging.getLogger(__name__)
-
-PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions"
 
 ENRICHMENT_QUERIES = [
     '"{name}" financial disclosure {year}',
@@ -83,32 +86,6 @@ def _extract_json_array(text: str) -> list[Any]:
         return []
 
 
-def _call_sonar(
-    system_prompt: str,
-    user_content: str,
-    api_key: str,
-    *,
-    timeout: float = 120.0,
-) -> dict[str, Any]:
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": "sonar",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "search_recency_filter": "month",
-    }
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.post(PERPLEXITY_API_URL, headers=headers, json=body)
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, dict) else {}
-
-
 def _assistant_text(data: dict[str, Any]) -> str:
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -168,17 +145,25 @@ def fetch_perplexity_enrichment(
     phase_1_claims: list[dict[str, Any]] = []
     query_errors: list[str] = []
 
-    for template in ENRICHMENT_QUERIES:
+    for idx, template in enumerate(ENRICHMENT_QUERIES):
         query = template.format(name=name, year=year)
         user_p1 = (
             f"Research query: {query}\n\n"
             f"Subject: {name}\n"
             "Using only retrieved sources, output the JSON array of fact objects as specified."
         )
+        kind = classify_enrichment_phase1_template_index(idx)
+        n_before = len(phase_1_claims)
         try:
-            data = _call_sonar(PHASE_1_SYSTEM, user_p1, api_key)
+            data, trail = run_phase1_extraction(
+                PHASE_1_SYSTEM,
+                user_p1,
+                classification=kind,
+                perplexity_api_key=api_key,
+                timeout=120.0,
+            )
         except Exception as e:
-            logger.warning("Perplexity phase-1 failed for query=%r: %s", query, e)
+            logger.warning("Enrichment phase-1 failed for query=%r: %s", query, e)
             query_errors.append(f"{query}: {e!s}")
             continue
 
@@ -189,6 +174,8 @@ def fetch_perplexity_enrichment(
                 item = dict(item)
                 item["_query"] = query
                 phase_1_claims.append(item)
+        if trail and trail[0] == "gemini":
+            enrich_claims_with_inline_urls(phase_1_claims[n_before:])
 
     narrative = ""
     if phase_1_claims:
@@ -197,10 +184,15 @@ def fetch_perplexity_enrichment(
             + json.dumps(phase_1_claims, ensure_ascii=False, default=str)
         )
         try:
-            data2 = _call_sonar(PHASE_2_SYSTEM, user_p2, api_key)
-            narrative = _assistant_text(data2).strip()
+            narrative, _trail2 = run_phase2_narrative(
+                PHASE_2_SYSTEM,
+                user_p2,
+                perplexity_api_key=api_key,
+                timeout=120.0,
+            )
+            narrative = (narrative or "").strip()
         except Exception as e:
-            logger.warning("Perplexity phase-2 failed: %s", e)
+            logger.warning("Enrichment phase-2 failed: %s", e)
             query_errors.append(f"phase2: {e!s}")
 
     return {
