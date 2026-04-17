@@ -51,4 +51,5 @@ Expect **311** passing (current floor). CI should use the same `PYTHONPATH`.
 Before deploy, confirm:
 
 - `git status` clean on `main`
+- If `git status` shows **ahead of `origin/main`**, publish: `git push origin main`
 - All of `routes/assist.py`, `services/llm_router.py`, `services/perplexity_router.py`, and their tests are **committed** so production matches the analyzed codebase.

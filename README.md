@@ -144,7 +144,7 @@ payloads.py     Receipt signing and sealing
 
 Case file CRUD, evidence, and snapshots use the `/cases` prefix; reports and the investigation pipeline use `/api/v1`.
 
-**OpenAPI:** `GET /openapi.json` — currently **~43 paths / 44 HTTP operations** (full surface includes admin, auth, patterns, reporting, etc.).
+**OpenAPI:** `GET /openapi.json` — this checkout registers **47 paths / 48 HTTP operations** (FastAPI route table). External reports that count nested OpenAPI operations, plugins, or a full workspace (including `node_modules`) will show higher numbers than **git-tracked source files (~260)** alone.
 
 ```
 POST   /cases                                      Create a case (Bearer)
