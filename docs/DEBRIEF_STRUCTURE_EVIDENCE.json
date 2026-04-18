@@ -1,0 +1,91 @@
+{
+  "claims": {
+    "claim_001": {
+      "counts": {
+        "javascript_client_source_files": 39,
+        "python_repository_files": 174
+      },
+      "evidence": [
+        {
+          "label": "sorted_relative_paths_all_python_files",
+          "path_count": 174,
+          "sha256": "c506aa09d243c56dcfd04fd98c540cebb6b983b3c328d60d5ec61c2c026bcf2b",
+          "type": "file_list_sha256"
+        },
+        {
+          "label": "sorted_relative_paths_client_javascript_files",
+          "path_count": 39,
+          "sha256": "2bbe25e07ead0a5c76b6131c83faa4e4466002b286fa568392d9415b28a414ec",
+          "type": "file_list_sha256"
+        },
+        {
+          "path": "client/package.json",
+          "sha256": "28a129347146cf2c4280ce16a39695718eccfc53d0b21eb20f0d7a990b2354a1",
+          "snippet_hash_verified": true,
+          "type": "marker_file"
+        },
+        {
+          "path": "main.py",
+          "sha256": "d444758d85ea344e5352a8f14192483d5d04a9a8646776f7bd4a130246ade6f2",
+          "snippet_hash_verified": true,
+          "type": "marker_file"
+        },
+        {
+          "path": "client/src/main.jsx",
+          "sha256": "bc7a54c266d03b38198eca7ece5270c915d3babc5b7279f460be413c165224d7",
+          "snippet_hash_verified": true,
+          "type": "marker_file"
+        }
+      ],
+      "statement": "Primary languages: JavaScript (39 source files under client/), Python (174 .py files in the repository tree, same exclusions).",
+      "status": "evidenced"
+    },
+    "claim_002": {
+      "evidence": [
+        {
+          "path": "client/package.json",
+          "sha256": "28a129347146cf2c4280ce16a39695718eccfc53d0b21eb20f0d7a990b2354a1",
+          "snippet_hash_verified": true,
+          "type": "directory_marker_file"
+        },
+        {
+          "path": "server/__init__.py",
+          "sha256": "1d9cfff9dae120160bc7ae87df92d24d040ee5385d95144699e94d899b32db3f",
+          "snippet_hash_verified": true,
+          "type": "directory_marker_file"
+        },
+        {
+          "file_count": 48,
+          "root": "client/",
+          "sha256": "011dd87c03f4a4756548170e640dc616393d4e528bc8b9213b449a084f94a285",
+          "type": "file_tree_sha256"
+        },
+        {
+          "file_count": 7,
+          "root": "server/",
+          "sha256": "329a265ab5e7b5308c3547795f5fe5bf7d9ddde53829f3bf2c4b1b2afa70a034",
+          "type": "file_tree_sha256"
+        }
+      ],
+      "statement": "Project has both client/ and server/ directories (full-stack structure: React/Vite UI plus Python service layout).",
+      "status": "evidenced"
+    }
+  },
+  "count_method": {
+    "excluded_path_segments": [
+      ".git",
+      ".mypy_cache",
+      ".pytest_cache",
+      ".venv",
+      "__pycache__",
+      "dist",
+      "node_modules",
+      "venv"
+    ],
+    "javascript_glob": "client/**/*.{js,jsx,mjs,cjs} under repository root",
+    "python_glob": "**/*.py under repository root"
+  },
+  "generated_at_utc": "2026-04-18T08:57:45.781274+00:00",
+  "generator": "scripts/generate_debrief_evidence.py",
+  "schema_version": 1
+}

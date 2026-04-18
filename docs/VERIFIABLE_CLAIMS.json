@@ -26,6 +26,18 @@
       "statement": "The test suite collects at least REGRESSION_FLOOR tests (CI enforces minimum passed).",
       "evidence": ["server/scripts/ci_pytest_floor.py"],
       "automated_check": "scripts/verify_documentation.py runs pytest --collect-only and compares to floor"
+    },
+    {
+      "id": "debrief_claim_001_languages",
+      "statement": "Primary languages are measured as JavaScript under client/ and Python as .py files, with vendor dirs excluded; counts and hashes live in docs/DEBRIEF_STRUCTURE_EVIDENCE.json.",
+      "evidence": ["docs/DEBRIEF_STRUCTURE_EVIDENCE.json", "scripts/generate_debrief_evidence.py"],
+      "automated_check": "scripts/generate_debrief_evidence.py --check (also run from verify_documentation.py)"
+    },
+    {
+      "id": "debrief_claim_002_client_server",
+      "statement": "The repository includes both client/ and server/ top-level directories; evidence uses marker file hashes and tree hashes.",
+      "evidence": ["docs/DEBRIEF_STRUCTURE_EVIDENCE.json", "client/package.json", "server/__init__.py"],
+      "automated_check": "scripts/generate_debrief_evidence.py --check"
     }
   ],
   "note": "Debrief DCI scores depend on which sentences are extracted from README/README fragments. This file lists claims that are fully verifiable in-repo. Hardcoded counts (e.g. 311 tests) in prose drift; prefer the verify script and pytest output for exact numbers."

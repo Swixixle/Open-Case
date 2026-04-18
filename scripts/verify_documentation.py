@@ -74,6 +74,25 @@ def check_ci_regression_floor_matches_script() -> bool:
     return True
 
 
+def check_debrief_structure_evidence() -> bool:
+    """Ensures docs/DEBRIEF_STRUCTURE_EVIDENCE.json matches repo (hash-backed DCI)."""
+    script = REPO_ROOT / "scripts" / "generate_debrief_evidence.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "--check"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        _fail("Debrief structure evidence is stale or invalid (generate_debrief_evidence.py --check)")
+        print(out, file=sys.stderr)
+        return False
+    print("OK: docs/DEBRIEF_STRUCTURE_EVIDENCE.json matches repository")
+    return True
+
+
 def check_pytest_collect_meets_floor() -> bool:
     floor_path = REPO_ROOT / "server" / "scripts" / "ci_pytest_floor.py"
     text = floor_path.read_text(encoding="utf-8")
@@ -110,6 +129,7 @@ def main() -> int:
     ok = check_client_package_scripts() and ok
     ok = check_assist_route_committed() and ok
     ok = check_ci_regression_floor_matches_script() and ok
+    ok = check_debrief_structure_evidence() and ok
     ok = check_pytest_collect_meets_floor() and ok
     if ok:
         print("\nAll verification checks passed.")

@@ -14,8 +14,9 @@ Claims below are checked against the repository. If something drifts, use:
 
 | Claim | Where to verify |
 |-------|-----------------|
-| Automated bundle | `python3 scripts/verify_documentation.py` — pattern rule count (18), client `package.json` scripts, assist router wiring, pytest collect vs CI floor |
+| Automated bundle | `python3 scripts/verify_documentation.py` — pattern rule count (18), client `package.json` scripts, assist router wiring, Debrief structure evidence, pytest collect vs CI floor |
 | Claim index (for tools) | `docs/VERIFIABLE_CLAIMS.json` — maps statements to files and the script above |
+| Language mix & `client/` + `server/` layout | `docs/DEBRIEF_STRUCTURE_EVIDENCE.json` — SHA-256 of marker files and sorted path lists (regenerate: `python3 scripts/generate_debrief_evidence.py`). Inflated “thousands of Python files” from tools usually counts `venv`/`node_modules`; this file uses explicit exclusions. |
 | Pattern rule IDs & engine version | `engines/pattern_engine.py` — `PATTERN_RULE_IDS`, `PATTERN_ENGINE_VERSION` |
 | Test count | `PYTHONPATH=. pytest tests/` (full suite). CI enforces a **minimum** passed count via `server/scripts/ci_pytest_floor.py` (see **Tests** below). |
 | HTTP API | Run the app and open `GET /openapi.json` |
@@ -136,6 +137,7 @@ The React app lists **reference senators** (e.g. Sullivan, Cotton, Ernst, …) f
 adapters/       Source integrations (FEC, Congress, CourtListener, FJC, LDA, USASpending, Indianapolis, …)
 alembic/        Database migrations (`alembic/versions/` — multiple phase files)
 client/         React/Vite — `npm run build` → `client/dist` mounted at `/app`
+server/         Python package (`server/services/`, `server/scripts/` — e.g. CI floor, investigate helpers)
 core/           Subject taxonomy, credentials, admin gate
 data/           Source registry, entity aliases, fixtures
 engines/        Pattern engine, signals, entity resolution, temporal proximity
@@ -148,6 +150,8 @@ models.py       SQLAlchemy models
 payloads.py     Sealing / signing payloads
 signing.py      Ed25519 helpers
 ```
+
+**Debrief / DCI:** File-level evidence for language counts and the `client/` + `server/` layout (SHA-256 of marker files and sorted path lists, not statistical inference) is committed in **`docs/DEBRIEF_STRUCTURE_EVIDENCE.json`**. Regenerate after structural changes: `python3 scripts/generate_debrief_evidence.py`.
 
 ---
 
