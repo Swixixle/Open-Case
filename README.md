@@ -14,6 +14,8 @@ Claims below are checked against the repository. If something drifts, use:
 
 | Claim | Where to verify |
 |-------|-----------------|
+| Automated bundle | `python3 scripts/verify_documentation.py` — pattern rule count (18), client `package.json` scripts, assist router wiring, pytest collect vs CI floor |
+| Claim index (for tools) | `docs/VERIFIABLE_CLAIMS.json` — maps statements to files and the script above |
 | Pattern rule IDs & engine version | `engines/pattern_engine.py` — `PATTERN_RULE_IDS`, `PATTERN_ENGINE_VERSION` |
 | Test count | `PYTHONPATH=. pytest tests/` (full suite). CI enforces a **minimum** passed count via `server/scripts/ci_pytest_floor.py` (see **Tests** below). |
 | HTTP API | Run the app and open `GET /openapi.json` |

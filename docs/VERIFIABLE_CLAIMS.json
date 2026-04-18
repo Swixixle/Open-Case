@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "description": "Maps common documentation claims to repository evidence. For Debrief/DCI tooling and human review.",
+  "verify_command": "python3 scripts/verify_documentation.py",
+  "claims": [
+    {
+      "id": "pattern_rules_18",
+      "statement": "The pattern engine defines exactly 18 rules in PATTERN_RULE_IDS.",
+      "evidence": ["engines/pattern_engine.py"],
+      "automated_check": "scripts/verify_documentation.py imports PATTERN_RULE_IDS and asserts len == 18"
+    },
+    {
+      "id": "client_npm_scripts",
+      "statement": "The React client package.json exposes npm scripts: dev, build, preview (no npm start).",
+      "evidence": ["client/package.json"],
+      "automated_check": "scripts/verify_documentation.py parses package.json"
+    },
+    {
+      "id": "assist_routes_assist",
+      "statement": "The API exposes POST /api/v1/assist/story-angles via routes/assist.py and main.py.",
+      "evidence": ["routes/assist.py", "main.py"],
+      "automated_check": "scripts/verify_documentation.py checks files and assist_router include"
+    },
+    {
+      "id": "pytest_floor",
+      "statement": "The test suite collects at least REGRESSION_FLOOR tests (CI enforces minimum passed).",
+      "evidence": ["server/scripts/ci_pytest_floor.py"],
+      "automated_check": "scripts/verify_documentation.py runs pytest --collect-only and compares to floor"
+    }
+  ],
+  "note": "Debrief DCI scores depend on which sentences are extracted from README/README fragments. This file lists claims that are fully verifiable in-repo. Hardcoded counts (e.g. 311 tests) in prose drift; prefer the verify script and pytest output for exact numbers."
+}
