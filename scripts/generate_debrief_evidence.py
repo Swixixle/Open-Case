@@ -2,13 +2,13 @@
 """
 Emit hash-verified repository evidence for documentation / Debrief DCI.
 
-Writes docs/DEBRIEF_STRUCTURE_EVIDENCE.json with:
-  - claim_001: JavaScript + Python file counts (deterministic exclusions)
-  - claim_002: client/ + server/ directory evidence (marker files + tree hashes)
+Writes:
+  - docs/DEBRIEF_STRUCTURE_EVIDENCE.json — hashes + counts
+  - docs/DEBRIEF_CLAIMS_FOR_DCI.md — short verbatim claims for tools (e.g. Debrief) that should not infer from README
 
 Run from repository root:
   python3 scripts/generate_debrief_evidence.py
-  python3 scripts/generate_debrief_evidence.py --check   # fail if JSON would change
+  python3 scripts/generate_debrief_evidence.py --check   # fail if outputs would change
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = REPO_ROOT / "docs" / "DEBRIEF_STRUCTURE_EVIDENCE.json"
+OUTPUT_MD = REPO_ROOT / "docs" / "DEBRIEF_CLAIMS_FOR_DCI.md"
 
 # Paths we never count (match a path segment).
 EXCLUDE_DIR_PARTS = frozenset(
@@ -103,6 +104,23 @@ def _without_timestamp(doc: dict) -> dict:
     out = json.loads(json.dumps(doc))
     out.pop("generated_at_utc", None)
     return out
+
+
+def _build_dci_markdown(doc: dict) -> str:
+    """Minimal doc for DCI tools: same statements as JSON, no extra prose to mis-extract."""
+    claims = doc["claims"]
+    s1 = claims["claim_001"]["statement"]
+    s2 = claims["claim_002"]["statement"]
+    return (
+        "# Open Case — DCI claims (auto-generated)\n\n"
+        "Do not edit by hand. Regenerate with "
+        "`python3 scripts/generate_debrief_evidence.py`.\n\n"
+        "Hash-verified evidence: `docs/DEBRIEF_STRUCTURE_EVIDENCE.json`\n\n"
+        "## claim_001 — Primary languages\n\n"
+        f"{s1}\n\n"
+        "## claim_002 — client/ and server/\n\n"
+        f"{s2}\n"
+    )
 
 
 def build_document() -> dict:
@@ -241,11 +259,12 @@ def main() -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 if docs/DEBRIEF_STRUCTURE_EVIDENCE.json is out of date.",
+        help="Exit 1 if evidence JSON or DCI markdown is out of date.",
     )
     args = parser.parse_args()
     doc = build_document()
     text = json.dumps(doc, indent=2, sort_keys=True) + "\n"
+    md_text = _build_dci_markdown(doc)
 
     if args.check:
         if not OUTPUT.is_file():
@@ -259,11 +278,23 @@ def main() -> int:
             )
             return 1
         print(f"OK: {OUTPUT} matches regenerated content (excluding timestamp).")
+        if not OUTPUT_MD.is_file():
+            print(f"VERIFY FAIL: missing {OUTPUT_MD}", file=sys.stderr)
+            return 1
+        if OUTPUT_MD.read_text(encoding="utf-8") != md_text:
+            print(
+                f"VERIFY FAIL: {OUTPUT_MD} is stale. Run: python3 scripts/generate_debrief_evidence.py",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"OK: {OUTPUT_MD} matches regenerated content.")
         return 0
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(text, encoding="utf-8")
+    OUTPUT_MD.write_text(md_text, encoding="utf-8")
     print(f"Wrote {OUTPUT}")
+    print(f"Wrote {OUTPUT_MD}")
     return 0
 
 

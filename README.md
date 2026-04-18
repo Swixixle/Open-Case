@@ -16,7 +16,7 @@ Claims below are checked against the repository. If something drifts, use:
 |-------|-----------------|
 | Automated bundle | `python3 scripts/verify_documentation.py` — pattern rule count (18), client `package.json` scripts, assist router wiring, Debrief structure evidence, pytest collect vs CI floor |
 | Claim index (for tools) | `docs/VERIFIABLE_CLAIMS.json` — maps statements to files and the script above |
-| Language mix & `client/` + `server/` layout | `docs/DEBRIEF_STRUCTURE_EVIDENCE.json` — SHA-256 of marker files and sorted path lists (regenerate: `python3 scripts/generate_debrief_evidence.py`). Inflated “thousands of Python files” from tools usually counts `venv`/`node_modules`; this file uses explicit exclusions. |
+| Language mix & `client/` + `server/` layout | `docs/DEBRIEF_STRUCTURE_EVIDENCE.json` + `docs/DEBRIEF_CLAIMS_FOR_DCI.md` (regenerate: `python3 scripts/generate_debrief_evidence.py`). Use the `.md` as the **Debrief corpus** for those claims so they are not re-inferred from README. Inflated Python counts from other tools usually include `venv`/`node_modules`; the evidence file uses explicit exclusions. |
 | Pattern rule IDs & engine version | `engines/pattern_engine.py` — `PATTERN_RULE_IDS`, `PATTERN_ENGINE_VERSION` |
 | Test count | `PYTHONPATH=. pytest tests/` (full suite). CI enforces a **minimum** passed count via `server/scripts/ci_pytest_floor.py` (see **Tests** below). |
 | HTTP API | Run the app and open `GET /openapi.json` |
@@ -151,7 +151,7 @@ payloads.py     Sealing / signing payloads
 signing.py      Ed25519 helpers
 ```
 
-**Debrief / DCI:** File-level evidence for language counts and the `client/` + `server/` layout (SHA-256 of marker files and sorted path lists, not statistical inference) is committed in **`docs/DEBRIEF_STRUCTURE_EVIDENCE.json`**. Regenerate after structural changes: `python3 scripts/generate_debrief_evidence.py`.
+**Debrief / DCI:** If Debrief still labels structure claims as **inferred**, it is almost certainly scanning the **full README** (or the whole repo) and re-deriving file counts. **Point your DCI run at the committed bundle instead:** **`docs/DEBRIEF_CLAIMS_FOR_DCI.md`** (short, auto-generated, same sentences as the evidence file) plus **`docs/DEBRIEF_STRUCTURE_EVIDENCE.json`** (SHA-256 of marker files and sorted path lists). Regenerate both after structural changes: `python3 scripts/generate_debrief_evidence.py`.
 
 ---
 
