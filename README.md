@@ -2,17 +2,29 @@
 
 A cryptographically signed government accountability investigation engine.
 
-Open Case cross-references public records — campaign finance, lobbying filings, legislative votes, judicial appointments, financial disclosures — to surface proximity patterns between money and decisions. Every finding is epistemically tagged, source-linked, and signed with an Ed25519 receipt.
+Open Case cross-references public records — campaign finance, lobbying filings, legislative votes, judicial filings — to surface **proximity and timing patterns** between money and decisions. Findings are epistemically tagged, source-linked, and sealed with Ed25519. The system documents **patterns in public records**; it does **not** assert corruption, guilt, or legal wrongdoing.
 
-**Philosophy:** Receipts, not verdicts. This is a mirror of public records, not a verdict machine. No inference of guilt or wrongdoing is made or implied.
+**Philosophy:** Receipts, not verdicts. This is a mirror of public records, not a verdict machine.
 
 ---
 
-## Strongest live finding
+## Verifying this README
 
-**Tom Cotton — SOFT_BUNDLE_V1 — score 0.921**
+Claims below are checked against the repository. If something drifts, use:
 
-FEC records document a cluster of financial services and defense sector donations to Cotton's principal committee on February 9–11, 2026, within the proximity window of a Senate vote on S.J.Res. 95. Score reflects donation timing, sector concentration, and committee jurisdiction alignment.
+| Claim | Where to verify |
+|-------|-----------------|
+| Pattern rule IDs & engine version | `engines/pattern_engine.py` — `PATTERN_RULE_IDS`, `PATTERN_ENGINE_VERSION` |
+| Test count | `PYTHONPATH=. pytest tests/` (full suite). CI enforces a **minimum** passed count via `server/scripts/ci_pytest_floor.py` (see **Tests** below). |
+| HTTP API | Run the app and open `GET /openapi.json` |
+| Environment | `.env.example` |
+| Client scripts | `client/package.json` — `dev`, `build`, `preview` |
+
+---
+
+## Documented exemplar (Tom Cotton / SOFT_BUNDLE)
+
+**Tom Cotton — SOFT_BUNDLE_V1 — score ~0.921** appears in calibration tooling and docs as a **reference exemplar** when FEC + Senate roll-call data align with expectations. **Your deployment does not automatically show this score:** it requires a **case**, **`POST /api/v1/cases/{id}/investigate`** with working keys, and evidence that satisfies the rule. Synthetic tests prove rule behavior; production scores depend on live data.
 
 ![React client — federal legislative directory and featured finding](docs/assets/ui/01-home-directory-federal-senate.png)
 
@@ -20,12 +32,12 @@ FEC records document a cluster of financial services and defense sector donation
 
 ## What it does
 
-1. Create a case for any public official — senator, judge, mayor, sheriff, zoning board member
-2. The investigation pipeline ingests public records from relevant sources
-3. The pattern engine scores proximity between financial relationships and public decisions (**corruption-adjacent pattern detection** — proximity and timing, not legal findings)
-4. Every finding is classified by epistemic level
-5. A cryptographically signed receipt is generated — shareable, verifiable, tamper-evident
-6. **Optional:** Tiered **LLM assist** for reporter-facing story angles (`POST /api/v1/assist/story-angles`) and routed **Perplexity / Gemini / Claude** calls for senator deep-research enrichment — core detection stays deterministic without these keys
+1. **Create a case** for a subject (many `subject_type` values exist in `core/subject_taxonomy.py`).
+2. **Run investigation** — **`POST /api/v1/cases/{case_id}/investigate`** (Bearer API key). This runs **synchronously** in the HTTP request: ingest adapters → evidence → signals → **pattern engine** → seal. It is **not** continuous real-time surveillance of every official unless **you** schedule or trigger investigations externally.
+3. The **pattern engine** scores proximity and structure (**18 rules** in `PATTERN_RULE_IDS` — money/vote timing, fingerprints, sector/geo, procurement loops for local pilot, etc.). Outputs are **alerts and scores**, not legal findings.
+4. **Epistemic** classification at ingest (`VERIFIED`, `REPORTED`, etc.).
+5. **Cryptographic seal** on the case bundle (`payloads.py` / `signing.py` — JCS-canonical JSON, SHA-256, Ed25519).
+6. **Optional:** LLM-assisted story angles (`POST /api/v1/assist/story-angles`) and routed Perplexity/Gemini/Claude for senator dossier enrichment — **core detection does not use LLMs**.
 
 ---
 
@@ -41,13 +53,11 @@ Every finding is tagged at ingest. Classification is source-driven, not sentimen
 | `DISPUTED` | Formal rebuttal or contrary finding on record |
 | `CONTEXTUAL` | Unverified public discourse — hidden from public responses by default |
 
-A court filing is VERIFIED as a document. The accusation inside it is ALLEGED until adjudicated. Historical records are never deleted — disputes update claim status without erasing the trail.
-
 ---
 
 ## Pattern engine
 
-The engine ships **18 pattern rules** (see `RULE_*` and `PATTERN_RULE_IDS` in `engines/pattern_engine.py`):
+**Version** `PATTERN_ENGINE_VERSION` in `engines/pattern_engine.py` (e.g. `2.7`). **18 rules** in `PATTERN_RULE_IDS`:
 
 | Rule | Signal |
 |------|--------|
@@ -62,141 +72,170 @@ The engine ships **18 pattern rules** (see `RULE_*` and `PATTERN_RULE_IDS` in `e
 | `BASELINE_ANOMALY_V1` | Deviation from historical baseline |
 | `ALIGNMENT_ANOMALY_V1` | Vote/donor alignment anomalies |
 | `AMENDMENT_TELL_V1` | Amendment timing vs donor activity |
-| `HEARING_TESTIMONY_V1` | Testimony/donor overlap |
+| `HEARING_TESTIMONY_V1` | Testimony/donor overlap (degrades without GovInfo credentials) |
 | `REVOLVING_DOOR_V1` | LDA / employment transition overlap with donors |
-| `LEGISLATIVE_RELATED_ENTITY_DONOR_V1` | Curated PAC/affiliate vs donor-of-record near roll-call votes (federal legislative) |
+| `LEGISLATIVE_RELATED_ENTITY_DONOR_V1` | Curated PAC/affiliate vs donor-of-record near roll-call votes |
 | `LOCAL_CONTRACTOR_DONOR_LOOP_V1` | Local procurement vendor ↔ donor (direct / curated alias) |
 | `LOCAL_CONTRACT_DONATION_TIMING_V1` | Donation timing vs contract award (local, award-only) |
 | `LOCAL_VENDOR_CONCENTRATION_V1` | Top vendor vs top donor overlap (local) |
 | `LOCAL_RELATED_ENTITY_DONOR_V1` | Curated related-entity donor vs vendor (local) |
 
+Some rules are **conditional** on optional API keys or curated alias data — see `routes/investigate.py` and `docs/internal/PUBLIC_RECORD_STATE.md`.
+
 ---
 
-## Subject coverage
+## Subject types vs adapter depth
 
-All branches and levels of American government:
+The **schema** supports many branches and levels (mayor, judge, council, boards, etc.). **Adapter coverage is not uniform:**
 
-**Federal:** Senators, House members, President/VP, federal judges (SCOTUS through magistrate and bankruptcy), administrative law judges
-
-**State:** Governors, legislators, attorneys general, secretaries of state, treasurers, state judges
-
-**Local elected:** Mayors, city council, district attorneys, sheriffs, prosecutors, school boards, comptrollers
-
-**Local appointed:** Police commissioners and chiefs, zoning and planning boards, utility and water boards, transit authorities, port and airport authorities, parole boards, corrections commissioners, inspectors general, gaming and liquor commissions
+- **Federal legislators (FEC + Congress pipeline):** Deepest path — votes, donations, many pattern rules.
+- **Federal / Article III judges:** CourtListener + FJC; FEC skipped; pattern alerts often sparse without donation/vote fingerprints.
+- **`government_level=local`:** Investigation uses **Indiana IDIS + Indianapolis** procurement and contracts adapters today — **not** a generic US municipal stack. Other local jurisdictions need new adapters.
 
 ---
 
 ## Data sources
 
-**Implemented:**
+**Implemented in code** (`adapters/`, `routes/investigate.py`):
 
-| Source | Coverage |
-|--------|----------|
-| FEC | Schedule A/B, historical cycles, JFC |
-| Congress.gov | Votes, amendments, committee assignments |
-| LDA | Lobbying filings |
-| CourtListener | Judicial opinions, dockets, financial disclosures |
-| FJC Biographical Database | Article III judge biographies and appointments |
-| USASpending | Federal contracts and grants |
-| GovInfo | Hearings, legislative documents |
-| Regulations.gov | Regulatory comments and filings |
-| Indiana Campaign Finance | State-level campaign records |
+| Source | What the code does |
+|--------|---------------------|
+| FEC | Schedule A/B, committees, optional historical/JFC paths — API key optional (`DEMO_KEY` rate-limited). |
+| Congress.gov | Votes, amendments — **`CONGRESS_API_KEY` recommended** (degraded behavior if missing). |
+| LDA | Lobbying filings — public API without key in typical use. |
+| CourtListener | Judicial search — optional `COURTLISTENER_API_KEY`. |
+| FJC | Judge bios — HTTP. |
+| USASpending | Awards/obligations. |
+| GovInfo | Hearings/packages — **requires `GOVINFO_API_KEY`** where used; otherwise skipped or empty. |
+| Regulations.gov | **Requires `REGULATIONS_GOV_API_KEY`** when used. |
+| Indiana (IDIS bulk) | Indiana disclosure CSVs for local pipeline. |
+| Indiana CF portal | **`adapters/indiana_cf.py`** — manual links / gap documented; **not** automated bulk. |
+| Indianapolis | Contracts + procurement adapters for **`government_level=local`**. |
 
-**Planned:** PACER, eJudiciary disclosures, local campaign finance, city contracts, local news, bar complaints, FollowTheMoney, property records, use of force records, DOJ pattern and practice findings
-
----
-
-## Judicial pilot
-
-**Indianapolis (S.D. Indiana) + Chicago (N.D. Illinois)**
-
-First diagnostic run on Judge James R. Sweeney II (S.D. Indiana, appointed 2017). FJC returned full biographical record: Naval Academy, Notre Dame Law, Marine Corps, Tinder clerkship, commission date 2018-09-13. CourtListener returned person ID and financial disclosure index. Pattern engine returned zero alerts — expected, no FEC or vote data available for judicial subjects under current adapters.
+**Roadmap / not implemented as first-class adapters:** See `adapters/planned.py` and issues — e.g. PACER, broad local campaign finance beyond pilot scope.
 
 ---
 
-## Verified senator corpus
+## Judicial pilot note
 
-Sullivan (R-AK) · Cotton (R-AR) · Ernst (R-IA) · Wyden (D-OR) · Crapo (R-ID) · Grassley (R-IA) · Cantwell (D-WA)
+**Indianapolis (S.D. Indiana) + Chicago (N.D. Illinois)** appear in pilot seeding scripts. A **diagnostic narrative** (e.g. Judge Sweeney) reflects **adapter behavior** when CourtListener/FJC return data; **zero pattern alerts** for typical judicial cases without FEC/vote fingerprints is **expected** with current rules.
+
+---
+
+## Static demo directory (not the production database)
+
+The React app lists **reference senators** (e.g. Sullivan, Cotton, Ernst, …) from `client/src/data/officialsDirectory.js` when the API has no cases. That is **UI demo data**, not a guarantee that your database contains completed investigations for each name.
 
 ---
 
 ## Project structure
 
 ```
-adapters/       FEC, CourtListener, FJC, LDA, Congress, USASpending, and more
-alembic/        Database migrations (14 phases)
-client/         React/Vite frontend (build to client/dist for /app static mount)
+adapters/       Source integrations (FEC, Congress, CourtListener, FJC, LDA, USASpending, Indianapolis, …)
+alembic/        Database migrations (`alembic/versions/` — multiple phase files)
+client/         React/Vite — `npm run build` → `client/dist` mounted at `/app`
 core/           Subject taxonomy, credentials, admin gate
-data/           Source registry, entity aliases, industry maps
-engines/        Pattern engine, signal scorer, entity resolution, temporal proximity
-routes/         API endpoints (incl. optional assist)
-scripts/        CI floor, epistemic classifier, calendar calibration, pilot seed
-services/       Dossier, report stream, epistemic classifier, LLM/research routers, human review
-tests/          311 passing (PYTHONPATH=. pytest tests/)
-main.py         FastAPI entry point
+data/           Source registry, entity aliases, fixtures
+engines/        Pattern engine, signals, entity resolution, temporal proximity
+routes/         FastAPI routers (`/cases`, `/api/v1/...`, optional `assist`)
+scripts/        CI floor, calibration, pilot seed, diagnostics
+services/       Dossier, epistemics, LLM/research routers, gap analysis
+tests/          Pytest suite (see **Tests**)
+main.py         FastAPI app + static `/app`
 models.py       SQLAlchemy models
-payloads.py     Receipt signing and sealing
+payloads.py     Sealing / signing payloads
+signing.py      Ed25519 helpers
 ```
 
 ---
 
-## API
+## Tests
 
-Case file CRUD, evidence, and snapshots use the `/cases` prefix; reports and the investigation pipeline use `/api/v1`.
-
-**OpenAPI:** `GET /openapi.json` — this checkout registers **47 paths / 48 HTTP operations** (FastAPI route table). External reports that count nested OpenAPI operations, plugins, or a full workspace (including `node_modules`) will show higher numbers than **git-tracked source files (~260)** alone.
-
-```
-POST   /cases                                      Create a case (Bearer)
-GET    /cases/{case_id}                            Case with evidence
-GET    /api/v1/cases                               List cases — filter by government_level, branch, subject_type, pilot
-POST   /api/v1/cases/{case_id}/investigate         Run investigation pipeline (Bearer)
-GET    /api/v1/cases/{case_id}/report              Signed report (JSON)
-GET    /api/v1/cases/{case_id}/report/view         HTML report
-GET    /api/v1/cases/{case_id}/report/pattern-events  SSE stream for async pattern alerts
-POST   /api/v1/findings/{finding_id}/dispute       Submit dispute or correction (Bearer)
-POST   /api/v1/assist/story-angles               Optional narrative story angles from dossier (Bearer; tiered Gemini → Claude)
-GET    /api/v1/subjects/search                     Search subject profiles
-GET    /api/v1/methodology                         Methodology and legal liability text
+```bash
+PYTHONPATH=. pytest tests/
 ```
 
-Admin routes require `X-Admin-Secret` (and API key issuance / cache flush require `ADMIN_SECRET` to be set).
-
-**Smart routing (committed in `services/`):**
-
-- **`llm_router.py`** — classifies dossier complexity and routes story-angle generation (e.g. Gemini for lighter tiers, Claude for heavy vote–money patterns).
-- **`perplexity_router.py`** — research-phase routing for senator enrichment (Perplexity Sonar / deep research vs Gemini-first by category; phase-2 narrative prefers Claude when configured).
+- **Full suite:** **311** tests collected (run locally to confirm current count).
+- **CI:** `.github/workflows/ci.yml` runs `server/scripts/ci_pytest_floor.py`, which requires **≥ 201** passed (regression floor). If the README cites “311,” that is the **current** full run; CI’s floor may lag until updated intentionally.
 
 ---
 
-## Setup
+## API (sample)
+
+Case CRUD under **`/cases`**; investigation and JSON reports under **`/api/v1`**.
+
+**OpenAPI:** `GET /openapi.json` — this checkout registered **~47 paths / 48 HTTP operations** (FastAPI route table). Exact counts change with new routes.
+
+| Method | Path | Notes |
+|--------|------|--------|
+| POST | `/cases` | Create case (Bearer) |
+| GET | `/cases/{case_id}` | Case + evidence |
+| GET | `/api/v1/cases` | List/filter cases |
+| POST | `/api/v1/cases/{case_id}/investigate` | Run pipeline (Bearer) |
+| GET | `/api/v1/cases/{case_id}/report` | Signed report JSON |
+| GET | `/api/v1/cases/{case_id}/report/view` | HTML report |
+| GET | `/api/v1/cases/{case_id}/report/pattern-events` | SSE (pattern refresh) |
+| POST | `/api/v1/findings/{finding_id}/dispute` | Dispute (Bearer) |
+| POST | `/api/v1/assist/story-angles` | Optional LLM story angles (Bearer + server LLM keys) |
+| GET | `/api/v1/subjects/search` | Subject search (`name` query + optional filters) |
+| GET | `/api/v1/methodology` | Methodology text |
+
+Admin routes need **`X-Admin-Secret`** / configured **`ADMIN_SECRET`**.
+
+**Routers:** `services/llm_router.py` (story angles), `services/perplexity_router.py` (research enrichment routing).
+
+---
+
+## Setup (development)
+
+### Backend (repo root)
 
 ```bash
 git clone https://github.com/Swixixle/Open-Case.git
 cd Open-Case
+python -m venv .venv   # optional
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Configure
 cp .env.example .env
-# Required: DATABASE_URL, FEC_API_KEY, CONGRESS_API_KEY
-# Required: ADMIN_SECRET (privileged HTTP routes)
-# Signing: OPEN_CASE_PRIVATE_KEY / OPEN_CASE_PUBLIC_KEY (Ed25519; auto-generated on first boot if missing — set explicitly in production)
-# Optional: COURTLISTENER_API_KEY, PERPLEXITY_API_KEY
+# DATABASE_URL: defaults to SQLite in .env.example (omit for same)
+# FEC_API_KEY: optional; public DEMO_KEY is rate-limited
+# CONGRESS_API_KEY: optional; improves member/vote matching
+# ADMIN_SECRET: needed for admin-only routes
+# Production: set OPEN_CASE_* signing keys explicitly (do not rely on auto-generated keys)
 
-# Database
 alembic upgrade head
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
 
-# Run
-uvicorn main:app --reload
+### Frontend (optional — serves `/app` when built)
 
-# Test
+```bash
+cd client
+npm ci
+npm run build
+cd ..
+# Restart uvicorn so client/dist is visible
+```
+
+**Client `package.json` scripts:** `npm run dev` (Vite dev server), `npm run build` (production bundle), `npm run preview` (preview production build). There is **no** `npm start` — production serves static files via FastAPI or any static host.
+
+**Local API with Vite:** `client/vite.config.js` proxies `/api` to `https://open-case.onrender.com` by default. Point `proxy.target` at `http://127.0.0.1:8000` for a local backend.
+
+### Test
+
+```bash
 PYTHONPATH=. pytest tests/
 ```
 
-**Deployment:** see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Render-friendly checklist, static client, env vars).
+---
+
+## Deployment
+
+See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — production env vars, Postgres, Render notes, post-deploy checks.
 
 ---
 
 ## License
 
-See LICENSE. All findings link directly to primary sources. This system documents public records and labels them by evidentiary status. No inference of guilt or wrongdoing is made or implied.
+See LICENSE. All findings link to primary sources where applicable. This system documents public records and labels them by evidentiary status. No inference of guilt or wrongdoing is made or implied.

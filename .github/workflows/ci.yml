@@ -22,7 +22,7 @@ jobs:
       - name: Byte-compile (syntax check)
         run: python -m compileall -q .
 
-      - name: Pytest (201+ regression floor)
+      - name: Pytest (min 201 passed via ci_pytest_floor.py; full suite ~311 locally)
         run: python server/scripts/ci_pytest_floor.py
 
   client:
