@@ -40,5 +40,5 @@
       "automated_check": "scripts/generate_debrief_evidence.py --check"
     }
   ],
-  "note": "Debrief DCI scores depend on which sentences are extracted from README/README fragments. This file lists claims that are fully verifiable in-repo. Hardcoded counts (e.g. 335 tests) in prose drift; prefer the verify script and pytest output for exact numbers."
+  "note": "Debrief DCI scores depend on which sentences are extracted from README/README fragments. This file lists claims that are fully verifiable in-repo. Hardcoded counts (e.g. 338 tests) in prose drift; prefer the verify script and pytest output for exact numbers."
 }

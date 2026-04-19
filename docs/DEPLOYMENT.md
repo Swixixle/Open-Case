@@ -127,7 +127,7 @@ cd ..
 PYTHONPATH=. pytest tests/
 ```
 
-**Full suite:** Run `PYTHONPATH=. pytest tests/` locally — **335** tests as of last README verification (count changes as tests are added).
+**Full suite:** Run `PYTHONPATH=. pytest tests/` locally — **338** tests as of last README verification (count changes as tests are added).
 
 **CI regression floor:** `.github/workflows/ci.yml` runs `python server/scripts/ci_pytest_floor.py`, which requires **≥ 201** tests passed (see `REGRESSION_FLOOR` in that script). That floor is a **minimum bar**, not the full suite count.
 

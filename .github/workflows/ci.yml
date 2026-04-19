@@ -25,7 +25,7 @@ jobs:
       - name: Verify documentation-aligned claims
         run: python scripts/verify_documentation.py
 
-      - name: Pytest (min 201 passed via ci_pytest_floor.py; full suite ~335 locally)
+      - name: Pytest (min 201 passed via ci_pytest_floor.py; full suite ~338 locally)
         run: python server/scripts/ci_pytest_floor.py
 
   client:

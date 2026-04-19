@@ -1,0 +1,2 @@
+# Copy EthicalAlt *_deep.json here for local runs; do not commit large exports.
+*.json
