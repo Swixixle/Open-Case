@@ -5,10 +5,15 @@ from __future__ import annotations
 import main
 
 
-def test_scheduler_disabled_env_parsing(monkeypatch):
+def test_env_scheduler_disabled_parsing(monkeypatch):
     monkeypatch.setenv("DISABLE_SCHEDULER", "1")
-    assert main._scheduler_disabled() is True
+    assert main._env_scheduler_disabled() is True
     monkeypatch.setenv("DISABLE_SCHEDULER", "true")
-    assert main._scheduler_disabled() is True
+    assert main._env_scheduler_disabled() is True
     monkeypatch.delenv("DISABLE_SCHEDULER", raising=False)
-    assert main._scheduler_disabled() is False
+    assert main._env_scheduler_disabled() is False
+
+
+def test_scheduler_disabled_true_under_pytest():
+    """Pytest is always in sys.modules here; combined gate must skip the scheduler."""
+    assert main._scheduler_disabled() is True

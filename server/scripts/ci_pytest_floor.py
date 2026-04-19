@@ -2,6 +2,11 @@
 """Run pytest and enforce the repository regression floor (minimum passed tests)."""
 from __future__ import annotations
 
+import os
+
+# Ensure the pytest child process inherits this before any test imports ``main`` (APScheduler gate).
+os.environ.setdefault("DISABLE_SCHEDULER", "1")
+
 import re
 import subprocess
 import sys
@@ -14,11 +19,14 @@ REGRESSION_FLOOR = 201
 
 
 def main() -> int:
+    env = os.environ.copy()
+    env.setdefault("DISABLE_SCHEDULER", "1")
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--tb=short"],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
+        env=env,
     )
     out = (proc.stdout or "") + (proc.stderr or "")
     print(proc.stdout, end="")

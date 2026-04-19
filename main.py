@@ -47,10 +47,22 @@ bootstrap_env_keys(_ROOT)
 scheduler = AsyncIOScheduler()
 
 
-def _scheduler_disabled() -> bool:
-    """True when DISABLE_SCHEDULER is set (tests/CI); avoids APScheduler on a closed TestClient loop."""
+def _env_scheduler_disabled() -> bool:
+    """True when DISABLE_SCHEDULER requests skipping the scheduler (tests/CI)."""
     v = os.getenv("DISABLE_SCHEDULER", "").strip().lower()
     return v in ("1", "true", "yes", "on")
+
+
+def _scheduler_disabled() -> bool:
+    """
+    Skip APScheduler when tests ask via env, or when running under pytest.
+
+    The pytest process can import ``main`` before ``tests/conftest.py`` runs; the
+    ``pytest`` package is already in ``sys.modules`` in that case, so this stays reliable.
+    """
+    if _env_scheduler_disabled():
+        return True
+    return "pytest" in sys.modules
 
 
 def _scheduled_enrichment_refresh() -> None:
@@ -100,9 +112,17 @@ async def lifespan(app: FastAPI):
         check_config_warnings()
         logger.info("Running database migrations and startup hooks.")
         init_db()
-        if _scheduler_disabled():
+        scheduler_disabled = _scheduler_disabled()
+        logger.info(
+            "Scheduler gate: DISABLE_SCHEDULER=%r env_off=%s pytest_loaded=%s disabled=%s",
+            os.getenv("DISABLE_SCHEDULER"),
+            _env_scheduler_disabled(),
+            "pytest" in sys.modules,
+            scheduler_disabled,
+        )
+        if scheduler_disabled:
             logger.info(
-                "Scheduler disabled (DISABLE_SCHEDULER); skipping background jobs."
+                "Scheduler disabled (env or pytest); skipping background jobs."
             )
         else:
             scheduler.add_job(
