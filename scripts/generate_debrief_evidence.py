@@ -43,11 +43,14 @@ def _path_excluded(rel: Path) -> bool:
 
 
 def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    """
+    Hash file bytes with CRLF normalized to LF so CI (Linux) and local checkouts
+    agree regardless of git autocrlf / editor line endings.
+    """
+    raw = path.read_bytes()
+    if b"\r\n" in raw:
+        raw = raw.replace(b"\r\n", b"\n")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _sha256_utf8_lines(lines: list[str]) -> str:
