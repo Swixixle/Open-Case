@@ -161,8 +161,8 @@ signing.py      Ed25519 helpers
 PYTHONPATH=. pytest tests/
 ```
 
-- **Full suite:** **338** tests collected (run locally to confirm current count).
-- **CI:** `.github/workflows/ci.yml` runs `server/scripts/ci_pytest_floor.py`, which requires **≥ 201** passed (regression floor). If the README cites “338,” that is the **current** full run; CI’s floor may lag until updated intentionally.
+- **Full suite:** **342** tests collected (run locally to confirm current count).
+- **CI:** `.github/workflows/ci.yml` runs `server/scripts/ci_pytest_floor.py`, which requires **≥ 201** passed (regression floor). If the README cites “342,” that is the **current** full run; CI’s floor may lag until updated intentionally.
 
 ---
 

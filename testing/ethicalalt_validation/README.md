@@ -10,11 +10,18 @@ From the Open Case repository root:
 python3 testing/ethicalalt_validation/validate_real_profiles.py
 ```
 
-The script discovers JSON under:
+The script discovers:
+
+- Monolithic `*_deep.json` (e.g. `target_deep.json`) under the paths below
+- **Brand subdirectories** of `deep_research_output/` (e.g. `amazon/`, `nestle/`) with per-category JSON merged via `profile_from_brand_directory`
+
+Search roots:
 
 - Current working directory (`*_deep.json`)
 - `testing/ethicalalt_mapper/data/` (copy files here; gitignored)
 - `/Users/alexmaksimovich/ETHICAL_ALTERNATIVES/server/deep_research_output/` (if present)
+
+Compact results: **`real_profile_findings.md`**
 
 ## Also available
 

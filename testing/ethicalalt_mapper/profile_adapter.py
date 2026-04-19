@@ -5,12 +5,49 @@ Adapt EthicalAlt deep-research JSON into the flat shape expected by
 Supports:
   - Monolithic ``*_deep.json`` with ``per_category`` (list of {category, incidents}).
   - Legacy ``categories`` dict mapping category name -> {incidents: [...]}.
+  - Per-category files under a brand directory (``rounds[].incidents_raw``).
 
 Does not modify core mapper logic — structural normalization only.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
+
+
+def profile_from_brand_directory(brand_dir: Path) -> dict[str, Any]:
+    """
+    Merge EthicalAlt category JSON files (``slug/labor_and_wage.json``, …) into one
+    profile dict with a top-level ``incidents`` list.
+
+    Each file is expected to have ``slug``, ``category``, and ``rounds`` with
+    ``incidents_raw`` entries.
+    """
+    brand_dir = brand_dir.resolve()
+    slug: str | None = None
+    merged: list[dict[str, Any]] = []
+    for fp in sorted(brand_dir.glob("*.json")):
+        raw = json.loads(fp.read_text(encoding="utf-8"))
+        slug = slug or str(raw.get("slug") or brand_dir.name)
+        cat = str(raw.get("category") or fp.stem)
+        for rnd in raw.get("rounds") or []:
+            if not isinstance(rnd, dict):
+                continue
+            for inc in rnd.get("incidents_raw") or []:
+                if not isinstance(inc, dict):
+                    continue
+                row = {**inc}
+                row.setdefault("category", cat)
+                row["ethicalalt_category"] = cat
+                merged.append(row)
+    sid = slug or brand_dir.name
+    return {
+        "profile_id": sid,
+        "slug": sid,
+        "name": sid,
+        "incidents": merged,
+    }
 
 
 def flatten_ethicalalt_deep_profile(raw: dict[str, Any]) -> dict[str, Any]:

@@ -3,13 +3,13 @@
     "claim_001": {
       "counts": {
         "javascript_client_source_files": 39,
-        "python_repository_files": 179
+        "python_repository_files": 180
       },
       "evidence": [
         {
           "label": "sorted_relative_paths_all_python_files",
-          "path_count": 179,
-          "sha256": "a6ac8e91d095701b32cc0d8caf29c6a5c24ce6822ffa745eb42494e518fe7fba",
+          "path_count": 180,
+          "sha256": "4b48cc27126ae4f011be7a49437950cdedfbae3bbf808404869157788a0d359b",
           "type": "file_list_sha256"
         },
         {
@@ -37,7 +37,7 @@
           "type": "marker_file"
         }
       ],
-      "statement": "Primary languages: JavaScript (39 source files under client/), Python (179 .py files in the repository tree, same exclusions).",
+      "statement": "Primary languages: JavaScript (39 source files under client/), Python (180 .py files in the repository tree, same exclusions).",
       "status": "evidenced"
     },
     "claim_002": {
@@ -85,7 +85,7 @@
     "javascript_glob": "client/**/*.{js,jsx,mjs,cjs} under repository root",
     "python_glob": "**/*.py under repository root"
   },
-  "generated_at_utc": "2026-04-19T05:12:07.068260+00:00",
+  "generated_at_utc": "2026-04-19T05:22:27.647766+00:00",
   "generator": "scripts/generate_debrief_evidence.py",
   "schema_version": 1
 }

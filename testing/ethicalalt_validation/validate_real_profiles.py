@@ -2,17 +2,16 @@
 """
 Test EthicalAlt → Open Case mapper on real deep research profiles.
 
-Uses the real modules:
+Uses:
   - scripts/ethicalalt_to_open_case.py
-  - testing/ethicalalt_mapper/profile_adapter.py (EthicalAlt JSON shapes)
+  - testing/ethicalalt_mapper/profile_adapter.py
 
-Reports metrics only; does not modify the conservative mapper.
+Accepts:
+  - Monolithic ``*_deep.json`` (root ``incidents`` or ``per_category``).
+  - Brand directories with per-category JSON (``rounds[].incidents_raw``).
 
-Run from repo root (recommended):
+Run from repo root:
   python3 testing/ethicalalt_validation/validate_real_profiles.py
-
-Or from this directory:
-  cd testing/ethicalalt_validation && python3 validate_real_profiles.py
 """
 from __future__ import annotations
 
@@ -32,7 +31,10 @@ from ethicalalt_to_open_case import (  # noqa: E402
     build_ethicalalt_entity,
     extract_donations_for_open_case,
 )
-from profile_adapter import flatten_ethicalalt_deep_profile  # noqa: E402
+from profile_adapter import (  # noqa: E402
+    flatten_ethicalalt_deep_profile,
+    profile_from_brand_directory,
+)
 
 
 def _load_json(path: Path) -> dict:
@@ -40,7 +42,6 @@ def _load_json(path: Path) -> dict:
 
 
 def _count_source_incidents(raw: dict) -> tuple[int, dict[str, int]]:
-    """Match EthicalAlt exports: prefer root ``incidents``, else per_category / categories."""
     per_cat: dict[str, int] = {}
     total = 0
     root = raw.get("incidents")
@@ -79,16 +80,14 @@ def _political_raw_incidents(flat_incidents: list[dict]) -> list[dict]:
     ]
 
 
-def analyze_profile(profile_path: Path) -> dict:
-    raw = _load_json(profile_path)
-    brand = str(raw.get("brand_slug") or raw.get("slug") or profile_path.stem)
+def run_analysis(raw: dict, *, brand: str, source_label: str) -> dict:
     total_source, source_stats = _count_source_incidents(raw)
     flat = flatten_ethicalalt_deep_profile(raw)
     entity = build_ethicalalt_entity(flat)
     donations = extract_donations_for_open_case(flat)
 
     print(f"\n{'=' * 50}")
-    print(f"TESTING: {brand.upper()}  ({profile_path.name})")
+    print(f"TESTING: {brand.upper()}  ({source_label})")
     print(f"{'=' * 50}")
 
     print("\nSOURCE (by category):")
@@ -117,6 +116,8 @@ def analyze_profile(profile_path: Path) -> dict:
     valid_incidents = [i for i in entity.incidents if i.normalized_date]
     dropped = len(entity.incidents) - len(valid_incidents)
     drop_pct = (dropped / max(len(entity.incidents), 1)) * 100
+    date_coverage_rate = len(valid_incidents) / max(len(entity.incidents), 1)
+    donation_fixture_rate = len(donations) / max(len(entity.incidents), 1)
 
     print("\nINCIDENT PROCESSING (mapper output):")
     print(f"  Mapper incidents: {len(entity.incidents)}")
@@ -124,20 +125,23 @@ def analyze_profile(profile_path: Path) -> dict:
     print(f"  Missing/invalid normalized date: {dropped}")
     if entity.incidents:
         print(f"  Drop rate (no ISO date): {drop_pct:.1f}%")
+    print(f"  date_coverage_rate: {date_coverage_rate:.3f}")
+    print(f"  donation_fixture_rate: {donation_fixture_rate:.3f}")
 
     resolved = [
         d for d in donations if d.recipient_name and d.recipient_type != "unknown"
     ]
     unresolved = len(donations) - len(resolved)
+    recipient_resolution_rate = (
+        100.0 * len(resolved) / max(len(donations), 1) if donations else 0.0
+    )
 
     print("\nRECIPIENT RESOLUTION (donation fixtures only):")
     print(f"  Total donation fixtures: {len(donations)}")
     print(f"  Recipients resolved (non-unknown type): {len(resolved)}")
     print(f"  Unresolved / unknown: {unresolved}")
     if donations:
-        print(
-            f"  Resolution rate: {100.0 * len(resolved) / max(len(donations), 1):.1f}%"
-        )
+        print(f"  recipient_resolution_rate: {recipient_resolution_rate:.1f}%")
 
     political_raw = _political_raw_incidents(flat.get("incidents") or [])
     lobbying_raw: list[dict] = []
@@ -161,46 +165,76 @@ def analyze_profile(profile_path: Path) -> dict:
 
     return {
         "brand": brand,
-        "file": profile_path.name,
+        "file": source_label,
         "total_source_incidents": total_source,
         "donation_fixtures": len(donations),
         "mapper_incidents": len(entity.incidents),
         "incidents_dropped": dropped,
         "drop_rate_percent": drop_pct,
+        "date_coverage_rate": date_coverage_rate,
+        "donation_fixture_rate": donation_fixture_rate,
         "recipients_resolved": len(resolved),
-        "resolution_rate_percent": (
-            100.0 * len(resolved) / max(len(donations), 1) if donations else 0.0
-        ),
+        "recipient_resolution_rate": recipient_resolution_rate,
+        "resolution_rate_percent": recipient_resolution_rate,
         "lobbying_classified": lobbying_classified,
         "source_political_count": len(political_raw),
         "category_breakdown": source_stats,
     }
 
 
-def _discover_profiles() -> list[Path]:
-    cwd = Path.cwd()
-    files: list[Path] = []
-    for pattern in ("*_deep.json", "*deep*.json"):
-        files.extend(cwd.glob(pattern))
+def analyze_profile_file(profile_path: Path) -> dict:
+    raw = _load_json(profile_path)
+    brand = str(raw.get("brand_slug") or raw.get("slug") or profile_path.stem)
+    return run_analysis(raw, brand=brand, source_label=profile_path.name)
 
-    ethicalalt_paths = [
+
+def analyze_brand_dir(brand_dir: Path) -> dict:
+    raw = profile_from_brand_directory(brand_dir)
+    brand = str(raw.get("profile_id") or brand_dir.name)
+    return run_analysis(raw, brand=brand, source_label=f"{brand_dir.name}/")
+
+
+def _discover() -> list[tuple[str, Path]]:
+    """Return (kind, path) where kind is ``file`` or ``brand_dir``."""
+    items: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+
+    cwd = Path.cwd()
+    for pattern in ("*_deep.json", "*deep*.json"):
+        for p in cwd.glob(pattern):
+            p = p.resolve()
+            if p.is_file() and p not in seen:
+                seen.add(p)
+                items.append(("file", p))
+
+    bases = [
         Path("/Users/alexmaksimovich/ETHICAL_ALTERNATIVES/server/deep_research_output"),
         REPO_ROOT / "testing" / "ethicalalt_mapper" / "data",
         cwd / "profiles",
     ]
-    for base in ethicalalt_paths:
-        if base.is_dir():
-            files.extend(base.glob("*.json"))
+    for base in bases:
+        if not base.is_dir():
+            continue
+        for p in base.glob("*.json"):
+            p = p.resolve()
+            if p.is_file() and p not in seen:
+                seen.add(p)
+                items.append(("file", p))
 
-    # De-dupe, files only
-    seen: set[Path] = set()
-    out: list[Path] = []
-    for p in files:
-        p = p.resolve()
-        if p.is_file() and p not in seen:
-            seen.add(p)
-            out.append(p)
-    return sorted(out)
+    eth = Path("/Users/alexmaksimovich/ETHICAL_ALTERNATIVES/server/deep_research_output")
+    if eth.is_dir():
+        for sub in sorted(eth.iterdir()):
+            if not sub.is_dir():
+                continue
+            jfs = [x for x in sub.glob("*.json") if x.is_file()]
+            if not jfs:
+                continue
+            key = sub.resolve()
+            if key not in seen:
+                seen.add(key)
+                items.append(("brand_dir", key))
+
+    return items
 
 
 def main() -> int:
@@ -208,27 +242,29 @@ def main() -> int:
     print("Conservative mapper — metrics only")
     print("=" * 60)
 
-    profile_files = _discover_profiles()
-    if not profile_files:
-        print("No profile JSON files found.")
+    discovered = _discover()
+    if not discovered:
+        print("No profiles found.")
         print("\nTry:")
         print("  - Copy *_deep.json into testing/ethicalalt_mapper/data/")
-        print("  - Or run from a directory that contains *_deep.json")
         print(
             f"  - Or ensure {Path('/Users/alexmaksimovich/ETHICAL_ALTERNATIVES/server/deep_research_output')} exists"
         )
         return 1
 
-    print(f"Found {len(profile_files)} file(s):")
-    for pf in profile_files:
-        print(f"  - {pf}")
+    print(f"Found {len(discovered)} profile(s):")
+    for kind, p in discovered:
+        print(f"  - [{kind}] {p}")
 
     results: list[dict] = []
-    for profile_file in profile_files:
+    for kind, path in discovered:
         try:
-            results.append(analyze_profile(profile_file))
+            if kind == "file":
+                results.append(analyze_profile_file(path))
+            else:
+                results.append(analyze_brand_dir(path))
         except Exception as e:
-            print(f"FAILED {profile_file}: {e}")
+            print(f"FAILED {path}: {e}")
 
     if not results:
         return 1
@@ -236,25 +272,28 @@ def main() -> int:
     print(f"\n{'=' * 80}")
     print("VALIDATION SUMMARY")
     print(f"{'=' * 80}")
-    print(
-        f"{'Brand':<14} {'Src':<5} {'Don':<5} {'Drop':<6} {'Drop%':<7} {'Recv':<6} {'Lobby':<6}"
+    hdr = (
+        f"{'Brand':<12} {'Src':<5} {'Don':<4} {'date%':<7} {'don%':<7} "
+        f"{'Drop':<5} {'Lobby':<5}"
     )
+    print(hdr)
     print("-" * 80)
     for r in results:
         print(
-            f"{r['brand'][:13]:<14} "
+            f"{r['brand'][:11]:<12} "
             f"{r['total_source_incidents']:<5} "
-            f"{r['donation_fixtures']:<5} "
-            f"{r['incidents_dropped']:<6} "
-            f"{r['drop_rate_percent']:<7.1f} "
-            f"{r['recipients_resolved']:<6} "
-            f"{r['lobbying_classified']:<6}"
+            f"{r['donation_fixtures']:<4} "
+            f"{r['date_coverage_rate']:<7.2f} "
+            f"{r['donation_fixture_rate']:<7.2f} "
+            f"{r['incidents_dropped']:<5} "
+            f"{r['lobbying_classified']:<5}"
         )
 
     total_source = sum(x["total_source_incidents"] for x in results)
     total_donations = sum(x["donation_fixtures"] for x in results)
     total_dropped = sum(x["incidents_dropped"] for x in results)
     avg_drop = sum(x["drop_rate_percent"] for x in results) / len(results)
+    avg_cov = sum(x["date_coverage_rate"] for x in results) / len(results)
 
     print(f"\nOVERALL:")
     print(f"  Profiles: {len(results)}")
@@ -262,6 +301,7 @@ def main() -> int:
     print(f"  Total donation fixtures: {total_donations}")
     print(f"  Total mapper rows without normalized date: {total_dropped}")
     print(f"  Average no-date rate: {avg_drop:.1f}%")
+    print(f"  Average date_coverage_rate: {avg_cov:.3f}")
 
     print("\nQUALITY (heuristic):")
     if avg_drop < 20:
@@ -284,7 +324,7 @@ def main() -> int:
         print("  - Inspect sample raw `date` fields that fail normalize_date()")
     if total_donations == 0 and total_source > 50:
         print("  - Try companies with known FEC/political coverage in EthicalAlt")
-    print("  - Do not change the mapper until patterns repeat across several profiles")
+    print("  - See testing/ethicalalt_validation/real_profile_findings.md")
 
     return 0
 

@@ -78,6 +78,15 @@ class TestClassifyPoliticalEventType:
             == EVENT_UNKNOWN_POLITICAL
         )
 
+    def test_contributed_to_pollution_not_donation(self) -> None:
+        # Real EthicalAlt phrasing: "operations contributed to … contamination"
+        assert (
+            classify_political_event_type(
+                "Operations contributed to nitrate groundwater contamination in Oregon."
+            )
+            == EVENT_UNKNOWN_POLITICAL
+        )
+
 
 class TestExtractRecipient:
     def test_committee(self) -> None:
@@ -121,6 +130,16 @@ class TestNormalizeDate:
         n, raw = normalize_date("not-a-date")
         assert n is None
         assert raw == "not-a-date"
+
+    def test_month_precision_ethicalalt(self) -> None:
+        n, raw = normalize_date("2025-09")
+        assert n == "2025-09-01"
+        assert raw == "2025-09"
+
+    def test_year_precision_ethicalalt(self) -> None:
+        n, raw = normalize_date("2018")
+        assert n == "2018-01-01"
+        assert raw == "2018"
 
 
 class TestExtractionPipeline:

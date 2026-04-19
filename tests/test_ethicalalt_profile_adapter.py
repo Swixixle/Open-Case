@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "testing" / "ethicalalt_mapper"))
 
-from profile_adapter import flatten_ethicalalt_deep_profile  # noqa: E402
+from profile_adapter import (  # noqa: E402
+    flatten_ethicalalt_deep_profile,
+    profile_from_brand_directory,
+)
 
 
 def test_flatten_per_category() -> None:
@@ -52,6 +56,28 @@ def test_flatten_prefers_root_incidents() -> None:
         "labor_and_wage",
         "environmental",
     }
+
+
+def test_profile_from_brand_directory_rounds(tmp_path: Path) -> None:
+    d = tmp_path / "brand"
+    d.mkdir()
+    payload = {
+        "slug": "demo",
+        "category": "labor_and_wage",
+        "rounds": [
+            {
+                "round": 1,
+                "incidents_raw": [
+                    {"description": "Fine", "date": "2020-01-01", "category": "labor_and_wage"}
+                ],
+            }
+        ],
+    }
+    (d / "labor_and_wage.json").write_text(json.dumps(payload), encoding="utf-8")
+    out = profile_from_brand_directory(d)
+    assert out["profile_id"] == "demo"
+    assert len(out["incidents"]) == 1
+    assert out["incidents"][0]["ethicalalt_category"] == "labor_and_wage"
 
 
 def test_flatten_categories_dict() -> None:

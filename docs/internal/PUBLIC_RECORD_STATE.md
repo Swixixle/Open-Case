@@ -88,7 +88,7 @@ Enrichment narratives (e.g., deep-research markdown) render in the same dark dos
 
 **`templates/report.html`** | Jinja template for case report page. |
 
-**`tests/`** | **338** collected tests (`pytest --collect-only`); broad coverage of engines, routes, adapters, signing (see section 14). |
+**`tests/`** | **342** collected tests (`pytest --collect-only`); broad coverage of engines, routes, adapters, signing (see section 14). |
 
 **`utils/`** | `local_entity_matching.py` (curated local relationships), `dossier_pdf.py`, `http_retry.py`. |
 
@@ -331,7 +331,7 @@ All in `models.py` unless noted.
 
 ## 14. Tests
 
-- **Count:** **338** tests collected (`pytest --collect-only`, this checkout).
+- **Count:** **342** tests collected (`pytest --collect-only`, this checkout).
 - **Run:** `pytest` from repo root; `pytest tests/test_local_pattern_rules.py` for local rules; `pytest tests/test_pattern_engine.py` for engine.
 - **Suites:** `tests/test_*` cover adapters (FEC, Congress, IDIS, Indianapolis, CourtListener, FJC…), pattern engine, investigate flows, signing, subjects, findings architecture, proportionality, senator dossier, admin gates, epistemic architecture, etc.
 - **Gaps (honest):** Not every adapter has network-offline integration tests; some tests mock external HTTP; E2E browser flows are thin; frontend tests are **not** in the pytest count (if present, separate runner).

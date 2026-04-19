@@ -56,7 +56,7 @@ _DONATION_MARKERS = (
     "contribution to campaign",
     "campaign contribution",
     "contributed $",
-    "contributed to",
+    # Not bare "contributed to" — matches environmental "contributed to contamination" in EthicalAlt exports.
     "write check",
 )
 _DONATION_SINGLE = frozenset({"donation", "donated", "donate"})
@@ -211,12 +211,27 @@ def normalize_date(raw: str | None) -> tuple[str | None, str | None]:
     """
     Return (iso_date YYYY-MM-DD or None, preserved raw string or None).
     Invalid or empty input → (None, raw or None).
+
+    EthicalAlt often emits month-only (``YYYY-MM``) or year-only (``YYYY``) strings.
+    Those normalize to the first day of the month or year respectively (precision limit).
     """
     if raw is None:
         return None, None
     s = str(raw).strip()
     if not s:
         return None, None
+    # Month precision (common in EthicalAlt category exports)
+    if re.fullmatch(r"\d{4}-\d{2}", s):
+        try:
+            dt = datetime.strptime(s, "%Y-%m")
+            return dt.date().isoformat(), s
+        except ValueError:
+            pass
+    # Year precision only — anchor to Jan 1 (documented limitation)
+    if re.fullmatch(r"\d{4}", s):
+        y = int(s)
+        if 1900 <= y <= 2100:
+            return f"{y:04d}-01-01", s
     for fmt in _DATE_FORMATS:
         try:
             dt = datetime.strptime(s[:19] if "T" in s and len(s) > 10 else s, fmt)
