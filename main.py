@@ -46,6 +46,24 @@ bootstrap_env_keys(_ROOT)
 
 scheduler = AsyncIOScheduler()
 
+# Set True by tests/conftest.py before TestClient (explicit; does not depend on import order).
+_testing_mode_skip_scheduler: bool = False
+
+
+def set_testing_mode(enabled: bool) -> None:
+    """
+    When True, lifespan skips all APScheduler setup. Call from tests immediately before
+    TestClient(main.app) (see tests/conftest.py).
+    """
+    global _testing_mode_skip_scheduler
+    _testing_mode_skip_scheduler = enabled
+
+
+def _env_open_case_testing() -> bool:
+    """OPEN_CASE_TESTING=1 from conftest / CI before pytest imports main."""
+    v = os.getenv("OPEN_CASE_TESTING", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
 
 def _env_scheduler_disabled() -> bool:
     """True when DISABLE_SCHEDULER requests skipping the scheduler (tests/CI)."""
@@ -55,11 +73,16 @@ def _env_scheduler_disabled() -> bool:
 
 def _scheduler_disabled() -> bool:
     """
-    Skip APScheduler when tests ask via env, or when running under pytest.
+    Skip APScheduler when any test/CI signal is present:
 
-    The pytest process can import ``main`` before ``tests/conftest.py`` runs; the
-    ``pytest`` package is already in ``sys.modules`` in that case, so this stays reliable.
+    - explicit ``set_testing_mode(True)`` (before TestClient)
+    - ``OPEN_CASE_TESTING`` or ``DISABLE_SCHEDULER`` env (conftest / ci_pytest_floor / Actions)
+    - ``pytest`` in ``sys.modules`` (fallback when env is missing)
     """
+    if _testing_mode_skip_scheduler:
+        return True
+    if _env_open_case_testing():
+        return True
     if _env_scheduler_disabled():
         return True
     return "pytest" in sys.modules
@@ -114,15 +137,19 @@ async def lifespan(app: FastAPI):
         init_db()
         scheduler_disabled = _scheduler_disabled()
         logger.info(
-            "Scheduler gate: DISABLE_SCHEDULER=%r env_off=%s pytest_loaded=%s disabled=%s",
+            "Scheduler gate: testing_mode=%s OPEN_CASE_TESTING=%r DISABLE_SCHEDULER=%r "
+            "env_testing=%s env_sched_off=%s pytest_loaded=%s disabled=%s",
+            _testing_mode_skip_scheduler,
+            os.getenv("OPEN_CASE_TESTING"),
             os.getenv("DISABLE_SCHEDULER"),
+            _env_open_case_testing(),
             _env_scheduler_disabled(),
             "pytest" in sys.modules,
             scheduler_disabled,
         )
         if scheduler_disabled:
             logger.info(
-                "Scheduler disabled (env or pytest); skipping background jobs."
+                "Scheduler disabled (testing mode / env / pytest); skipping background jobs."
             )
         else:
             scheduler.add_job(

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-# Set test env before any imports that could load `main` (scheduler gate reads DISABLE_SCHEDULER at lifespan runtime).
+# Set test env before any imports that could load `main` (lifespan reads these at runtime).
 import os
 
 os.environ.setdefault("SKIP_EXTERNAL_PROPORTIONALITY", "1")
+# First-class test mode for lifespan (see main.set_testing_mode / OPEN_CASE_TESTING).
+os.environ.setdefault("OPEN_CASE_TESTING", "1")
 # APScheduler + Starlette TestClient: add_job/start can raise when the event loop is torn down.
 os.environ.setdefault("DISABLE_SCHEDULER", "1")
 
@@ -57,10 +59,12 @@ def client(test_engine):
         autocommit=False, autoflush=False, bind=test_engine
     )
     try:
+        main.set_testing_mode(True)
         with patch.object(main, "init_db", lambda: None):
             with TestClient(main.app) as c:
                 yield c
     finally:
+        main.set_testing_mode(False)
         database.engine = old_engine
         database.SessionLocal = old_factory
 

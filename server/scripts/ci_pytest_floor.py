@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import os
 
-# Ensure the pytest child process inherits this before any test imports ``main`` (APScheduler gate).
+# Ensure the pytest child process inherits these before any test imports ``main`` (lifespan scheduler gate).
+os.environ.setdefault("OPEN_CASE_TESTING", "1")
 os.environ.setdefault("DISABLE_SCHEDULER", "1")
 
 import re
@@ -20,6 +21,7 @@ REGRESSION_FLOOR = 201
 
 def main() -> int:
     env = os.environ.copy()
+    env.setdefault("OPEN_CASE_TESTING", "1")
     env.setdefault("DISABLE_SCHEDULER", "1")
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--tb=short"],
