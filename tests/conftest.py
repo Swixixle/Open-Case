@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Set test env before any imports that could load `main` (scheduler gate reads DISABLE_SCHEDULER at lifespan runtime).
 import os
 
 os.environ.setdefault("SKIP_EXTERNAL_PROPORTIONALITY", "1")

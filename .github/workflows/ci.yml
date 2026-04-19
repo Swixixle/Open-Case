@@ -29,6 +29,9 @@ jobs:
         run: python scripts/verify_documentation.py
 
       - name: Pytest (min 201 passed via ci_pytest_floor.py; full suite ~344 locally)
+        env:
+          # Belt-and-suspenders with tests/conftest.py: APScheduler + TestClient can error if set too late.
+          DISABLE_SCHEDULER: "1"
         run: python server/scripts/ci_pytest_floor.py
 
   client:
