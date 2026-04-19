@@ -7,12 +7,17 @@ Writes:
   - docs/DEBRIEF_CLAIMS_FOR_DCI.md — short verbatim claims for tools (e.g. Debrief) that should not infer from README
 
 Run from repository root:
-  python3 scripts/generate_debrief_evidence.py
-  python3 scripts/generate_debrief_evidence.py --check   # fail if outputs would change
+    python3 scripts/generate_debrief_evidence.py
+    python3 scripts/generate_debrief_evidence.py --check   # fail if outputs would change
+
+On --check failure, stderr includes a compact diff (top-level keys, counts, per-path hashes)
+between the committed JSON and a fresh build (excluding generated_at_utc). Stale DCI markdown
+prints a short unified diff.
 """
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import sys
@@ -107,6 +112,139 @@ def _without_timestamp(doc: dict) -> dict:
     out = json.loads(json.dumps(doc))
     out.pop("generated_at_utc", None)
     return out
+
+
+def _truncate(s: str, max_len: int = 140) -> str:
+    s = s.replace("\n", " ")
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
+
+
+def _evidence_item_key(item: dict) -> str:
+    """Stable key for evidence list entries (schema-specific)."""
+    t = item.get("type")
+    if t == "file_list_sha256":
+        return f"file_list:{item.get('label')}"
+    if t in ("marker_file", "directory_marker_file"):
+        return f"{t}:{item.get('path')}"
+    if t == "file_tree_sha256":
+        return f"tree:{item.get('root')}"
+    return f"other:{t}:{json.dumps(item, sort_keys=True)[:80]}"
+
+
+def _format_debrief_evidence_diff(committed: dict, fresh: dict, max_lines: int = 55) -> str:
+    """
+    Compact diff for CI when --check finds stale DEBRIEF_STRUCTURE_EVIDENCE.json.
+    Does not weaken verification; only explains what differs.
+    """
+    a = _without_timestamp(committed)
+    b = _without_timestamp(fresh)
+    lines: list[str] = []
+
+    def emit(msg: str) -> None:
+        if len(lines) < max_lines:
+            lines.append(msg)
+
+    keys_a, keys_b = set(a.keys()), set(b.keys())
+    only_a = sorted(keys_a - keys_b)
+    only_b = sorted(keys_b - keys_a)
+    if only_a:
+        emit(f"top-level keys only in committed file: {only_a}")
+    if only_b:
+        emit(f"top-level keys only in regenerated doc: {only_b}")
+
+    for k in sorted(keys_a & keys_b):
+        if k == "claims":
+            continue
+        if a[k] == b[k]:
+            continue
+        emit(f"field {k!r} differs.")
+        if k == "count_method" and isinstance(a[k], dict) and isinstance(b[k], dict):
+            cm_a, cm_b = a[k], b[k]
+            for ck in sorted(set(cm_a) | set(cm_b)):
+                va, vb = cm_a.get(ck), cm_b.get(ck)
+                if va != vb:
+                    emit(f"  count_method.{ck}: committed={va!r} regenerated={vb!r}")
+        else:
+            emit(f"  committed: {_truncate(repr(a[k]))}")
+            emit(f"  regenerated: {_truncate(repr(b[k]))}")
+
+    claims_a = a.get("claims") if isinstance(a.get("claims"), dict) else {}
+    claims_b = b.get("claims") if isinstance(b.get("claims"), dict) else {}
+    claim_ids = sorted(set(claims_a) | set(claims_b))
+    for cid in claim_ids:
+        ca, cb = claims_a.get(cid), claims_b.get(cid)
+        if ca is None:
+            emit(f"claims.{cid}: present only in regenerated output")
+            continue
+        if cb is None:
+            emit(f"claims.{cid}: present only in committed file")
+            continue
+        if not isinstance(ca, dict) or not isinstance(cb, dict):
+            if ca != cb:
+                emit(f"claims.{cid}: value type or content mismatch")
+            continue
+        if ca.get("statement") != cb.get("statement"):
+            emit(f"claims.{cid}.statement differs:")
+            emit(f"  committed: {_truncate(str(ca.get('statement', '')))}")
+            emit(f"  regenerated: {_truncate(str(cb.get('statement', '')))}")
+        if ca.get("status") != cb.get("status"):
+            emit(f"claims.{cid}.status: {ca.get('status')!r} vs {cb.get('status')!r}")
+        counts_a, counts_b = ca.get("counts"), cb.get("counts")
+        if isinstance(counts_a, dict) and isinstance(counts_b, dict):
+            for nk in sorted(set(counts_a) | set(counts_b)):
+                va, vb = counts_a.get(nk), counts_b.get(nk)
+                if va != vb:
+                    emit(f"claims.{cid}.counts.{nk}: committed={va!r} regenerated={vb!r}")
+        elif counts_a != counts_b:
+            emit(f"claims.{cid}.counts: committed={counts_a!r} regenerated={counts_b!r}")
+
+        ev_a = ca.get("evidence") if isinstance(ca.get("evidence"), list) else []
+        ev_b = cb.get("evidence") if isinstance(cb.get("evidence"), list) else []
+        map_a = {_evidence_item_key(x): x for x in ev_a if isinstance(x, dict)}
+        map_b = {_evidence_item_key(x): x for x in ev_b if isinstance(x, dict)}
+        ev_keys = set(map_a) | set(map_b)
+        for ek in sorted(ev_keys):
+            ia, ib = map_a.get(ek), map_b.get(ek)
+            if ia is None:
+                emit(f"claims.{cid}.evidence[{ek!r}]: only in regenerated")
+                continue
+            if ib is None:
+                emit(f"claims.{cid}.evidence[{ek!r}]: only in committed")
+                continue
+            if ia == ib:
+                continue
+            known_fields = (
+                "type",
+                "sha256",
+                "path_count",
+                "file_count",
+                "path",
+                "label",
+                "root",
+                "snippet_hash_verified",
+            )
+            for fld in known_fields:
+                if fld not in ia and fld not in ib:
+                    continue
+                if ia.get(fld) != ib.get(fld):
+                    emit(
+                        f"claims.{cid}.evidence[{ek!r}].{fld}: "
+                        f"{ia.get(fld)!r} → {ib.get(fld)!r}"
+                    )
+            extra_keys = (set(ia) | set(ib)) - set(known_fields)
+            for fld in sorted(extra_keys):
+                if ia.get(fld) != ib.get(fld):
+                    emit(
+                        f"claims.{cid}.evidence[{ek!r}].{fld}: "
+                        f"{ia.get(fld)!r} → {ib.get(fld)!r}"
+                    )
+
+    if len(lines) >= max_lines:
+        lines.append(f"... (diff truncated; max {max_lines} lines)")
+
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def _build_dci_markdown(doc: dict) -> str:
@@ -279,16 +417,39 @@ def main() -> int:
                 f"VERIFY FAIL: {OUTPUT} is stale. Run: python3 scripts/generate_debrief_evidence.py",
                 file=sys.stderr,
             )
+            print(
+                "--- Debrief evidence diff (committed file vs regenerated, excluding timestamp) ---",
+                file=sys.stderr,
+            )
+            print(_format_debrief_evidence_diff(on_disk, doc), end="", file=sys.stderr)
             return 1
         print(f"OK: {OUTPUT} matches regenerated content (excluding timestamp).")
         if not OUTPUT_MD.is_file():
             print(f"VERIFY FAIL: missing {OUTPUT_MD}", file=sys.stderr)
             return 1
-        if OUTPUT_MD.read_text(encoding="utf-8") != md_text:
+        disk_md = OUTPUT_MD.read_text(encoding="utf-8")
+        if disk_md != md_text:
             print(
                 f"VERIFY FAIL: {OUTPUT_MD} is stale. Run: python3 scripts/generate_debrief_evidence.py",
                 file=sys.stderr,
             )
+            print(
+                "--- DCI markdown diff (unified, first ~24 lines) ---",
+                file=sys.stderr,
+            )
+            md_lines = 0
+            for line in difflib.unified_diff(
+                disk_md.splitlines(),
+                md_text.splitlines(),
+                fromfile=str(OUTPUT_MD),
+                tofile="regenerated",
+                lineterm="",
+            ):
+                print(line, file=sys.stderr)
+                md_lines += 1
+                if md_lines >= 24:
+                    print("... (diff truncated)", file=sys.stderr)
+                    break
             return 1
         print(f"OK: {OUTPUT_MD} matches regenerated content.")
         return 0
