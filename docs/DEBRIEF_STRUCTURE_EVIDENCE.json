@@ -55,9 +55,9 @@
           "type": "directory_marker_file"
         },
         {
-          "file_count": 48,
+          "file_count": 47,
           "root": "client/",
-          "sha256": "011dd87c03f4a4756548170e640dc616393d4e528bc8b9213b449a084f94a285",
+          "sha256": "18ff22ad72898c999317ccd3a102960259e0507732935d5c0eed2dfe8f839495",
           "type": "file_tree_sha256"
         },
         {
@@ -82,10 +82,14 @@
       "node_modules",
       "venv"
     ],
+    "excluded_tree_filenames": [
+      ".env",
+      ".env.local"
+    ],
     "javascript_glob": "client/**/*.{js,jsx,mjs,cjs} under repository root",
     "python_glob": "**/*.py under repository root"
   },
-  "generated_at_utc": "2026-04-19T05:39:38.950452+00:00",
+  "generated_at_utc": "2026-04-19T05:45:10.289653+00:00",
   "generator": "scripts/generate_debrief_evidence.py",
   "schema_version": 1
 }

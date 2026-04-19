@@ -93,3 +93,11 @@ def test_build_document_matches_check_strip(gen):
     doc = gen.build_document()
     doc2 = json.loads(json.dumps(doc))
     assert gen._without_timestamp(doc) == gen._without_timestamp(doc2)
+
+
+def test_tree_file_excluded_skips_env(gen):
+    from pathlib import Path
+
+    assert gen._tree_file_excluded(Path("client/.env")) is True
+    assert gen._tree_file_excluded(Path("server/.env.local")) is True
+    assert gen._tree_file_excluded(Path("client/src/App.jsx")) is False

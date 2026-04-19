@@ -42,9 +42,18 @@ EXCLUDE_DIR_PARTS = frozenset(
     }
 )
 
+# Omitted from client/ and server/ file_tree_sha256 lists. These are typically gitignored
+# (e.g. local API keys) and exist on developer machines but not in CI checkouts — counting them
+# makes committed evidence fail --check on GitHub Actions.
+EXCLUDE_TREE_FILE_NAMES = frozenset({".env", ".env.local"})
+
 
 def _path_excluded(rel: Path) -> bool:
     return any(part in EXCLUDE_DIR_PARTS for part in rel.parts)
+
+
+def _tree_file_excluded(rel: Path) -> bool:
+    return rel.name in EXCLUDE_TREE_FILE_NAMES
 
 
 def _sha256_file(path: Path) -> str:
@@ -276,14 +285,14 @@ def build_document() -> dict:
         for p in client_root.rglob("*"):
             if p.is_file():
                 rel = p.relative_to(REPO_ROOT)
-                if _path_excluded(rel):
+                if _path_excluded(rel) or _tree_file_excluded(rel):
                     continue
                 client_tree_paths.append(rel.as_posix())
     if server_root.is_dir():
         for p in server_root.rglob("*"):
             if p.is_file():
                 rel = p.relative_to(REPO_ROOT)
-                if _path_excluded(rel):
+                if _path_excluded(rel) or _tree_file_excluded(rel):
                     continue
                 server_tree_paths.append(rel.as_posix())
     client_tree_paths.sort()
@@ -321,6 +330,7 @@ def build_document() -> dict:
             "python_glob": "**/*.py under repository root",
             "javascript_glob": "client/**/*.{js,jsx,mjs,cjs} under repository root",
             "excluded_path_segments": sorted(EXCLUDE_DIR_PARTS),
+            "excluded_tree_filenames": sorted(EXCLUDE_TREE_FILE_NAMES),
         },
         "claims": {
             "claim_001": {
