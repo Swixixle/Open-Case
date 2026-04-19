@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("SKIP_EXTERNAL_PROPORTIONALITY", "1")
+# APScheduler + Starlette TestClient: add_job/start can raise when the event loop is torn down.
+os.environ.setdefault("DISABLE_SCHEDULER", "1")
 
 import uuid
 from unittest.mock import patch

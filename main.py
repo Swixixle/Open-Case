@@ -47,6 +47,12 @@ bootstrap_env_keys(_ROOT)
 scheduler = AsyncIOScheduler()
 
 
+def _scheduler_disabled() -> bool:
+    """True when DISABLE_SCHEDULER is set (tests/CI); avoids APScheduler on a closed TestClient loop."""
+    v = os.getenv("DISABLE_SCHEDULER", "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def _scheduled_enrichment_refresh() -> None:
     try:
         from services.enrichment_service import enqueue_stale_enrichment
@@ -94,21 +100,26 @@ async def lifespan(app: FastAPI):
         check_config_warnings()
         logger.info("Running database migrations and startup hooks.")
         init_db()
-        scheduler.add_job(
-            _scheduled_enrichment_refresh,
-            "interval",
-            hours=24,
-            id="enrichment_refresh",
-            replace_existing=True,
-        )
-        try:
-            scheduler.start()
-            logger.info("Scheduler started")
-        except Exception as e:
-            logger.warning(
-                "Scheduler failed to start, continuing without it: %s",
-                e,
+        if _scheduler_disabled():
+            logger.info(
+                "Scheduler disabled (DISABLE_SCHEDULER); skipping background jobs."
             )
+        else:
+            scheduler.add_job(
+                _scheduled_enrichment_refresh,
+                "interval",
+                hours=24,
+                id="enrichment_refresh",
+                replace_existing=True,
+            )
+            try:
+                scheduler.start()
+                logger.info("Scheduler started")
+            except Exception as e:
+                logger.warning(
+                    "Scheduler failed to start, continuing without it: %s",
+                    e,
+                )
         logger.info("Application startup complete.")
     except Exception:
         logger.exception("Application startup failed")
@@ -116,10 +127,11 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        try:
-            scheduler.shutdown(wait=False)
-        except Exception:
-            logger.debug("Scheduler shutdown skipped or failed", exc_info=True)
+        if not _scheduler_disabled():
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                logger.debug("Scheduler shutdown skipped or failed", exc_info=True)
 
 
 app = FastAPI(title="OPEN CASE", version="0.2.0", lifespan=lifespan)
