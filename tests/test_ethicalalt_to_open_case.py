@@ -23,6 +23,7 @@ from ethicalalt_to_open_case import (  # noqa: E402
     extract_recipient,
     generate_soft_bundle_test_data,
     generate_temporal_clustering_test_data,
+    is_political_donation_context,
     normalize_date,
     parse_amount,
 )
@@ -86,6 +87,20 @@ class TestClassifyPoliticalEventType:
             )
             == EVENT_UNKNOWN_POLITICAL
         )
+
+    def test_charitable_donated_not_strict_donation(self) -> None:
+        # EthicalAlt Nestlé-style recall: product donated to charity — not campaign finance
+        text = (
+            "Nestlé USA recalled Hot Pockets donated to a charitable organization "
+            "in Missouri due to misbranding."
+        )
+        assert not is_political_donation_context(text)
+        assert classify_political_event_type(text) == EVENT_UNKNOWN_POLITICAL
+
+    def test_friends_of_senate_is_political(self) -> None:
+        assert classify_political_event_type(
+            "Donated $25,000 to Friends of Lee for Senate"
+        ) == EVENT_DONATION
 
 
 class TestExtractRecipient:

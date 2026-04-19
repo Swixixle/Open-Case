@@ -68,6 +68,62 @@ _INDEPENDENT_OR_IE = (
     "issue advocacy",
 )
 
+# Substrings for “plausibly campaign-finance / electoral,” not charity-only.
+_POLITICAL_DONATION_CUES = (
+    "campaign",
+    "candidate",
+    "election",
+    "senate",
+    "senator",
+    "congress",
+    "representative",
+    "fec",
+    "ballot",
+    "gubernatorial",
+    "presidential",
+    "primary election",
+    "general election",
+    "friends of",
+    "campaign committee",
+    "party committee",
+    "campaign finance",
+    "for congress",
+    "house race",
+    "senate race",
+    "political action committee",
+    " u.s. house",
+    "house of representatives",
+)
+
+
+def is_political_donation_context(description: str) -> bool:
+    """
+    True if text plausibly describes electoral / campaign-finance giving.
+
+    Used to keep strict donation fixtures from generic charitable “donated …” lines.
+    """
+    if not description or not description.strip():
+        return False
+    d = description.lower()
+    if _PAC_WORD.search(description):
+        return True
+    if any(c in d for c in _POLITICAL_DONATION_CUES):
+        return True
+    if re.search(r"\bfec\b", d):
+        return True
+    if "committee" in d and any(
+        x in d for x in ("campaign", "election", "senate", "congress", "representative")
+    ):
+        return True
+    return False
+
+
+def _donation_or_unknown(description: str) -> str:
+    """Strict donation classification: require plausible political context."""
+    if is_political_donation_context(description):
+        return EVENT_DONATION
+    return EVENT_UNKNOWN_POLITICAL
+
 
 def classify_political_event_type(description: str) -> str:
     """
@@ -98,11 +154,11 @@ def classify_political_event_type(description: str) -> str:
 
     for phrase in _DONATION_MARKERS:
         if phrase in d:
-            return EVENT_DONATION
+            return _donation_or_unknown(description)
     if any(w in d for w in _DONATION_SINGLE):
         if "lobby" in d:
             return EVENT_UNKNOWN_POLITICAL
-        return EVENT_DONATION
+        return _donation_or_unknown(description)
 
     if "contribution" in d and "lobby" not in d and "pac" not in d:
         return EVENT_UNKNOWN_POLITICAL

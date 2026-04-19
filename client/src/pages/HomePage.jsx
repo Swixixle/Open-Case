@@ -4,7 +4,7 @@ import "./HomePage.css";
 import OfficialCard from "../components/OfficialCard.jsx";
 
 /** Shown on landing trust strip; update when pytest count changes meaningfully. */
-const PYTEST_FLOOR_DISPLAY = 342;
+const PYTEST_FLOOR_DISPLAY = 344;
 import BottomBar from "../components/BottomBar.jsx";
 import ConcernBadge from "../components/ConcernBadge.jsx";
 import { DIRECTORY_OFFICIALS } from "../data/officialsDirectory.js";
