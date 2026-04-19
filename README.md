@@ -37,7 +37,7 @@ Claims below are checked against the repository. If something drifts, use:
 
 1. **Create a case** for a subject (many `subject_type` values exist in `core/subject_taxonomy.py`).
 2. **Run investigation** — **`POST /api/v1/cases/{case_id}/investigate`** (Bearer API key). This runs **synchronously** in the HTTP request: ingest adapters → evidence → signals → **pattern engine** → seal. It is **not** continuous real-time surveillance of every official unless **you** schedule or trigger investigations externally.
-3. The **pattern engine** scores proximity and structure (**18 rules** in `PATTERN_RULE_IDS` — money/vote timing, fingerprints, sector/geo, procurement loops for local pilot, etc.). Outputs are **alerts and scores**, not legal findings.
+3. The **pattern engine** scores proximity and structure (**18 pattern rules** in `PATTERN_RULE_IDS` — money/vote timing, fingerprints, sector/geo, procurement loops for local pilot, etc.). Outputs are **alerts and scores**, not legal findings.
 4. **Epistemic** classification at ingest (`VERIFIED`, `REPORTED`, etc.).
 5. **Cryptographic seal** on the case bundle (`payloads.py` / `signing.py` — JCS-canonical JSON, SHA-256, Ed25519).
 6. **Optional:** LLM-assisted story angles (`POST /api/v1/assist/story-angles`) and routed Perplexity/Gemini/Claude for senator dossier enrichment — **core detection does not use LLMs**.
@@ -60,7 +60,7 @@ Every finding is tagged at ingest. Classification is source-driven, not sentimen
 
 ## Pattern engine
 
-**Version** `PATTERN_ENGINE_VERSION` in `engines/pattern_engine.py` (e.g. `2.7`). **18 rules** in `PATTERN_RULE_IDS`:
+**Version** `PATTERN_ENGINE_VERSION` in `engines/pattern_engine.py` (e.g. `2.7`). **18 pattern rules** in `PATTERN_RULE_IDS`:
 
 | Rule | Signal |
 |------|--------|
@@ -161,8 +161,8 @@ signing.py      Ed25519 helpers
 PYTHONPATH=. pytest tests/
 ```
 
-- **Full suite:** **311** tests collected (run locally to confirm current count).
-- **CI:** `.github/workflows/ci.yml` runs `server/scripts/ci_pytest_floor.py`, which requires **≥ 201** passed (regression floor). If the README cites “311,” that is the **current** full run; CI’s floor may lag until updated intentionally.
+- **Full suite:** **335** tests collected (run locally to confirm current count).
+- **CI:** `.github/workflows/ci.yml` runs `server/scripts/ci_pytest_floor.py`, which requires **≥ 201** passed (regression floor). If the README cites “335,” that is the **current** full run; CI’s floor may lag until updated intentionally.
 
 ---
 
