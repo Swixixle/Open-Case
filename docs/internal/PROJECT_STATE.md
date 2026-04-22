@@ -1,5 +1,7 @@
 # OPEN CASE — Project state (handoff)
 
+**Live state:** see `AGENTS.md` at the repository root. This file is the archival long-form record and may lag.
+
 **Purpose:** Single document to resume work without prior context.  
 **Last regenerated:** 2026-04-09 (from repository inspection; not live production queries unless noted).
 

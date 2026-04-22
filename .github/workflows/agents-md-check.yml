@@ -1,0 +1,105 @@
+name: AGENTS.md freshness check
+
+# Enforces that AGENTS.md is updated in the same PR as any change to
+# load-bearing architectural files. Prevents the state doc from silently
+# going stale.
+#
+# Bypass: add the label `skip-agents-md` to the PR if the change genuinely
+# does not affect anything AGENTS.md describes (e.g. README-only tweaks,
+# CI-only fixes, test-only refactors with no behavior change).
+#
+# Scope: this workflow runs for PRs whose *base* branch is `main`. If you use
+# a different default branch (e.g. `develop`) for feature work, add it under
+# `pull_request: branches:` below.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  agents-md-freshness:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-agents-md') }}
+
+    steps:
+      - name: Check out PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine load-bearing file changes
+        id: changed
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          # Files whose changes require AGENTS.md to also be touched.
+          # Intentionally narrow: only the architectural surfaces the
+          # state doc actually describes.
+          LOAD_BEARING_PATTERNS=(
+            '^engines/'
+            '^adapters/'
+            '^data/subject_type_sources\.json$'
+            '^data/reference/federal_entity_aliases\.json$'
+            '^alembic/versions/'
+            '^signing\.py$'
+            '^models\.py$'
+          )
+
+          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "Changed files in this PR:"
+          echo "$CHANGED_FILES"
+          echo
+
+          LOAD_BEARING_HIT=""
+          for pattern in "${LOAD_BEARING_PATTERNS[@]}"; do
+            MATCHES=$(echo "$CHANGED_FILES" | grep -E "$pattern" || true)
+            if [ -n "$MATCHES" ]; then
+              LOAD_BEARING_HIT="${LOAD_BEARING_HIT}${MATCHES}\n"
+            fi
+          done
+
+          AGENTS_TOUCHED=$(echo "$CHANGED_FILES" | grep -E '^AGENTS\.md$' || true)
+
+          if [ -n "$LOAD_BEARING_HIT" ]; then
+            echo "load_bearing_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Load-bearing files changed:"
+            printf "$LOAD_BEARING_HIT"
+          else
+            echo "load_bearing_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$AGENTS_TOUCHED" ]; then
+            echo "agents_md_touched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "agents_md_touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail if load-bearing changes missing AGENTS.md update
+        if: steps.changed.outputs.load_bearing_changed == 'true' && steps.changed.outputs.agents_md_touched == 'false'
+        run: |
+          echo "::error::This PR changes load-bearing architectural files but does not update AGENTS.md."
+          echo ""
+          echo "AGENTS.md is the priming doc AI coding assistants read first. If"
+          echo "engines, adapters, the subject-type registry, migrations, signing,"
+          echo "or core models change, AGENTS.md likely needs a matching update so"
+          echo "it does not silently drift out of sync with the codebase."
+          echo ""
+          echo "Options:"
+          echo "  1. Update AGENTS.md in this PR (preferred). Bump 'Last updated'."
+          echo "  2. If this change genuinely does not affect anything AGENTS.md"
+          echo "     describes, add the 'skip-agents-md' label to the PR."
+          exit 1
+
+      - name: Check Last updated line moved
+        if: steps.changed.outputs.agents_md_touched == 'true'
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          OLD_LINE=$(git show "$BASE_SHA:AGENTS.md" 2>/dev/null | grep -E '^\*\*Last updated:\*\*' || echo "")
+          NEW_LINE=$(git show "$HEAD_SHA:AGENTS.md" 2>/dev/null | grep -E '^\*\*Last updated:\*\*' || echo "")
+
+          if [ -n "$OLD_LINE" ] && [ "$OLD_LINE" = "$NEW_LINE" ]; then
+            echo "::warning::AGENTS.md was edited but the 'Last updated' line did not change. Please bump the date."
+          fi
