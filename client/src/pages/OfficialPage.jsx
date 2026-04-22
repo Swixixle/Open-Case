@@ -18,6 +18,7 @@ import StoryAngles from "../components/StoryAngles.jsx";
 import Timeline from "../components/Timeline.jsx";
 import { DIRECTORY_OFFICIALS } from "../data/officialsDirectory.js";
 import { apiUrl, fetchCaseReport, apiHeaders } from "../lib/api.js";
+import CongressPortrait from "../components/CongressPortrait.jsx";
 import {
   categoriesWithClaims,
   concernTierFromDossier,
@@ -48,16 +49,6 @@ function scrollToAnchor(id) {
       block: "start",
     });
   });
-}
-
-function initials(name) {
-  const parts = (name || "").split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) {
-    return (
-      (parts[0][0] || "") + (parts[parts.length - 1][0] || "")
-    ).toUpperCase();
-  }
-  return (name || "?").slice(0, 2).toUpperCase();
 }
 
 function dossierHasRenderableContent(data) {
@@ -251,6 +242,8 @@ function OfficialCasePage({ caseId }) {
   const tlines = reportTimelineToClaims(report?.timeline);
   const alerts = report?.pattern_alerts || [];
   const refUrlMap = useMemo(() => buildRefUrlMap(report || {}), [report]);
+  const photoBioguide =
+    report?.sections?.identity?.[0]?.profile?.bioguide_id || null;
 
   return (
     <div className="oc-dossier-wrap">
@@ -267,9 +260,11 @@ function OfficialCasePage({ caseId }) {
 
       <div className="oc-dossier-shell">
         <aside className="oc-dossier-sidebar">
-          <div className="oc-avatar" aria-hidden>
-            {initials(displayName)}
-          </div>
+          <CongressPortrait
+            bioguideId={photoBioguide}
+            name={displayName}
+            variant="sidebar"
+          />
           <h1 className="oc-sidebar-name">{displayName.toUpperCase()}</h1>
           <p className="oc-sidebar-meta">{titleLine}</p>
 
@@ -309,15 +304,24 @@ function OfficialCasePage({ caseId }) {
 
         <main className="oc-dossier-main">
           <section className="oc-hero-dossier">
-            <div className="oc-hero-dossier-top">
-              <h2 className="oc-hero-dossier-title">
-                {displayName.toUpperCase()}
-              </h2>
-              <ConcernBadge level={tier} size="lg" />
+            <div className="oc-hero-dossier-head">
+              <CongressPortrait
+                bioguideId={photoBioguide}
+                name={displayName}
+                variant="hero"
+              />
+              <div className="oc-hero-dossier-head-main">
+                <div className="oc-hero-dossier-top">
+                  <h2 className="oc-hero-dossier-title">
+                    {displayName.toUpperCase()}
+                  </h2>
+                  <ConcernBadge level={tier} size="lg" />
+                </div>
+                <p className="oc-sidebar-meta" style={{ marginTop: "0.5rem" }}>
+                  {titleLine}
+                </p>
+              </div>
             </div>
-            <p className="oc-sidebar-meta" style={{ marginTop: "0.5rem" }}>
-              {titleLine}
-            </p>
             <hr className="oc-hero-rule" />
             <EpistemicBar distribution={epDist} />
             <MarkdownBlock className="oc-hero-narrative" style={{ marginTop: "1rem" }}>
@@ -714,9 +718,11 @@ function OfficialSenatorDossierPage({ bioguideId }) {
       ) : null}
       <div className="oc-dossier-shell">
         <aside className="oc-dossier-sidebar">
-          <div className="oc-avatar" aria-hidden>
-            {initials(displayName)}
-          </div>
+          <CongressPortrait
+            bioguideId={bioguideId}
+            name={displayName}
+            variant="sidebar"
+          />
           <h1 className="oc-sidebar-name">{displayName.toUpperCase()}</h1>
           <p className="oc-sidebar-meta">
             {subjectTypeLabel(subjectType)}
@@ -790,11 +796,20 @@ function OfficialSenatorDossierPage({ bioguideId }) {
 
         <main className="oc-dossier-main">
           <section className="oc-hero-dossier">
-            <div className="oc-hero-dossier-top">
-              <h2 className="oc-hero-dossier-title">
-                {displayName.toUpperCase()}
-              </h2>
-              <ConcernBadge level={tier} size="lg" />
+            <div className="oc-hero-dossier-head">
+              <CongressPortrait
+                bioguideId={bioguideId}
+                name={displayName}
+                variant="hero"
+              />
+              <div className="oc-hero-dossier-head-main">
+                <div className="oc-hero-dossier-top">
+                  <h2 className="oc-hero-dossier-title">
+                    {displayName.toUpperCase()}
+                  </h2>
+                  <ConcernBadge level={tier} size="lg" />
+                </div>
+              </div>
             </div>
             <hr className="oc-hero-rule" />
             {epDist ? <EpistemicBar distribution={epDist} /> : null}

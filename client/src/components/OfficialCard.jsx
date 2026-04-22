@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import ConcernBadge from "./ConcernBadge.jsx";
+import CongressPortrait from "./CongressPortrait.jsx";
 import { subjectTypeLabel } from "../lib/subjectLabels.js";
 
 function formatUpdated(iso) {
@@ -46,7 +47,7 @@ export default function OfficialCard({
   const typeLabel = subjectTypeLabel(subject_type);
   const meta = [state, party].filter(Boolean).join(" · ");
 
-  const inner = (
+  const body = (
     <>
       <div className="oc-card-meta">
         {meta || "—"}
@@ -81,6 +82,15 @@ export default function OfficialCard({
         <p className="oc-card-updated">Investigated {formatUpdated(last_updated)}</p>
       ) : null}
     </>
+  );
+
+  const inner = (
+    <div className="oc-card-inner">
+      {bioguide_id ? (
+        <CongressPortrait bioguideId={bioguide_id} name={name} variant="card" />
+      ) : null}
+      <div className="oc-card-body">{body}</div>
+    </div>
   );
 
   if (!href) {

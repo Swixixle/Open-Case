@@ -103,6 +103,63 @@
   line-height: 1.6;
 }
 
+/* Congress / directory portraits */
+.oc-portrait-wrap {
+  flex-shrink: 0;
+}
+
+.oc-portrait {
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--border-bright);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+  background: var(--bg-primary);
+}
+
+.oc-portrait--img {
+  display: block;
+}
+
+.oc-portrait--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--amber-gold);
+  color: var(--bg-primary);
+  font-family: var(--font-display);
+  letter-spacing: 0.02em;
+}
+
+.oc-portrait--card {
+  width: 80px;
+  height: 80px;
+  font-size: 1.1rem;
+}
+
+.oc-portrait--sidebar {
+  width: 96px;
+  height: 96px;
+  font-size: 1.35rem;
+}
+
+.oc-portrait--hero {
+  width: 120px;
+  height: 120px;
+  font-size: 1.6rem;
+}
+
+.oc-card-inner {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+}
+
+.oc-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
 /* Senator card */
 .oc-card {
   display: block;
@@ -593,6 +650,19 @@ a.oc-btn-sidebar {
 /* Hero */
 .oc-hero-dossier {
   margin-bottom: 2rem;
+}
+
+.oc-hero-dossier-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1.15rem;
+  margin-bottom: 0.5rem;
+}
+
+.oc-hero-dossier-head-main {
+  flex: 1;
+  min-width: 0;
 }
 
 .oc-hero-dossier-top {
