@@ -504,3 +504,22 @@ class SenatorDossier(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class CaseNarrative(Base):
+    __tablename__ = "case_narratives"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    narrative_text: Mapped[str] = mapped_column(Text)
+    model_used: Mapped[str] = mapped_column(String(64))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    signature: Mapped[str] = mapped_column(Text)
+    prompt_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")

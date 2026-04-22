@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/v1/subjects", tags=["subjects"])
 MIN_SUBJECT_SEARCH_MATCH = 0.40
 
 INDIANA_OFFICIALS: list[dict[str, Any]] = [
+    # Federal (existing)
     {
         "name": "Todd Young",
         "bioguide_id": "Y000064",
@@ -61,6 +62,81 @@ INDIANA_OFFICIALS: list[dict[str, Any]] = [
         "district": "04",
         "party": "R",
         "notes": "Indiana 4th district",
+    },
+    # State officials
+    {
+        "name": "Eric Holcomb",
+        "state": "IN",
+        "office": "governor",
+        "subject_type": "state_governor",
+        "government_level": "state",
+        "branch": "executive",
+        "party": "R",
+        "notes": "Indiana Governor",
+    },
+    {
+        "name": "Suzanne Crouch",
+        "state": "IN",
+        "office": "lt_governor",
+        "subject_type": "state_lt_governor",
+        "government_level": "state",
+        "branch": "executive",
+        "party": "R",
+        "notes": "Indiana Lt. Governor",
+    },
+    {
+        "name": "Diego Morales",
+        "state": "IN",
+        "office": "sos",
+        "subject_type": "state_sos",
+        "government_level": "state",
+        "branch": "executive",
+        "party": "R",
+        "notes": "Indiana Secretary of State",
+    },
+    {
+        "name": "Todd Rokita",
+        "state": "IN",
+        "office": "ag",
+        "subject_type": "state_ag",
+        "government_level": "state",
+        "branch": "executive",
+        "party": "R",
+        "notes": "Indiana Attorney General",
+    },
+    # Indianapolis / Marion County local officials
+    {
+        "name": "Joe Hogsett",
+        "state": "IN",
+        "jurisdiction": "Indianapolis",
+        "office": "mayor",
+        "subject_type": "mayor",
+        "government_level": "local",
+        "branch": "executive",
+        "party": "D",
+        "notes": "Mayor of Indianapolis",
+    },
+    {
+        "name": "Ryan Mears",
+        "state": "IN",
+        "jurisdiction": "Marion County",
+        "office": "prosecutor",
+        "subject_type": "county_prosecutor",
+        "government_level": "local",
+        "branch": "executive",
+        "party": "D",
+        "notes": "Marion County Prosecutor",
+    },
+    {
+        "name": "Kerry Forestal",
+        "state": "IN",
+        "jurisdiction": "Marion County",
+        "office": "sheriff",
+        "subject_type": "county_sheriff",
+        "government_level": "local",
+        "branch": "executive",
+        "party": "D",
+        "notes": "Marion County Sheriff",
     },
 ]
 
@@ -122,7 +198,20 @@ def _candidate_subject_type(office: str) -> str:
     o = (office or "").lower()
     if o == "house":
         return "house_member"
-    return "senator"
+    if o == "senate":
+        return "senator"
+    # State offices
+    if o in ["governor", "lt_governor"]:
+        return f"state_{o}"
+    if o in ["sos", "ag"]:
+        return f"state_{o}"
+    # Local offices
+    if o == "mayor":
+        return "mayor"
+    if o in ["prosecutor", "sheriff"]:
+        return f"county_{o}"
+    # Default fallback
+    return "public_official"
 
 
 def _merge_ranked(

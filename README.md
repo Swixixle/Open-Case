@@ -231,9 +231,9 @@ cd ..
 - `VITE_OPEN_CASE_API_BASE` — e.g. `http://127.0.0.1:8000` (your local FastAPI).
 - `VITE_OPEN_CASE_API_KEY` — a valid investigator API key (`open_case_…`).
 
-`client/src/lib/api.js` reads only `import.meta.env.VITE_*` variables. **Restart the Vite process** after editing `.env.local`; Vite does not hot-reload env. Without these, calls to the cases/search APIs fail (wrong host, 401, etc.) and the home page falls back to the static list in `client/src/data/officialsDirectory.js` — your SQLite cases will not appear.
+`client/src/lib/api.js` reads only `import.meta.env.VITE_*` variables. **Restart the Vite process** after editing `.env.local`; Vite does not hot-reload env. If `VITE_OPEN_CASE_API_KEY` is missing, authenticated calls (cases list, search) fail and the home page can fall back to the static list in `client/src/data/officialsDirectory.js`.
 
-**Proxy note:** `client/vite.config.js` proxies `/api` to `https://open-case.onrender.com` by default. Setting `VITE_OPEN_CASE_API_BASE` to your local base avoids relying on the proxy for API calls. **Profile routes:** `http://localhost:5173/official/{uuid}` loads the **case** report; `http://localhost:5173/official/{bioguide_id}` loads a **senator dossier** (`GET /api/v1/senators/{id}/dossier`), which is separate from a completed case investigation.
+**Proxy note:** `client/vite.config.js` proxies same-origin `/api` to `http://127.0.0.1:8000` in dev, so a local `uvicorn` matches `curl` to localhost. Set `VITE_OPEN_CASE_API_BASE` to a full URL (e.g. a deployed host) to bypass the proxy and use a **remote** API. **Profile routes:** `http://localhost:5173/official/{uuid}` loads the **case** report; `http://localhost:5173/official/{bioguide_id}` loads a **senator dossier** (`GET /api/v1/senators/{id}/dossier`), which is separate from a completed case investigation.
 
 ### Test
 

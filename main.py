@@ -34,6 +34,7 @@ from routes.entity_resolution import router as entity_resolution_router
 from routes.evidence_disambig import router as evidence_disambig_router
 from routes.findings import router as findings_router
 from routes.investigate import router as investigate_router
+from routes.narrative import router as narrative_router
 from routes.patterns import router as patterns_router
 from routes.proportionality_view import router as proportionality_view_router
 from routes.reporting import router as reporting_router
@@ -196,6 +197,7 @@ app.include_router(cases_router)
 app.include_router(entity_resolution_router)
 app.include_router(findings_router)
 app.include_router(investigate_router)
+app.include_router(narrative_router)
 app.include_router(patterns_router)
 app.include_router(proportionality_view_router)
 app.include_router(evidence_disambig_router)

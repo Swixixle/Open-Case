@@ -125,20 +125,43 @@ function OfficialCasePage({ caseId }) {
 
     (async () => {
       setRefreshing(true);
-      const data = await fetchCaseReport(caseId);
-      if (cancelled) return;
-      setRefreshing(false);
-      if (!data) {
-        setLoadStatus("not_found");
-        return;
-      }
       try {
-        localStorage.setItem(cacheKey("report", caseId), JSON.stringify(data));
-      } catch {
-        /* ignore */
+        const data = await fetchCaseReport(caseId);
+        if (cancelled) return;
+        if (!data) {
+          setLoadStatus("not_found");
+          return;
+        }
+        if (import.meta.env.DEV) {
+          // Helps compare Tom Cotton vs Todd Young report shape when one path hangs
+          // eslint-disable-next-line no-console
+          console.info("[open-case] case report loaded", {
+            caseId,
+            signals: Array.isArray(data.signals) ? data.signals.length : null,
+            pattern_alerts: Array.isArray(data.pattern_alerts)
+              ? data.pattern_alerts.length
+              : null,
+            subject: data.subject,
+          });
+        }
+        try {
+          localStorage.setItem(cacheKey("report", caseId), JSON.stringify(data));
+        } catch {
+          /* ignore */
+        }
+        setReport(data);
+        setLoadStatus("complete");
+      } catch (e) {
+        if (!cancelled) {
+          // Unhandled network/CORS/abort errors used to leave loadStatus stuck on "initial"
+          // and report null → infinite loading screen
+          // eslint-disable-next-line no-console
+          console.error("[open-case] case report fetch failed", caseId, e);
+          setLoadStatus("load_error");
+        }
+      } finally {
+        if (!cancelled) setRefreshing(false);
       }
-      setReport(data);
-      setLoadStatus("complete");
     })();
 
     return () => {
@@ -191,6 +214,11 @@ function OfficialCasePage({ caseId }) {
     };
   }, [report?.pattern_alerts_refresh_pending, report?.pattern_alerts_stream?.path, caseId]);
 
+  const refUrlMap = useMemo(
+    () => buildRefUrlMap(report || {}),
+    [report]
+  );
+
   const shareReceipt = () => {
     const verifyHref = apiUrl(`/api/v1/cases/${caseId}/report/view`);
     const verifyAbs =
@@ -233,6 +261,25 @@ function OfficialCasePage({ caseId }) {
     );
   }
 
+  if (loadStatus === "load_error" && !report) {
+    return (
+      <div className="oc-dossier-wrap">
+        <div className="oc-error-panel">
+          <h1>REPORT UNAVAILABLE</h1>
+          <p>
+            The report could not be loaded. Check the connection, CORS, and that{" "}
+            <code className="oc-mono">VITE_OPEN_CASE_API_BASE</code> matches the API
+            (see browser console).
+          </p>
+          <p>
+            <Link to="/">← Back</Link>
+          </p>
+        </div>
+        <BottomBar variant="official" />
+      </div>
+    );
+  }
+
   const displayName = report?.subject || report?.title || "Subject";
   const subjType = report?.subject_type || "public_official";
   const titleLine = subjectTypeLabel(subjType);
@@ -241,7 +288,6 @@ function OfficialCasePage({ caseId }) {
   const lastInv = formatDisplayDate(report?.opened_at || "");
   const tlines = reportTimelineToClaims(report?.timeline);
   const alerts = report?.pattern_alerts || [];
-  const refUrlMap = useMemo(() => buildRefUrlMap(report || {}), [report]);
   const photoBioguide =
     report?.sections?.identity?.[0]?.profile?.bioguide_id || null;
 

@@ -40,7 +40,7 @@ A signal reaches "confirmed" status when identity is resolved, temporal directio
 Source data:
 • FEC: api.open.fec.gov — Federal Election Commission public disclosure
 • Senate votes: senate.gov LIS XML — official Senate roll call record
-• LDA: lda.senate.gov — Senate lobbying disclosure database
+• LDA: lda.gov — lobbying disclosure (API + public filing views; legacy lda.senate.gov URLs 404)
 • All sources are public government records
 
 """

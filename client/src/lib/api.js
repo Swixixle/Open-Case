@@ -42,7 +42,11 @@ export async function fetchCaseReport(caseId) {
   });
   if (res.status === 401 || res.status === 403 || res.status === 404) return null;
   if (!res.ok) return null;
-  return res.json();
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 /** Server-routed LLM (Gemini / Claude) for story angles; requires API key + server LLM env. */

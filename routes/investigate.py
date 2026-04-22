@@ -38,7 +38,7 @@ from adapters.govinfo_hearings import (
     list_committee_hearing_witness_records,
     search_hearing_witnesses,
 )
-from adapters.lda import fetch_lda_filings
+from adapters.lda import fetch_lda_filings, lda_public_filing_url
 from adapters.regulations import fetch_docket_comments
 from adapters.courtlistener import CourtListenerAdapter, courtlistener_court_ids_from_jurisdiction
 from adapters.fjc_biographical import FJCBiographicalAdapter
@@ -721,7 +721,7 @@ async def _ingest_lda_for_unique_donors(
             rd = {
                 **f,
                 "donor_key": donor_key_norm,
-                "lda_detail_url": f"https://lda.senate.gov/filings/{uid}/",
+                "lda_detail_url": lda_public_filing_url(str(uid)),
                 "issue_codes": sorted(set(issue_codes)),
             }
             eh = make_evidence_hash(
@@ -745,7 +745,7 @@ async def _ingest_lda_for_unique_donors(
                     f"LDA filing {uid}. Registrant: {rn}. Client: {cn}. "
                     f"Linked research donor key: {donor_key_norm}."
                 ),
-                source_url=f"https://lda.senate.gov/filings/{uid}/",
+                source_url=lda_public_filing_url(str(uid)),
                 source_name="Senate LDA",
                 adapter_name="Senate LDA",
                 entered_by=investigator,
@@ -1051,8 +1051,8 @@ class InvestigateRequest(BaseModel):
 
 class BatchOpenSubject(BaseModel):
     subject_name: str = Field(..., min_length=1)
-    bioguide_id: str = Field(..., min_length=1)
-    fec_committee_id: str = Field(..., min_length=1)
+    bioguide_id: str = Field(default="", min_length=0)
+    fec_committee_id: str = Field(default="", min_length=0)
     committee_focus: str | None = None
 
 

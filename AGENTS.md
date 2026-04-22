@@ -16,6 +16,8 @@ Open Case is a government transparency investigation engine. It ingests public r
 
 **Stack:** FastAPI, SQLAlchemy, **SQLite by default** (Postgres typical in production), React/Vite frontend, Ed25519 signing (JCS canonicalization, SHA-256 digest), deployed on Render.
 
+**Vite dev:** `client/vite.config.js` proxies same-origin `/api` to `http://127.0.0.1:8000` so `fetch('/api/...')` and `curl http://127.0.0.1:8000/...` hit the same process when `VITE_OPEN_CASE_API_BASE` is unset. Set that env to a full URL to target a remote API.
+
 **Architecture shape:** Subject-type-driven. A `data/subject_type_sources.json` registry maps each subject type to ordered adapter lists in tiers (`primary`, `secondary`, `judicial`, `local`, `historical`, …). A `ResearchProfile` class in `services/research_profile.py` reads this registry. **The research algorithm is mostly uniform** — gather evidence, score proximity, sign receipt — but **the Indianapolis local pilot** also has explicit adapter choices in `routes/investigate.py` (e.g. required `idis` + `indy_*` for `government_level=local`); that path is not “registry-only,” so do not assume every row in the JSON is wired end-to-end yet.
 
 **Coverage:** Federal legislator and executive `subject_type` rows in the JSON include many `implemented` adapter ids; **deepest** behavior is still the FEC + Senate vote + pattern stack. For **local** subjects, the registry is still largely `planned`; Marion County / IDIS work runs through the IDIS and Indianapolis contract/procurement modules (see **Adapter registry** below).

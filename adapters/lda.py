@@ -9,7 +9,23 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-LDA_FILINGS_URL = "https://lda.senate.gov/api/v1/filings/"
+# Unified LDA public API (House + Senate); lda.senate.gov was consolidated under lda.gov.
+LDA_API_FILINGS_URL = "https://lda.gov/api/v1/filings/"
+
+# Backwards alias for importers
+LDA_FILINGS_URL = LDA_API_FILINGS_URL
+
+
+def lda_public_filing_url(filing_uuid: str) -> str:
+    """
+    Human-readable filing view on lda.gov. Old links like
+    `https://lda.senate.gov/filings/{uuid}/` return 404; the active pattern is
+    `https://lda.gov/filings/public/filing/{uuid}/print/`.
+    """
+    u = str(filing_uuid).strip()
+    if not u:
+        return "https://lda.gov/"
+    return f"https://lda.gov/filings/public/filing/{u}/print/"
 
 
 def _normalize_query(q: str) -> str:
@@ -41,7 +57,7 @@ async def fetch_lda_filings(donor_name: str, connected_org_name: str) -> list[di
 
     async with httpx.AsyncClient(timeout=40.0, headers=headers, follow_redirects=True) as client:
         for param, value in queries:
-            req_url = LDA_FILINGS_URL
+            req_url = LDA_API_FILINGS_URL
             req_params: dict[str, str] | None = {param: value, "format": "json"}
             pages = 0
             while req_url and pages < 12:

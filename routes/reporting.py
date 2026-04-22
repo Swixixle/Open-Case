@@ -231,7 +231,7 @@ def _external_source_links_for_signal(
     has_lda = bool(bd.get("has_lda_filing"))
     lda_href: str | None = None
     if has_lda and (donor_display or "").strip():
-        lda_href = f"https://lda.senate.gov/api/v1/filings/?registrant_name={donor_enc}"
+        lda_href = f"https://lda.gov/api/v1/filings/?registrant_name={donor_enc}"
 
     return {
         "fec_href": fec_href,

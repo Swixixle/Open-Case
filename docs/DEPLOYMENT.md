@@ -115,7 +115,7 @@ cd ..
 - `client/.env`: Set `VITE_OPEN_CASE_API_KEY` at build time for authenticated UI calls
 - Optional: `VITE_OPEN_CASE_API_BASE` to override API origin (default: same-origin)
 
-**Dev mode:** `npm run dev` proxies `/api` to `https://open-case.onrender.com` (update for your setup).
+**Dev mode:** `npm run dev` proxies `/api` to `http://127.0.0.1:8000` by default. Set `VITE_OPEN_CASE_API_BASE` to a remote origin if the UI should not use the local API.
 
 ---
 

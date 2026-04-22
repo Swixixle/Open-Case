@@ -10,6 +10,7 @@ export const DIRECTORY_OFFICIALS = [
   { name: "Bob Menendez", bioguide_id: "M000639", state: "NJ", party: "D", subject_type: "senator", branch: "legislative", government_level: "federal" },
   { name: "Ted Cruz", bioguide_id: "C001098", state: "TX", party: "R", subject_type: "senator", branch: "legislative", government_level: "federal" },
   { name: "Tom Cotton", bioguide_id: "C001095", state: "AR", party: "R", subject_type: "senator", branch: "legislative", government_level: "federal" },
+  { name: "Todd Young", bioguide_id: "Y000064", state: "IN", party: "R", subject_type: "senator", branch: "legislative", government_level: "federal" },
   { name: "Joni Ernst", bioguide_id: "E000295", state: "IA", party: "R", subject_type: "senator", branch: "legislative", government_level: "federal" },
   { name: "Mike Crapo", bioguide_id: "C000880", state: "ID", party: "R", subject_type: "senator", branch: "legislative", government_level: "federal" },
   { name: "Bernie Sanders", bioguide_id: "S000033", state: "VT", party: "I", subject_type: "senator", branch: "legislative", government_level: "federal" },

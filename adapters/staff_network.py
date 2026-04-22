@@ -32,8 +32,8 @@ from utils.http_retry import async_http_request_with_retry, http_request_with_re
 logger = logging.getLogger(__name__)
 
 CONGRESS_MEMBER_URL = "https://api.congress.gov/v3/member/{bioguide_id}"
-LDA_LOBBYIST_SEARCH = "https://lda.senate.gov/api/v1/lobbyists/"
-LDA_FILINGS_URL = "https://lda.senate.gov/api/v1/filings/"
+LDA_LOBBYIST_SEARCH = "https://lda.gov/api/v1/lobbyists/"
+LDA_FILINGS_URL = "https://lda.gov/api/v1/filings/"
 CACHE_ADAPTER = "senator_staff_network"
 CACHE_TTL_HOURS = 7 * 24
 
