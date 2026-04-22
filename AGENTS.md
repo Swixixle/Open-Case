@@ -2,8 +2,8 @@
 
 > **For AI coding assistants (Cursor, Claude, Cowork, Copilot, etc.):** Read **`AGENTS.md`** first. It is the authoritative **short-form** state of the project. Longer file-by-file history and architecture notes live in `docs/internal/PROJECT_STATE.md`, which may lag (see its header dates).
 
-**Last updated:** 2026-04-22  
-**Last verified:** 2026-04-22 (smoke tests run, test counts + engine version confirmed)  
+**Last updated:** 2026-04-23  
+**Last verified:** 2026-04-23 (pytest + engine v2.7; local E2E investigate for Todd Young with valid FEC key: evidence + signals produced)  
 **Pattern engine version:** v2.7  
 **Test count:** 354 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); last full run `354 passed` (`pytest tests/ -q | tail -3`)  
 **CI floor:** ≥201 passed (`server/scripts/ci_pytest_floor.py`; invoked from `.github/workflows/ci.yml`)
@@ -30,14 +30,20 @@ Open Case is a government transparency investigation engine. It ingests public r
 
 *This section is the most volatile part of this doc. If the `Last verified` date above is more than two weeks old, ask before assuming these are still current priorities.*
 
-1. **Entity resolution refactor.** The `legal_entity_id` field (where present) is at risk of doing double duty — sometimes “this exact legal entity,” sometimes “this entity and its affiliates / PACs / subsidiaries.” The intended direction is to split into **exact** `legal_entity_id` vs a **family / affiliate** identifier for clusters. (Schema may not reflect the full split yet; confirm in `models.py` before implementing rules that depend on it.) This blocks clean cross-actor pattern work such as the **DONOR_CONVERGENCE**-style family described in `engines/pattern_engine.py` / issues until N:M joins have stable ids.
+**Open Case backend investigation pipeline is functional.** With valid **FEC** and **Congress** API keys (and a working local DB + investigator API key), the system ingests public records, runs the pattern engine, and returns evidence plus signals end-to-end. A representative run: **Todd Young** — hundreds of evidence entries and dozens of signals in one investigate request (wall-clock and counts depend on keys, cache, and network).
 
-2. **IDIS live hardening.** Indiana / Marion campaign finance (IDIS) is implemented via `adapters/indiana_campaign_finance.py` with adapter key **`idis`**. Treat “fixture vs live bulk” and refresh cadence as the main gap between *runs that validate in CI* and *always-publishable* local case law narratives.
+**Current priority: frontend demo-readiness.** Confirm the React app (`client/`) correctly renders search, profile tabs, pattern alerts, epistemic labels, and signed receipts. Exercise a full read-only journalist path: landing → search → case/profile → pattern alert or signal detail → report / receipt view. Backend responses are the source of truth for what “should” appear.
 
-**Not on the active list but worth naming:**
+**Standing architectural work (not blocking backend E2E):**
 
-- `JUDICIAL_RELATED_ENTITY_DONOR_V1` and `JUDICIAL_RELATED_ENTITY_CONFLICT_V1` are spec'd but unbuilt. They assume judicial adapters and evidence paths beyond what every deployment enables.
-- “Capillary” influence tracing beyond money-near-vote — `HEARING_TESTIMONY_V1` and `REVOLVING_DOOR_V1` only partially point that direction.
+1. **Entity resolution refactor** — split “exact legal entity” vs a **family / affiliate** cluster id when the schema grows one (see `models.py` / `engines/entity_resolution.py`). Intended to unblock cross-actor pattern ideas (`DONOR_CONVERGENCE`-style) once stable joins exist.
+
+2. **IDIS live hardening** — `adapters/indiana_campaign_finance.py` (adapter key `idis`): narrow the gap between fixture-validated local runs and always-publishable live bulk + refresh.
+
+**Worth naming (out of band):**
+
+- `JUDICIAL_RELATED_ENTITY_*` rules — spec’d / partial; depend on CourtListener, FJC, and keys.
+- Deeper “capillary” influence than money-near-vote — `HEARING_TESTIMONY_V1` and `REVOLVING_DOOR_V1` only cover slices of that problem space.
 
 ---
 
