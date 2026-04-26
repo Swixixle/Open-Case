@@ -145,6 +145,42 @@ _SUBJECT_SEED: dict[str, dict[str, Any]] = {
 }
 
 
+def _congress_gov_member_list_url(state_u: str | None) -> str:
+    """
+    State must be in the path: ``GET /v3/member/{stateCode}`` returns that state's members.
+    The query form ``GET /v3/member?stateCode=TX`` does *not* filter and returns unrelated rows.
+    """
+    if state_u:
+        return f"https://api.congress.gov/v3/member/{state_u}"
+    return "https://api.congress.gov/v3/member"
+
+
+def _congress_member_match_score(name: str, member: dict[str, Any]) -> tuple[float, str]:
+    """Best score over list-level name fields (nickname + legal names). Returns (score, label)."""
+    strings: list[str] = []
+    for k in ("name", "directOrderName"):
+        v = member.get(k)
+        if v:
+            strings.append(str(v).strip())
+    fn = str(member.get("firstName") or "").strip()
+    ln = str(member.get("lastName") or "").strip()
+    if fn and ln:
+        strings.append(f"{fn} {ln}")
+    nick = str(member.get("nickName") or member.get("nickname") or "").strip()
+    if nick and ln:
+        strings.append(f"{nick} {ln}")
+    best = 0.0
+    label = str(member.get("name") or member.get("directOrderName") or "").strip()
+    for s in strings:
+        if not s:
+            continue
+        score = subject_name_match_score(name, s)
+        if score > best:
+            best = score
+            label = s
+    return best, label
+
+
 def _database_subject_matches(
     db: Session,
     name: str,
@@ -355,19 +391,17 @@ async def search_subjects(
     api_key = CredentialRegistry.get_credential("congress")
     if api_key:
         try:
+            url = _congress_gov_member_list_url(state_u)
+            # Per-state list can be long; unscoped global /member list returns arbitrary rows.
+            list_limit = 50 if state_u else 8
             params: dict[str, str | int] = {
                 "api_key": api_key,
                 "format": "json",
                 "query": name,
-                "limit": 8,
+                "limit": list_limit,
             }
-            if state_u:
-                params["stateCode"] = state_u
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    "https://api.congress.gov/v3/member",
-                    params=params,
-                )
+                response = await client.get(url, params=params)
                 data = response.json()
 
             members = data.get("members") or []
@@ -387,8 +421,7 @@ async def search_subjects(
                     if tlist:
                         last = tlist[-1] if isinstance(tlist[-1], dict) else {}
                         chamber = str(last.get("chamber") or "").lower()
-                mname = member.get("name") or member.get("directOrderName") or ""
-                ms = subject_name_match_score(name, mname)
+                ms, mname = _congress_member_match_score(name, member)
                 if ms < MIN_SUBJECT_SEARCH_MATCH:
                     continue
                 api_candidates.append(
