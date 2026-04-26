@@ -15,6 +15,7 @@ export function apiHeaders() {
 
 export async function fetchSubjectsSearch(name, filters = {}) {
   const q = new URLSearchParams({ name: name.trim() });
+  if (filters.state) q.set("state", filters.state);
   if (filters.subject_type) q.set("subject_type", filters.subject_type);
   if (filters.government_level) q.set("government_level", filters.government_level);
   if (filters.branch) q.set("branch", filters.branch);

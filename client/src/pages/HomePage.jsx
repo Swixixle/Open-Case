@@ -61,6 +61,21 @@ async function fetchDossierForCard(bg) {
   }
 }
 
+/** When the query exactly matches one directory row, pass `state` so Congress search uses /member/{ST}. */
+function directoryStateHintForExactName(raw) {
+  const t = raw.trim();
+  if (t.length < 2) return undefined;
+  const q = t.toLowerCase();
+  const hits = DIRECTORY_OFFICIALS.filter(
+    (o) =>
+      typeof o.state === "string" &&
+      o.state.length === 2 &&
+      o.name.trim().toLowerCase() === q
+  );
+  if (hits.length === 1) return hits[0].state;
+  return undefined;
+}
+
 function filterDirectoryRows(branch, level, type) {
   if (!branch && !level && !type) return DIRECTORY_OFFICIALS;
   return DIRECTORY_OFFICIALS.filter((row) => {
@@ -172,7 +187,11 @@ export default function HomePage() {
       return;
     }
     (async () => {
-      const data = await fetchSubjectsSearch(query).catch(() => null);
+      const stateHint = directoryStateHintForExactName(query);
+      const data = await fetchSubjectsSearch(
+        query,
+        stateHint ? { state: stateHint } : {}
+      ).catch(() => null);
       if (cancelled) return;
       setSearchPayload(data && typeof data === "object" ? data : null);
     })();
