@@ -14,3 +14,39 @@ data/.cache/
 *.bak
 PYEOF
 screenshots/
+
+# Environment (local overrides; keep an example file if you add one)
+.env.*
+!.env.example
+
+# Local API key files (Open Case also reads $CREDENTIAL_DATA_DIR/*.key)
+*.key
+.credentials/
+**/.credentials/
+
+# SQLite sidecar files (local dev)
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+*.py[cod]
+*$py.class
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# OS
+Thumbs.db
+
+# Coverage / packaging
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
