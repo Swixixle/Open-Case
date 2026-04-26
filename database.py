@@ -7,7 +7,7 @@ import logging
 import os
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from models import Base
@@ -47,6 +47,15 @@ if DATABASE_URL.startswith("sqlite"):
         DATABASE_URL,
         connect_args={"check_same_thread": False},
     )
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_enforce_foreign_keys(
+        dbapi_connection: object, _connection_record: object
+    ) -> None:
+        # Default SQLite connections ignore FK constraints; enable so CASCADE and DELETE work.
+        cur = dbapi_connection.cursor()  # type: ignore[union-attr]
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
 else:
     engine = create_engine(DATABASE_URL)
 
@@ -112,7 +121,7 @@ def backfill_donor_fingerprint_canonical_ids() -> None:
 
 def init_db() -> None:
     """Apply Alembic migrations (replaces create_all)."""
-    run_migrations()
+    # run_migrations()  # TEMP: Disabled for local dev - migrations already applied
     try:
         backfill_donor_fingerprint_canonical_ids()
     except Exception:

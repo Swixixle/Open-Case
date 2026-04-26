@@ -36,17 +36,106 @@ export async function fetchCasesList(params = {}) {
   return res.json();
 }
 
-export async function fetchCaseReport(caseId) {
-  const res = await fetch(apiUrl(`/api/v1/cases/${encodeURIComponent(caseId)}/report`), {
+/**
+ * @param {string} caseId
+ * @param {{ signal?: AbortSignal } | undefined} opts
+ */
+export async function fetchCaseReport(caseId, opts) {
+  const url = apiUrl(`/api/v1/cases/${encodeURIComponent(caseId)}/report`);
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.info("[open-case] fetchCaseReport start", { caseId, url: url.slice(0, 80) });
+  }
+  const res = await fetch(url, {
     headers: apiHeaders(),
+    signal: opts?.signal,
   });
-  if (res.status === 401 || res.status === 403 || res.status === 404) return null;
-  if (!res.ok) return null;
-  try {
-    return await res.json();
-  } catch {
+  if (res.status === 401 || res.status === 403 || res.status === 404) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.info("[open-case] fetchCaseReport: no body", { status: res.status });
+    }
     return null;
   }
+  if (!res.ok) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn("[open-case] fetchCaseReport: HTTP", res.status, res.statusText);
+    }
+    return null;
+  }
+  try {
+    const data = await res.json();
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.info("[open-case] fetchCaseReport: parsed", {
+        hasSignals: Array.isArray(data?.signals),
+        signalCount: data?.signals?.length,
+        hasPatternAlerts: Array.isArray(data?.pattern_alerts),
+      });
+    }
+    return data;
+  } catch (e) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.error("[open-case] fetchCaseReport: JSON parse failed", e);
+    }
+    return null;
+  }
+}
+
+/** GET stored AI investigation summary, if any. */
+export async function fetchCaseNarrative(caseId) {
+  const res = await fetch(apiUrl(`/api/v1/cases/${encodeURIComponent(caseId)}/narrative`), {
+    headers: apiHeaders(),
+  });
+  if (res.status === 404) return { _status: "none" };
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = text || res.statusText;
+    try {
+      const j = text ? JSON.parse(text) : null;
+      if (j && typeof j.detail === "string") msg = j.detail;
+      else if (Array.isArray(j?.detail) && j.detail[0]?.msg) msg = j.detail[0].msg;
+    } catch {
+      /* keep raw */
+    }
+    return { _status: "error", _message: msg };
+  }
+  try {
+    return { _status: "ok", ...(await res.json()) };
+  } catch {
+    return { _status: "error", _message: "Invalid response" };
+  }
+}
+
+/** POST generate AI summary; requires VITE_OPEN_CASE_API_KEY. */
+export async function synthesizeCaseNarrative(caseId) {
+  const res = await fetch(
+    apiUrl(`/api/v1/cases/${encodeURIComponent(caseId)}/synthesize-narrative`),
+    {
+      method: "POST",
+      headers: { ...apiHeaders(), "Content-Type": "application/json" },
+    }
+  );
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { detail: text?.slice(0, 2000) || res.statusText };
+  }
+  if (!res.ok) {
+    const detail = data?.detail ?? data;
+    const msg =
+      typeof detail === "string"
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d) => d?.msg || d).join(" ")
+          : res.statusText;
+    throw new Error(msg);
+  }
+  return data;
 }
 
 /** Server-routed LLM (Gemini / Claude) for story angles; requires API key + server LLM env. */

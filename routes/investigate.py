@@ -48,6 +48,13 @@ from adapters.indianapolis_contracts import IndianapolisContractsAdapter
 from adapters.indianapolis_procurement import IndianapolisProcurementAdapter
 from adapters.planned import log_planned_adapter
 from adapters.usa_spending import USASpendingAdapter
+from adapters.stock_trades import StockTradesAdapter
+from adapters.bill_sponsorship import BillSponsorshipAdapter
+from adapters.committee_assignments import CommitteeAssignmentsAdapter
+from adapters.fec_violations import FECViolationsAdapter
+from adapters.floor_speeches import FloorSpeechesAdapter
+from adapters.ethics_complaints import EthicsComplaintsAdapter
+from adapters.biographical import BiographicalAdapter
 from database import get_db
 from engines.contract_anomaly import detect_contract_anomalies
 from engines.contract_proximity import detect_contract_proximity, new_contract_pairing_stats
@@ -73,6 +80,14 @@ from models import (
     InvestigationRun,
     Investigator,
     SenatorDossier,
+    StockTrade,
+    BillActivity,
+    CommitteeAssignment,
+    FECViolation,
+    FloorSpeech,
+    EthicsIssue,
+    BiographicalProfile,
+    FinancialDisclosure,
     Signal,
     SignalAuditLog,
     SourceCheckLog,
@@ -80,6 +95,16 @@ from models import (
 )
 from signals.dedup import upsert_signal
 from payloads import apply_case_file_signature, sign_evidence_entry
+from services.stock_trade_persist import upsert_stock_trade_from_adapter_result
+from services.bill_activity_persist import upsert_bill_activity_from_adapter_result
+from services.committee_assignment_persist import (
+    upsert_committee_assignment_from_adapter_result,
+)
+from services.fec_violation_persist import upsert_fec_violation_from_adapter_result
+from services.floor_speech_persist import upsert_floor_speech_from_adapter_result
+from services.ethics_issue_persist import upsert_ethics_issue_from_adapter_result
+from services.biographical_persist import upsert_biographical_profile
+from services.net_worth_calculator import update_case_file_net_worth
 from services.evidence_epistemic import apply_epistemic_metadata_to_entry
 from services.finding_audit import log_finding_audit
 from services.finding_policy import finalize_finding_after_sign, valid_http_url
@@ -226,6 +251,13 @@ def _empty_source_row_counts() -> dict[str, int]:
         "idis_raw_results": 0,
         "indy_tax_abatement_raw_results": 0,
         "indy_procurement_raw_results": 0,
+        "stock_trades_raw_results": 0,
+        "bill_sponsorship_raw_results": 0,
+        "committee_assignments_raw_results": 0,
+        "fec_violations_raw_results": 0,
+        "floor_speeches_raw_results": 0,
+        "ethics_complaints_raw_results": 0,
+        "biographical_raw_results": 0,
     }
 
 
@@ -515,6 +547,20 @@ def _adapter_registry_key(adapter: BaseAdapter) -> str:
         return "courtlistener"
     if isinstance(adapter, FJCBiographicalAdapter):
         return "fjc_biographical"
+    if isinstance(adapter, StockTradesAdapter):
+        return "stock_trades"
+    if isinstance(adapter, BillSponsorshipAdapter):
+        return "bill_sponsorship"
+    if isinstance(adapter, CommitteeAssignmentsAdapter):
+        return "committee_assignments"
+    if isinstance(adapter, FECViolationsAdapter):
+        return "fec_violations"
+    if isinstance(adapter, FloorSpeechesAdapter):
+        return "floor_speeches"
+    if isinstance(adapter, EthicsComplaintsAdapter):
+        return "ethics_complaints"
+    if isinstance(adapter, BiographicalAdapter):
+        return "biographical"
     return "other"
 
 
@@ -610,6 +656,12 @@ def _append_source_status(
         "fec_schedule_b",
         "courtlistener",
         "fjc_biographical",
+        "bill_sponsorship",
+        "committee_assignments",
+        "fec_violations",
+        "floor_speeches",
+        "ethics_complaints",
+        "biographical",
     ):
         detail_out = response.parse_warning or (
             f"{len(response.results)} result row(s) returned"
@@ -1272,6 +1324,7 @@ def _ingest_adapter_results(
     tracker: list[str] | None = None,
     case_subject_type: str | None = None,
     case: CaseFile | None = None,
+    bioguide_id: str | None = None,
 ) -> None:
     if case is None:
         case = db.get(CaseFile, case_id)
@@ -1328,6 +1381,12 @@ def _ingest_adapter_results(
         return
 
     for result in response.results:
+        if (result.entry_type or "") == "biographical_profile" and isinstance(
+            adapter, BiographicalAdapter
+        ):
+            if isinstance(result.raw_data, dict):
+                upsert_biographical_profile(db, case_id, result.raw_data)
+            continue
         confidence = result.confidence
         flagged = False
         if result.collision_count > 1:
@@ -1398,6 +1457,42 @@ def _ingest_adapter_results(
             db, entry, case=case, case_subject_type=case_subject_type
         )
         created.append(entry)
+        if (result.entry_type or "") == "stock_trade" and isinstance(
+            adapter, StockTradesAdapter
+        ):
+            upsert_stock_trade_from_adapter_result(
+                db, case_id, bioguide_id, entry, result
+            )
+        if (result.entry_type or "") == "bill_sponsorship" and isinstance(
+            adapter, BillSponsorshipAdapter
+        ):
+            upsert_bill_activity_from_adapter_result(
+                db, case_id, bioguide_id, entry, result
+            )
+        if (result.entry_type or "") == "committee_assignment" and isinstance(
+            adapter, CommitteeAssignmentsAdapter
+        ):
+            upsert_committee_assignment_from_adapter_result(
+                db, case_id, bioguide_id, entry, result
+            )
+        if (result.entry_type or "") == "fec_violation" and isinstance(
+            adapter, FECViolationsAdapter
+        ):
+            upsert_fec_violation_from_adapter_result(
+                db, case_id, entry, result
+            )
+        if (result.entry_type or "") == "floor_speech" and isinstance(
+            adapter, FloorSpeechesAdapter
+        ):
+            upsert_floor_speech_from_adapter_result(
+                db, case_id, bioguide_id, entry, result
+            )
+        if (result.entry_type or "") == "ethics_issue" and isinstance(
+            adapter, EthicsComplaintsAdapter
+        ):
+            upsert_ethics_issue_from_adapter_result(
+                db, case_id, bioguide_id, entry, result
+            )
 
     pw = getattr(response, "parse_warning", None)
     if pw:
@@ -1540,6 +1635,26 @@ async def execute_investigation_for_case(
         # Reinvestigation: replace evidence so adapter fixes (e.g. matched_name) apply;
         # drop existing proximity signals tied to stale entry ids.
         db.execute(delete(Signal).where(Signal.case_file_id == case_id))
+        db.execute(delete(StockTrade).where(StockTrade.case_file_id == case_id))
+        db.execute(
+            delete(FinancialDisclosure).where(
+                FinancialDisclosure.case_file_id == case_id
+            )
+        )
+        db.execute(delete(BillActivity).where(BillActivity.case_file_id == case_id))
+        db.execute(
+            delete(CommitteeAssignment).where(
+                CommitteeAssignment.case_file_id == case_id
+            )
+        )
+        db.execute(delete(FECViolation).where(FECViolation.case_file_id == case_id))
+        db.execute(delete(FloorSpeech).where(FloorSpeech.case_file_id == case_id))
+        db.execute(delete(EthicsIssue).where(EthicsIssue.case_file_id == case_id))
+        db.execute(
+            delete(BiographicalProfile).where(
+                BiographicalProfile.case_file_id == case_id
+            )
+        )
         db.execute(delete(EvidenceEntry).where(EvidenceEntry.case_file_id == case_id))
         db.flush()
 
@@ -2453,7 +2568,21 @@ async def _run_investigation_adapters(
     async def get_adapter_response(
         adapter: BaseAdapter, q: str, qt: str = "person", **search_kwargs: Any
     ) -> tuple[Any, bool]:
-        cached = get_cached_response(db, adapter.source_name, q)
+        cache_q = (
+            f"{q}|{qt}"
+            if isinstance(
+                adapter, (
+                    BillSponsorshipAdapter,
+                    CommitteeAssignmentsAdapter,
+                    FECViolationsAdapter,
+                    FloorSpeechesAdapter,
+                    EthicsComplaintsAdapter,
+                    BiographicalAdapter,
+                )
+            )
+            else q
+        )
+        cached = get_cached_response(db, adapter.source_name, cache_q)
         if cached is not None:
             resp = response_from_cache_dict(cached)
             resp.result_hash = (cached.get("result_hash") or "") + "_cached"
@@ -2462,7 +2591,7 @@ async def _run_investigation_adapters(
         # Empty LIS responses were being cached for 4h, causing intermittent 0 vs N votes.
         skip_cache = isinstance(adapter, CongressVotesAdapter) and len(resp.results) == 0
         if not skip_cache:
-            store_cached_response(db, adapter.source_name, q, resp)
+            store_cached_response(db, adapter.source_name, cache_q, resp)
         return resp, False
 
     async def run_optional_fec_schedule_b(committee_id: str) -> None:
@@ -2493,6 +2622,8 @@ async def _run_investigation_adapters(
                     source_check_tracker,
                     case_subject_type=case.subject_type,
                     case=case,
+                    bioguide_id=request.bioguide_id
+                    or (prof.bioguide_id if prof else None),
                 )
         except Exception as e:
             logger.warning("FEC Schedule B skipped (ingest): %s", e)
@@ -2561,6 +2692,30 @@ async def _run_investigation_adapters(
             source_row_counts["indy_tax_abatement_raw_results"] = len(response.results)
         elif isinstance(adapter, IndianapolisProcurementAdapter):
             source_row_counts["indy_procurement_raw_results"] = len(response.results)
+        elif isinstance(adapter, StockTradesAdapter):
+            source_row_counts["stock_trades_raw_results"] = len(response.results)
+        elif isinstance(adapter, BillSponsorshipAdapter):
+            source_row_counts["bill_sponsorship_raw_results"] = len(
+                response.results
+            )
+        elif isinstance(adapter, CommitteeAssignmentsAdapter):
+            source_row_counts["committee_assignments_raw_results"] = len(
+                response.results
+            )
+        elif isinstance(adapter, FECViolationsAdapter):
+            source_row_counts["fec_violations_raw_results"] = len(
+                response.results
+            )
+        elif isinstance(adapter, FloorSpeechesAdapter):
+            source_row_counts["floor_speeches_raw_results"] = len(
+                response.results
+            )
+        elif isinstance(adapter, EthicsComplaintsAdapter):
+            source_row_counts["ethics_complaints_raw_results"] = len(
+                response.results
+            )
+        elif isinstance(adapter, BiographicalAdapter):
+            source_row_counts["biographical_raw_results"] = len(response.results)
         _append_source_status(source_statuses, rk, response, from_cache)
         if from_cache:
             cache_hits.append(adapter.source_name)
@@ -2577,6 +2732,7 @@ async def _run_investigation_adapters(
             source_check_tracker,
             case_subject_type=case.subject_type,
             case=case,
+            bioguide_id=bg_for_extras,
         )
 
     bg_for_extras = request.bioguide_id or (prof.bioguide_id if prof else None)
@@ -2593,6 +2749,11 @@ async def _run_investigation_adapters(
             principal_cid = cid
             await run_cached(FECAdapter(), cid, "committee")
             await run_optional_fec_schedule_b(cid)
+        elif (getattr(case, "fec_committee_id", None) or "").strip():
+            cid = (case.fec_committee_id or "").strip().upper()
+            principal_cid = cid
+            await run_cached(FECAdapter(), cid, "committee")
+            await run_optional_fec_schedule_b(cid)
         elif subject_type_uses_fec_congress_pipeline(case.subject_type):
             resolved_committee = await resolve_principal_committee_id_for_official(
                 request.subject_name,
@@ -2606,9 +2767,9 @@ async def _run_investigation_adapters(
             else:
                 errors.append(
                     f"credential_mode={fec_credential_source_label()} | committee resolution "
-                    f"failed for {request.subject_name!r} — set fec_committee_id explicitly"
+                    f"failed for {request.subject_name!r} — FEC adapter skipped "
+                    f"(set fec_committee_id on the case or in the request to enable)"
                 )
-                await run_cached(FECAdapter(), request.subject_name, "person")
         elif subject_type_is_judicial(case.subject_type):
             source_statuses.append(
                 {
@@ -2623,6 +2784,21 @@ async def _run_investigation_adapters(
             )
         else:
             await run_cached(FECAdapter(), request.subject_name, "person")
+        if principal_cid:
+            try:
+                await run_cached(
+                    FECViolationsAdapter(), principal_cid, "committee"
+                )
+            except Exception as e:
+                logger.warning("fec_violations adapter block failed (non-blocking): %s", e)
+                source_statuses.append(
+                    {
+                        "adapter": "fec_violations",
+                        "display_name": "FEC Enforcement",
+                        "status": "processing_failure",
+                        "detail": str(e),
+                    }
+                )
         await run_cached(USASpendingAdapter(), request.subject_name, "entity")
         await run_cached(IndianaCFAdapter(), request.subject_name, "person")
         if subject_type_is_judicial(case.subject_type):
@@ -2643,6 +2819,141 @@ async def _run_investigation_adapters(
                 await run_cached(cv, bg_for_extras, "bioguide_id")
             else:
                 await run_cached(cv, request.subject_name, "person")
+            if (case.subject_type or "").strip() in (
+                "senator",
+                "public_official",
+            ) and (request.subject_name or "").strip():
+                try:
+                    await run_cached(
+                        StockTradesAdapter(),
+                        (request.subject_name or "").strip(),
+                        "senate",
+                    )
+                except Exception as e:
+                    logger.warning("stock_trades adapter block failed (non-blocking): %s", e)
+                    source_statuses.append(
+                        {
+                            "adapter": "stock_trades",
+                            "display_name": "Congressional stock disclosures",
+                            "status": "processing_failure",
+                            "detail": str(e),
+                        }
+                    )
+            if (case.subject_type or "").strip() in (
+                "senator",
+                "house_member",
+                "public_official",
+            ) and (bg_for_extras or "").strip():
+                try:
+                    await run_cached(
+                        BillSponsorshipAdapter(),
+                        (bg_for_extras or "").strip().upper(),
+                        "both",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "bill_sponsorship adapter block failed (non-blocking): %s", e
+                    )
+                    source_statuses.append(
+                        {
+                            "adapter": "bill_sponsorship",
+                            "display_name": "Congress.gov (Bill Activity)",
+                            "status": "processing_failure",
+                            "detail": str(e),
+                        }
+                    )
+            if (case.subject_type or "").strip() in (
+                "senator",
+                "house_member",
+                "public_official",
+            ) and (bg_for_extras or "").strip():
+                try:
+                    await run_cached(
+                        CommitteeAssignmentsAdapter(),
+                        (bg_for_extras or "").strip().upper(),
+                        "current",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "committee_assignments adapter block failed (non-blocking): %s",
+                        e,
+                    )
+                    source_statuses.append(
+                        {
+                            "adapter": "committee_assignments",
+                            "display_name": "Congress.gov (Committees)",
+                            "status": "processing_failure",
+                            "detail": str(e),
+                        }
+                    )
+            if (case.subject_type or "").strip() in (
+                "senator",
+                "house_member",
+                "public_official",
+            ) and (bg_for_extras or "").strip():
+                try:
+                    await run_cached(
+                        BiographicalAdapter(),
+                        (bg_for_extras or "").strip().upper(),
+                        "bioguide",
+                    )
+                except Exception as e:
+                    logger.warning("biographical adapter block failed (non-blocking): %s", e)
+                    source_statuses.append(
+                        {
+                            "adapter": "biographical",
+                            "display_name": "Biographical Profile",
+                            "status": "processing_failure",
+                            "detail": str(e),
+                        }
+                    )
+            if (case.subject_type or "").strip() in (
+                "senator",
+                "house_member",
+                "public_official",
+            ) and (bg_for_extras or "").strip():
+                try:
+                    await run_cached(
+                        FloorSpeechesAdapter(),
+                        (bg_for_extras or "").strip().upper(),
+                        "bioguide",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "floor_speeches adapter block failed (non-blocking): %s", e
+                    )
+                    source_statuses.append(
+                        {
+                            "adapter": "floor_speeches",
+                            "display_name": "Congressional Record",
+                            "status": "processing_failure",
+                            "detail": str(e),
+                        }
+                    )
+            if (case.subject_type or "").strip() in (
+                "senator",
+                "house_member",
+                "public_official",
+            ) and (request.subject_name or "").strip():
+                try:
+                    await run_cached(
+                        EthicsComplaintsAdapter(),
+                        (request.subject_name or "").strip(),
+                        "name",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "ethics_complaints (OCE) adapter block failed (non-blocking): %s",
+                        e,
+                    )
+                    source_statuses.append(
+                        {
+                            "adapter": "ethics_complaints",
+                            "display_name": "Ethics & Conduct Oversight",
+                            "status": "processing_failure",
+                            "detail": str(e),
+                        }
+                    )
 
         try:
             if principal_cid:
@@ -2731,6 +3042,20 @@ async def _run_investigation_adapters(
                     "detail": str(e),
                 }
             )
+
+    try:
+        if update_case_file_net_worth(db, case_id):
+            db.refresh(case)
+    except Exception as e:
+        logger.warning("net_worth update failed (non-blocking): %s", e)
+        source_statuses.append(
+            {
+                "adapter": "net_worth",
+                "display_name": "Net worth (disclosure ranges)",
+                "status": "processing_failure",
+                "detail": str(e),
+            }
+        )
 
     await _run_registry_planned_adapters(
         case=case, case_id=case_id, prof=prof, source_statuses=source_statuses

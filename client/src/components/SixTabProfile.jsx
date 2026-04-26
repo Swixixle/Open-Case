@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { categoryLabel } from "../lib/constants.js";
 import {
   EDITORIAL_ALLEGATIONS,
@@ -251,11 +251,44 @@ export default function SixTabProfile({
     return new Map();
   }, [refUrlMap, mode, dossierDoc]);
 
+  const availableTabs = useMemo(() => {
+    if (mode !== "report") {
+      return TABS;
+    }
+    const sec = report?.sections || {};
+    const filtered = TABS.filter((tab) => {
+      switch (tab.id) {
+        case "identity":
+          return (sec.identity?.length ?? 0) > 0;
+        case "money":
+          return (sec.money?.length ?? 0) > 0;
+        case "politics":
+          return (sec.politics?.length ?? 0) > 0;
+        case "conduct":
+          return (sec.conduct?.length ?? 0) > 0;
+        case "bench_record":
+          return judicial && (sec.bench_record?.length ?? 0) > 0;
+        case "signals":
+          return (sec.signals?.length ?? 0) > 0;
+        default:
+          return false;
+      }
+    });
+    return filtered.length ? filtered : TABS;
+  }, [mode, report?.sections, judicial, report]);
+
+  useEffect(() => {
+    const ids = new Set(availableTabs.map((t) => t.id));
+    if (!ids.has(active) && availableTabs[0]) {
+      setActive(availableTabs[0].id);
+    }
+  }, [active, availableTabs]);
+
   return (
     <section className="oc-section oc-six-tab-profile">
       <h2 className="oc-section-title">PROFILE</h2>
       <div className="oc-six-tab-bar" role="tablist" aria-label="Profile sections">
-        {TABS.map((t) => (
+        {availableTabs.map((t) => (
           <button
             key={t.id}
             type="button"

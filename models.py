@@ -11,11 +11,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -54,6 +56,10 @@ class CaseFile(Base):
     branch: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pilot_cohort: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary_epistemic_level: Mapped[str] = mapped_column(String(32), default="REPORTED")
+    fec_committee_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    estimated_net_worth_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_net_worth_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    net_worth_calculation_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     evidence_entries: Mapped[list["EvidenceEntry"]] = relationship(
         "EvidenceEntry",
@@ -65,6 +71,45 @@ class CaseFile(Base):
         back_populates="case_file",
         order_by="CaseSnapshot.snapshot_number",
     )
+    biographical_profile: Mapped["BiographicalProfile | None"] = relationship(
+        "BiographicalProfile",
+        back_populates="case_file",
+        uselist=False,
+    )
+
+
+class BiographicalProfile(Base):
+    """
+    Biographical data for a case subject (public official), from Congress.gov v3
+    and future enrichment sources.
+    """
+
+    __tablename__ = "biographical_profile"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bioguide_id: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    birth_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    birth_state: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    party: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    current_office: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    office_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    previous_offices: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    education: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    military_service: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    employment_history: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    office_addresses: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    official_website: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    social_media: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile", back_populates="biographical_profile")
 
 
 class EvidenceEntry(Base):
@@ -321,6 +366,17 @@ class SubjectProfile(Base):
     branch: Mapped[str] = mapped_column(String(32), default="legislative")
     historical_depth: Mapped[str] = mapped_column(String(32), default="career")
 
+    # Partial: allow multiple NULL/empty; forbid duplicate real bioguide_id (e.g. same legislator).
+    __table_args__ = (
+        Index(
+            "uq_subject_profiles_bioguide_id",
+            "bioguide_id",
+            unique=True,
+            sqlite_where=text("bioguide_id IS NOT NULL AND bioguide_id != ''"),
+            postgresql_where=text("bioguide_id IS NOT NULL AND bioguide_id != ''"),
+        ),
+    )
+
 
 class DisputeRecord(Base):
     """Formal dispute / correction / takedown request tied to a finding (evidence entry)."""
@@ -504,6 +560,208 @@ class SenatorDossier(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class StockTrade(Base):
+    """Periodic Transaction Report (PTR) style rows from House/Senate public disclosures."""
+
+    __tablename__ = "stock_trades"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bioguide_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
+    disclosure_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    asset_name: Mapped[str] = mapped_column(String(512))
+    asset_ticker: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    asset_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    transaction_type: Mapped[str] = mapped_column(String(32), default="")
+    amount_range: Mapped[str] = mapped_column(String(64), default="")
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str] = mapped_column(Text)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")
+
+
+class FinancialDisclosure(Base):
+    """
+    Row-level slices of public financial disclosure (annual, PTR-adjacent context, etc.).
+    Populated as structured data becomes available; many filings remain PDF-first upstream.
+    """
+
+    __tablename__ = "financial_disclosures"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bioguide_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    filing_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    disclosure_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    value_range: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    income_amount: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")
+
+
+class BillActivity(Base):
+    """
+    Sponsored or cosponsored federal legislation tied to a member (Congress.gov).
+    """
+
+    __tablename__ = "bill_activity"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bioguide_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    bill_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    congress: Mapped[int] = mapped_column(Integer, nullable=False)
+    bill_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    introduced_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    cosponsored_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    current_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject_policy_area: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")
+
+
+class CommitteeAssignment(Base):
+    """
+    Committee and subcommittee assignments from Congress.gov member / committee data.
+    """
+
+    __tablename__ = "committee_assignments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bioguide_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    congress: Mapped[int] = mapped_column(Integer, nullable=False)
+    chamber: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    committee_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    committee_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    committee_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    subcommittee_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    rank_in_party: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")
+
+
+class FECViolation(Base):
+    """
+    FEC enforcement matters (MUR, administrative fine, ADR) from OpenFEC legal search.
+    """
+
+    __tablename__ = "fec_violations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    mur_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    case_type: Mapped[str] = mapped_column(String(32), nullable=False)  # MUR, AF, ADR
+    filed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    closed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    respondent_names: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array
+    subject_matter: Mapped[str] = mapped_column(Text, nullable=False)
+    disposition: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fine_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")
+
+
+class FloorSpeech(Base):
+    """
+    Congressional Record issue row (PDFs / metadata) for a member’s Congress, from
+    ``/v3/congressional-record`` (issue-level; transcript text is in linked PDFs).
+    """
+
+    __tablename__ = "floor_speeches"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bioguide_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    congress: Mapped[int] = mapped_column(Integer, nullable=False)
+    chamber: Mapped[str] = mapped_column(String(16), nullable=False)
+    speech_date: Mapped[date] = mapped_column(Date, nullable=False)
+    volume: Mapped[int] = mapped_column(Integer, nullable=False)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_range: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    full_text_url: Mapped[str] = mapped_column(Text, nullable=False)
+    topic_tags: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")
+
+
+class EthicsIssue(Base):
+    """
+    Ethics / conduct oversight index rows (OCE, etc.) linked to a case.
+    """
+
+    __tablename__ = "ethics_issues"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    case_file_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("case_files.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bioguide_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    issue_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    chamber: Mapped[str] = mapped_column(String(16), nullable=False, default="House")
+    source_body: Mapped[str] = mapped_column(String(64), nullable=False)
+    filed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    subject_matter: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    disposition: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    epistemic_level: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="REPORTED"
+    )
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    case_file: Mapped["CaseFile"] = relationship("CaseFile")
 
 
 class CaseNarrative(Base):

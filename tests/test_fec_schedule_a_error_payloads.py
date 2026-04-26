@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from adapters.congress_votes import CongressVotesAdapter
-from adapters.fec import FECAdapter
+from adapters.fec import FECAdapter, build_fec_receipt_search_url
 from adapters.indiana_cf import IndianaCFAdapter
 from adapters.usa_spending import USASpendingAdapter
 from tests.test_fec_congress_adapter_fixtures import (
@@ -32,6 +32,27 @@ def _mock_schedule_response(status_code: int, json_body: dict) -> MagicMock:
 
 def _run_fec(adapter: FECAdapter, query: str, query_type: str = "committee"):
     return asyncio.run(adapter.search(query, query_type))
+
+
+def test_build_fec_receipt_search_url_transaction_shape() -> None:
+    """fec.gov receipts URL should narrow to one schedule row (committee + date + amount)."""
+    item = {
+        "contributor_name": "MASS MUTUAL",
+        "contribution_receipt_date": "2026-03-31",
+        "contribution_receipt_amount": 2711,
+        "committee": {"committee_id": "C00459255", "name": "Example"},
+    }
+    url = build_fec_receipt_search_url(
+        item, committee_id="C00459255", two_year_period=2026
+    )
+    assert url.startswith("https://www.fec.gov/data/receipts/?")
+    assert "data_type=processed" in url
+    assert "committee_id=C00459255" in url
+    assert "contributor_name=MASS+MUTUAL" in url
+    assert "two_year_transaction_period=2026" in url
+    assert "min_date=03%2F31%2F2026" in url or "min_date=03%2f31%2f2026" in url.lower()
+    assert "min_amount=2711" in url
+    assert "max_amount=2711" in url
 
 
 @pytest.fixture

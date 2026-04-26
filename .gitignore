@@ -8,3 +8,9 @@ open_case.db
 .env
 .env.local
 data/.cache/
+.DS_Store
+*.log
+*.swp
+*.bak
+PYEOF
+screenshots/

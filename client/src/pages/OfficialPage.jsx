@@ -7,6 +7,7 @@ import ConcernBadge from "../components/ConcernBadge.jsx";
 import EpistemicBar from "../components/EpistemicBar.jsx";
 import GapAnalysis from "../components/GapAnalysis.jsx";
 import InfluenceGraphSections from "../components/InfluenceGraphSections.jsx";
+import InvestigationSummary from "../components/InvestigationSummary.jsx";
 import InvestigationReceipt from "../components/InvestigationReceipt.jsx";
 import LoadingScreen from "../components/LoadingScreen.jsx";
 import MarkdownBlock from "../components/MarkdownBlock.jsx";
@@ -105,9 +106,14 @@ function OfficialCasePage({ caseId }) {
   const [streamDoneAt, setStreamDoneAt] = useState(null);
   const [newRuleIds, setNewRuleIds] = useState(() => new Set());
   const esRef = useRef(null);
+  /* Bumps on effect cleanup so in-flight fetches from a previous effect (e.g. React Strict Mode
+   * double-mount) do not call setState; avoids stuck "Loading case" when the first response
+   * is discarded and the second request must win. */
+  const reportLoadTokenRef = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
+    const loadToken = ++reportLoadTokenRef.current;
+    const ac = new AbortController();
     setLoadStatus("initial");
     setReport(null);
     setStreamDoneAt(null);
@@ -121,22 +127,37 @@ function OfficialCasePage({ caseId }) {
         return null;
       }
     })();
-    if (cached) setReport(cached);
+    if (cached && typeof cached === "object" && cached !== null && !Array.isArray(cached)) {
+      setReport(cached);
+    }
 
-    (async () => {
-      setRefreshing(true);
-      try {
-        const data = await fetchCaseReport(caseId);
-        if (cancelled) return;
+    setRefreshing(true);
+    fetchCaseReport(caseId, { signal: ac.signal })
+      .then((data) => {
+        if (loadToken !== reportLoadTokenRef.current) {
+          if (import.meta.env.DEV) {
+            // eslint-disable-next-line no-console
+            console.info("[open-case] case report: stale response ignored", {
+              caseId,
+              loadToken,
+              current: reportLoadTokenRef.current,
+            });
+          }
+          return;
+        }
         if (!data) {
           setLoadStatus("not_found");
+          if (import.meta.env.DEV) {
+            // eslint-disable-next-line no-console
+            console.info("[open-case] case report: not_found", { caseId, loadStatus: "not_found" });
+          }
           return;
         }
         if (import.meta.env.DEV) {
-          // Helps compare Tom Cotton vs Todd Young report shape when one path hangs
           // eslint-disable-next-line no-console
-          console.info("[open-case] case report loaded", {
+          console.info("[open-case] case report: applying to state", {
             caseId,
+            loadToken,
             signals: Array.isArray(data.signals) ? data.signals.length : null,
             pattern_alerts: Array.isArray(data.pattern_alerts)
               ? data.pattern_alerts.length
@@ -151,21 +172,43 @@ function OfficialCasePage({ caseId }) {
         }
         setReport(data);
         setLoadStatus("complete");
-      } catch (e) {
-        if (!cancelled) {
-          // Unhandled network/CORS/abort errors used to leave loadStatus stuck on "initial"
-          // and report null → infinite loading screen
+        if (import.meta.env.DEV) {
           // eslint-disable-next-line no-console
-          console.error("[open-case] case report fetch failed", caseId, e);
-          setLoadStatus("load_error");
+          console.info("[open-case] case report: set complete", {
+            caseId,
+            loadToken,
+            nextLoadStatus: "complete",
+          });
         }
-      } finally {
-        if (!cancelled) setRefreshing(false);
-      }
-    })();
+      })
+      .catch((e) => {
+        const isAbort =
+          (e && typeof e === "object" && e.name === "AbortError") ||
+          (e && String(e).includes("aborted"));
+        if (isAbort) {
+          if (import.meta.env.DEV) {
+            // eslint-disable-next-line no-console
+            console.info(
+              "[open-case] case report fetch aborted (remount or navigation)",
+              caseId
+            );
+          }
+          return;
+        }
+        if (loadToken !== reportLoadTokenRef.current) {
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.error("[open-case] case report fetch failed", caseId, e);
+        setLoadStatus("load_error");
+      })
+      .finally(() => {
+        setRefreshing(false);
+      });
 
     return () => {
-      cancelled = true;
+      ac.abort();
+      reportLoadTokenRef.current += 1;
     };
   }, [caseId]);
 
@@ -349,6 +392,7 @@ function OfficialCasePage({ caseId }) {
         </aside>
 
         <main className="oc-dossier-main">
+          <InvestigationSummary caseId={caseId} />
           <section className="oc-hero-dossier">
             <div className="oc-hero-dossier-head">
               <CongressPortrait

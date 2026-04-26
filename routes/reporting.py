@@ -478,17 +478,27 @@ def _build_report_sections(
     ev_vis = _visible_evidence_rows(all_evidence, include_unreviewed)
     fin_vis = _visible_evidence_rows(financial, include_unreviewed)
     politics_types = frozenset(
-        {"vote_record", "lobbying_filing", "timeline_event", "regulatory_comment"}
+        {
+            "vote_record",
+            "bill_sponsorship",
+            "committee_assignment",
+            "floor_speech",
+            "lobbying_filing",
+            "timeline_event",
+            "regulatory_comment",
+        }
     )
     politics = [
         _evidence_dict(e)
         for e in ev_vis
         if e.entry_type in politics_types and not e.is_absence
     ]
+    conduct_types = frozenset({"fec_violation", "ethics_issue"})
     conduct = [
         _evidence_dict(e)
         for e in ev_vis
-        if e.flagged_for_review
+        if e.entry_type in conduct_types
+        or e.flagged_for_review
         or "discipline" in (e.entry_type or "").lower()
         or "complaint" in ((e.title or "") + (e.body or "")).lower()
     ]
@@ -585,7 +595,10 @@ def _collect_report_payload(
         .order_by(CaseSnapshot.snapshot_number.desc())
     ).all()
 
-    financial = [e for e in all_evidence if e.entry_type == "financial_connection"]
+    _money_entry_types = frozenset(
+        {"financial_connection", "stock_trade", "financial_disclosure"}
+    )
+    financial = [e for e in all_evidence if e.entry_type in _money_entry_types]
     votes = [e for e in all_evidence if e.entry_type == "vote_record"]
     gaps = [e for e in all_evidence if e.is_absence]
     timeline_all = [e for e in all_evidence if not e.is_absence]

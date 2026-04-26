@@ -1456,3 +1456,104 @@ a.oc-btn-sidebar {
   word-break: break-all;
   color: var(--text-dim);
 }
+
+/* Case investigation summary (LLM) */
+.oc-investigation-summary {
+  margin-bottom: 1.5rem;
+}
+
+.oc-investigation-summary
+  .oc-accordion-header.oc-investigation-summary-header
+  .oc-accordion-dot {
+  background: var(--accent-blue);
+}
+
+.oc-investigation-summary-body {
+  min-height: 2rem;
+}
+
+.oc-investigation-summary-line {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0 0 0.75rem;
+}
+
+.oc-investigation-summary-note {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin: 0.5rem 0 0;
+}
+
+.oc-btn-generate-summary {
+  display: inline-block;
+  margin-top: 0.15rem;
+  padding: 0.65rem 1.15rem;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #f0f6ff;
+  background: var(--accent-blue);
+  border: 1px solid var(--accent-blue);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: filter 0.12s ease, transform 0.08s ease;
+}
+
+.oc-btn-generate-summary:hover {
+  filter: brightness(1.08);
+}
+
+.oc-btn-generate-summary:active {
+  transform: scale(0.99);
+}
+
+.oc-btn-generate-summary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.oc-investigation-markdown {
+  margin-top: 0.5rem;
+}
+
+.oc-investigation-disclaimer {
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 1.15rem 0 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.oc-investigation-summary-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin: 0 0 0.75rem;
+}
+
+.oc-investigation-summary-err {
+  font-size: 0.86rem;
+  color: var(--critical);
+  margin: 0.5rem 0 0.75rem;
+  line-height: 1.45;
+}
+
+.oc-investigation-summary-retry {
+  margin-top: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.oc-investigation-summary-retry:hover {
+  border-color: var(--amber-dim);
+  color: var(--amber-bright);
+}

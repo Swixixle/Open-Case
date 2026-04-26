@@ -2,7 +2,9 @@
 Lazy FEC + signal pipeline for case report views when evidence is missing or stale.
 
 Triggers the same investigation path as POST /cases/{id}/investigate without API auth,
-using the case owner's handle (auto-created investigator row if needed).
+using the case owner's handle (auto-created investigator row if needed). That run
+includes Senate eFTDS stock/PTR (``StockTradesAdapter``) for ``senator`` /
+``public_official`` cases and persists ``stock_trades`` rows alongside evidence.
 """
 from __future__ import annotations
 

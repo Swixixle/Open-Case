@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import re
+from datetime import date, datetime
 from typing import Any
+from urllib.parse import quote_plus, urlencode
 
 import httpx
 
@@ -76,6 +78,51 @@ def _candidate_recency_key(cand: dict[str, Any]) -> str:
     return ""
 
 
+def _principal_committee_id_from_candidate_list(
+    data: Any,
+    *,
+    state_filter: str | None,
+) -> str | None:
+    """
+    OpenFEC ``candidates/search`` JSON ``results`` → first principal or fallback committee_id.
+    """
+    if not isinstance(data, dict):
+        return None
+    api_err = _fec_interpret_body_api_error(data)
+    if api_err:
+        return None
+    matching: list[dict[str, Any]] = []
+    for cand in data.get("results") or []:
+        if not isinstance(cand, dict):
+            continue
+        if state_filter and str(cand.get("state") or "").upper() != state_filter:
+            continue
+        if cand.get("candidate_inactive") is True:
+            continue
+        matching.append(cand)
+    matching.sort(key=_candidate_recency_key, reverse=True)
+    for cand in matching:
+        committees = cand.get("principal_committees") or []
+        principal_ids: list[str] = []
+        fallback_ids: list[str] = []
+        for pc in committees:
+            if not isinstance(pc, dict):
+                continue
+            cid = pc.get("committee_id")
+            if not cid:
+                continue
+            cid_s = str(cid).strip().upper()
+            des_full = str(pc.get("designation_full") or "")
+            if "Principal" in des_full or pc.get("designation") == "P":
+                principal_ids.append(cid_s)
+            else:
+                fallback_ids.append(cid_s)
+        for cid_s in principal_ids + fallback_ids:
+            if cid_s:
+                return cid_s
+    return None
+
+
 async def resolve_principal_committee_id_for_official(
     subject_name: str,
     jurisdiction: str,
@@ -89,6 +136,10 @@ async def resolve_principal_committee_id_for_official(
     schedule_a by committee_id returns receipts *to* that committee (donors to pair
     with votes). schedule_a by contributor_name searches the wrong economic direction
     for this use case.
+
+    Resolution order: ``candidates/search`` by ``name`` + office (S/H/P); if none,
+    the same path with ``q=bioguide_id`` so Congress bioguides that map to a candidate
+    row can still yield ``principal_committees``.
     """
     try:
         api_key = CredentialRegistry.get_credential("fec") or "DEMO_KEY"
@@ -96,7 +147,8 @@ async def resolve_principal_committee_id_for_official(
         api_key = "DEMO_KEY"
 
     search_name = (subject_name or "").strip()
-    if not search_name:
+    bg_hint = (bioguide_id or "").strip().upper()
+    if not search_name and not bg_hint:
         return None
 
     state_filter: str | None = None
@@ -106,94 +158,127 @@ async def resolve_principal_committee_id_for_official(
 
     cred_src = _fec_key_source_label()
     api = f"{FECAdapter.BASE_URL}{_CANDIDATE_SEARCH_PATH}"
-    bg_hint = (bioguide_id or "").strip().upper()
     async with httpx.AsyncClient(timeout=20.0) as client:
-        # S/H/P: multi-party / indie senators (e.g. Sanders) may have presidential (P)
-        # rows with stale committees; Senate rows sorted by recency yield the active principal.
-        for office in ("S", "H", "P"):
+        if search_name:
+            # S/H/P: multi-party / indie senators (e.g. Sanders) may have presidential (P)
+            # rows with stale committees; Senate rows sorted by recency yield the active principal.
+            for office in ("S", "H", "P"):
+                params: dict[str, str | int] = {
+                    "api_key": api_key,
+                    "name": search_name,
+                    "office": office,
+                    "per_page": 50,
+                    "sort": "-last_file_date",
+                }
+                try:
+                    r = await client.get(api, params=params)
+                except httpx.HTTPError:
+                    continue
+                req_url = _mask_url(str(r.request.url))
+                if r.status_code == 429:
+                    logger.warning(
+                        "FEC candidates/search rate limited (%s) for %r",
+                        cred_src,
+                        search_name,
+                    )
+                    continue
+                if r.status_code == 403:
+                    logger.warning(
+                        "FEC candidates/search HTTP 403 (credential_mode=%s)", cred_src
+                    )
+                    continue
+                if r.status_code >= 400:
+                    logger.warning(
+                        "FEC candidates/search HTTP %s (credential_mode=%s) url=%s for name=%r office=%s",
+                        r.status_code,
+                        cred_src,
+                        req_url,
+                        search_name,
+                        office,
+                    )
+                    continue
+                try:
+                    data = r.json()
+                except Exception:
+                    continue
+                api_err = _fec_interpret_body_api_error(data)
+                if api_err:
+                    logger.warning(
+                        "FEC candidates/search API error: %s (credential_mode=%s)",
+                        api_err[1],
+                        cred_src,
+                    )
+                    continue
+                out = _principal_committee_id_from_candidate_list(
+                    data, state_filter=state_filter
+                )
+                if out:
+                    if bg_hint:
+                        logger.debug(
+                            "FEC principal committee resolved name=%r office=%s committee_id=%s bioguide_hint=%s",
+                            search_name,
+                            office,
+                            out,
+                            bg_hint,
+                        )
+                    return out
+
+        if bg_hint:
+            # Bioguide (Congress ID) in ``q`` can match linked candidate rows when name search does not.
             params: dict[str, str | int] = {
                 "api_key": api_key,
-                "name": search_name,
-                "office": office,
-                "per_page": 50,
+                "q": bg_hint,
+                "per_page": 100,
                 "sort": "-last_file_date",
             }
             try:
-                r = await client.get(api, params=params)
+                r2 = await client.get(api, params=params)
             except httpx.HTTPError:
-                continue
-            req_url = _mask_url(str(r.request.url))
-            if r.status_code == 429:
+                return None
+            if r2.status_code == 429:
                 logger.warning(
-                    "FEC candidates/search rate limited (%s) for %r",
+                    "FEC candidates/search rate limited (%s) for bioguide q=%r",
                     cred_src,
-                    search_name,
+                    bg_hint,
                 )
-                continue
-            if r.status_code == 403:
+                return None
+            if r2.status_code == 403:
                 logger.warning(
-                    "FEC candidates/search HTTP 403 (credential_mode=%s)", cred_src
-                )
-                continue
-            if r.status_code >= 400:
-                logger.warning(
-                    "FEC candidates/search HTTP %s (credential_mode=%s) url=%s for name=%r office=%s",
-                    r.status_code,
+                    "FEC candidates/search HTTP 403 (credential_mode=%s) bioguide q",
                     cred_src,
-                    req_url,
-                    search_name,
-                    office,
                 )
-                continue
+                return None
+            if r2.status_code >= 400:
+                logger.warning(
+                    "FEC candidates/search HTTP %s (credential_mode=%s) url=%s for bioguide q=%r",
+                    r2.status_code,
+                    cred_src,
+                    _mask_url(str(r2.request.url)),
+                    bg_hint,
+                )
+                return None
             try:
-                data = r.json()
+                data2 = r2.json()
             except Exception:
-                continue
-            api_err = _fec_interpret_body_api_error(data)
-            if api_err:
+                return None
+            api_err2 = _fec_interpret_body_api_error(data2)
+            if api_err2:
                 logger.warning(
-                    "FEC candidates/search API error: %s (credential_mode=%s)",
-                    api_err[1],
+                    "FEC candidates/search API error (bioguide q): %s (credential_mode=%s)",
+                    api_err2[1],
                     cred_src,
                 )
-                continue
-            matching: list[dict[str, Any]] = []
-            for cand in data.get("results") or []:
-                if not isinstance(cand, dict):
-                    continue
-                if state_filter and str(cand.get("state") or "").upper() != state_filter:
-                    continue
-                if cand.get("candidate_inactive") is True:
-                    continue
-                matching.append(cand)
-            matching.sort(key=_candidate_recency_key, reverse=True)
-            for cand in matching:
-                committees = cand.get("principal_committees") or []
-                principal_ids: list[str] = []
-                fallback_ids: list[str] = []
-                for pc in committees:
-                    if not isinstance(pc, dict):
-                        continue
-                    cid = pc.get("committee_id")
-                    if not cid:
-                        continue
-                    cid_s = str(cid).strip().upper()
-                    des_full = str(pc.get("designation_full") or "")
-                    if "Principal" in des_full or pc.get("designation") == "P":
-                        principal_ids.append(cid_s)
-                    else:
-                        fallback_ids.append(cid_s)
-                for cid_s in principal_ids + fallback_ids:
-                    if cid_s:
-                        if bg_hint:
-                            logger.debug(
-                                "FEC principal committee resolved name=%r office=%s committee_id=%s bioguide_hint=%s",
-                                search_name,
-                                office,
-                                cid_s,
-                                bg_hint,
-                            )
-                        return cid_s
+                return None
+            out2 = _principal_committee_id_from_candidate_list(
+                data2, state_filter=state_filter
+            )
+            if out2:
+                logger.debug(
+                    "FEC principal committee resolved via bioguide q=%s committee_id=%s",
+                    bg_hint,
+                    out2,
+                )
+                return out2
     return None
 
 
@@ -267,6 +352,93 @@ def _is_likely_unambiguous(donor_name: str) -> bool:
         return False
     upper = str(donor_name).upper()
     return any(marker in upper for marker in _UNAMBIGUOUS_NAME_MARKERS)
+
+
+def _parse_contribution_receipt_date(raw: Any) -> date | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = s.replace("Z", "+00:00")
+    if "T" in s:
+        s = s.split("T", 1)[0]
+    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(s[:10]).date()
+    except ValueError:
+        return None
+
+
+def _fec_election_two_year(d: date) -> int:
+    """FEC two-year label is the even year ending the cycle (e.g. 2025-01-01 -> 2026)."""
+    y = d.year
+    return y if y % 2 == 0 else y + 1
+
+
+def _format_amount_for_fec_receipts_url(amount: Any) -> str | None:
+    try:
+        f = float(amount)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    if abs(f - round(f)) < 1e-9:
+        return str(int(round(f)))
+    s = f"{f:.2f}"
+    if s.endswith("0") and s[-2] == ".":
+        s = s.rstrip("0").rstrip(".")
+    return s or None
+
+
+def build_fec_receipt_search_url(
+    item: dict[str, Any],
+    *,
+    committee_id: str,
+    two_year_period: int | None = None,
+) -> str:
+    """
+    Public FEC data UI URL that reproduces a single reported receipt in the
+    pre-filtered receipts table (verifiable from evidence rows).
+    """
+    com = item.get("committee")
+    com_id = (committee_id or "").strip().upper()
+    if not com_id and isinstance(com, dict):
+        com_id = str(com.get("committee_id") or "").strip().upper()
+
+    parts: list[tuple[str, str]] = [("data_type", "processed")]
+    if com_id:
+        parts.append(("committee_id", com_id))
+
+    contributor = str(item.get("contributor_name") or "").strip()
+    if contributor:
+        parts.append(("contributor_name", contributor))
+
+    d = _parse_contribution_receipt_date(item.get("contribution_receipt_date"))
+    if two_year_period is not None:
+        period = int(two_year_period)
+    elif d is not None:
+        period = _fec_election_two_year(d)
+    else:
+        period = _fec_election_two_year(date.today())
+    parts.append(("two_year_transaction_period", str(period)))
+
+    if d is not None:
+        mmdd = d.strftime("%m/%d/%Y")
+        parts.append(("min_date", mmdd))
+        parts.append(("max_date", mmdd))
+
+    amt = _format_amount_for_fec_receipts_url(item.get("contribution_receipt_amount"))
+    if amt is not None:
+        parts.append(("min_amount", amt))
+        parts.append(("max_amount", amt))
+
+    q = urlencode(parts, quote_via=quote_plus)
+    return f"https://www.fec.gov/data/receipts/?{q}"
 
 
 class FECAdapter(BaseAdapter):
@@ -369,9 +541,6 @@ class FECAdapter(BaseAdapter):
                 }
                 if two_year_transaction_period is not None:
                     params["two_year_transaction_period"] = int(two_year_transaction_period)
-                source_url = (
-                    f"https://www.fec.gov/data/receipts/?committee_id={query}"
-                )
             else:
                 params = {
                     "contributor_name": query,
@@ -379,11 +548,8 @@ class FECAdapter(BaseAdapter):
                     "per_page": 20,
                     "api_key": api_key,
                 }
-                source_url = (
-                    "https://www.fec.gov/data/receipts/"
-                    f"?contributor_name={query.replace(' ', '+')}"
-                )
 
+            schedule_a_params_used: dict[str, str | int | bool] = params
             api_path = f"{self.BASE_URL}/schedules/schedule_a/"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(api_path, params=params)
@@ -406,6 +572,7 @@ class FECAdapter(BaseAdapter):
                         for k, v in params.items()
                         if k != "two_year_transaction_period"
                     }
+                    schedule_a_params_used = params_retry
                     response = await client.get(api_path, params=params_retry)
                     req_url = _mask_url(str(response.request.url))
 
@@ -561,6 +728,14 @@ class FECAdapter(BaseAdapter):
             unique_names.discard("")
             collision_count = max(1, len(unique_names))
 
+            ty_val = schedule_a_params_used.get("two_year_transaction_period")
+            effective_two_year: int | None = None
+            if ty_val is not None:
+                try:
+                    effective_two_year = int(ty_val)
+                except (TypeError, ValueError):
+                    effective_two_year = None
+
             results: list[AdapterResult] = []
             for item in filtered_items:
                 amount = item.get("contribution_receipt_amount") or 0
@@ -605,9 +780,20 @@ class FECAdapter(BaseAdapter):
                 et_val = str(item.get("entity_type") or "")
                 row_data = dict(item)
                 row_data["donor_type"] = classify_donor_type(et_val, ct_val)
+                if query_type == "committee":
+                    committee_id_for_url = (query or "").strip().upper()
+                else:
+                    _com = item.get("committee")
+                    _com = _com if isinstance(_com, dict) else {}
+                    committee_id_for_url = str(_com.get("committee_id") or "").strip().upper()
+                row_source_url = build_fec_receipt_search_url(
+                    item,
+                    committee_id=committee_id_for_url,
+                    two_year_period=effective_two_year,
+                )
                 ar = AdapterResult(
                     source_name=self.source_name,
-                    source_url=source_url,
+                    source_url=row_source_url,
                     entry_type="financial_connection",
                     title=f"FEC Donation: ${amt_f:,.0f} to {recipient}",
                     body=(

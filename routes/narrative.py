@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/cases", tags=["narrative"])
 
+
+def _as_utc_for_timedelta(dt: datetime) -> datetime:
+    """SQLite may return timezone-naive datetimes; normalize before mixing with aware UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 NARRATIVE_SYSTEM_PROMPT = """You are a careful analyst of U.S. public campaign-finance, lobbying, and roll-call data for Open Case. \
 Follow the "receipts, not verdicts" philosophy. Output clear prose only (no JSON, no markdown code fences)."""
 
@@ -141,7 +148,7 @@ def _model_used_from_trail(trail: list[str]) -> str:
         return "fallback-template"
     first = trail[0]
     if first == "claude":
-        return (os.environ.get("CLAUDE_MODEL") or "claude-sonnet-4-20250514").strip()
+        return (os.environ.get("CLAUDE_MODEL") or "claude-3-sonnet-20240229").strip()
     if first == "perplexity_sonar":
         return "perplexity-sonar"
     if first == "gemini":
@@ -169,7 +176,8 @@ def synthesize_narrative(
     )
 
     if existing:
-        age_hours = (datetime.now(timezone.utc) - existing.generated_at).total_seconds() / 3600
+        existing_dt = _as_utc_for_timedelta(existing.generated_at)
+        age_hours = (datetime.now(timezone.utc) - existing_dt).total_seconds() / 3600
         if age_hours < 1:
             return {
                 "case_id": str(case_id),
