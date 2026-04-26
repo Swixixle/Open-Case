@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -274,14 +274,26 @@ def _merge_ranked(
 
 @router.get("/search")
 async def search_subjects(
-    name: str = Query(..., min_length=1),
+    name: str | None = Query(None, min_length=1, description="Search text (``q`` is an alias)"),
+    q: str | None = Query(
+        None,
+        min_length=1,
+        description="Alias for ``name`` (common in clients and ad hoc curls)",
+    ),
     state: str | None = None,
     subject_type: str | None = None,
     government_level: str | None = None,
     branch: str | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    q = name.strip()
+    term = (name or q or "").strip()
+    if not term:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide query parameter `name` or `q` (non-empty).",
+        )
+    # Resolved text (shadows Query params; used for match + Congress `query=`)
+    name = term
     state_u = state.upper().strip() if state else None
 
     database_matches = _database_subject_matches(
@@ -310,7 +322,7 @@ async def search_subjects(
     for o in INDIANA_OFFICIALS:
         if state_u is not None and o["state"].upper() != state_u:
             continue
-        ms = subject_name_match_score(q, o["name"])
+        ms = subject_name_match_score(name, o["name"])
         if ms < MIN_SUBJECT_SEARCH_MATCH:
             continue
         candidates_scored.append(
@@ -376,7 +388,7 @@ async def search_subjects(
                         last = tlist[-1] if isinstance(tlist[-1], dict) else {}
                         chamber = str(last.get("chamber") or "").lower()
                 mname = member.get("name") or member.get("directOrderName") or ""
-                ms = subject_name_match_score(q, mname)
+                ms = subject_name_match_score(name, mname)
                 if ms < MIN_SUBJECT_SEARCH_MATCH:
                     continue
                 api_candidates.append(

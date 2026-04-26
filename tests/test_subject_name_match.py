@@ -69,3 +69,9 @@ def test_gras_ranks_grassley_first() -> None:
 def test_unrelated_name_scores_zero() -> None:
     assert subject_name_match_score("sander", "Randall Fuller") == 0.0
     assert subject_name_match_score("sander", "Eric Swalwell") == 0.0
+
+
+def test_congress_gov_last_first_order() -> None:
+    """Congress.gov list API uses ``Cruz, Ted`` style; must match first+last query."""
+    s = subject_name_match_score("Ted Cruz", "Cruz, Ted")
+    assert s >= 0.40

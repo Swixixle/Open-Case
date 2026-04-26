@@ -12,17 +12,23 @@ def _normalize_name(s: str) -> str:
     return " ".join(s.split())
 
 
-def subject_name_match_score(query: str, display_name: str) -> float:
-    """
-    0..1 match quality. Priority:
-    1) Last-name prefix / strong last-name similarity (single-token queries)
-    2) Full normalized name substring
-    3) Tiny tiebreaker from character similarity + token overlap (only if (1) or (2) scored)
+def _normalized_name_variants(display_name: str) -> list[str]:
+    """Legislative sources often return ``Last, First``; add ``First ... Last`` for matching."""
+    s = (display_name or "").strip()
+    if not s:
+        return []
+    out: set[str] = {_normalize_name(s)}
+    m = re.match(r"^([^,]+)\s*,\s*(.+)$", s)
+    if m:
+        last = m.group(1).strip()
+        first_rest = m.group(2).strip()
+        if last and first_rest:
+            out.add(_normalize_name(f"{first_rest} {last}"))
+    return list(out)
 
-    Unrelated names (no last-name signal, no substring) return 0 so callers can drop them.
-    """
-    q = _normalize_name(query)
-    n = _normalize_name(display_name)
+
+def _score_against_pair_norm(q: str, n: str) -> float:
+    """``q`` and ``n`` are already :func:`_normalize_name` output."""
     if not q or not n:
         return 0.0
     if q == n:
@@ -71,3 +77,23 @@ def subject_name_match_score(query: str, display_name: str) -> float:
     tie = 0.04 * seq + 0.03 * jacc
 
     return min(1.0, base + tie)
+
+
+def subject_name_match_score(query: str, display_name: str) -> float:
+    """
+    0..1 match quality. Priority:
+    1) Last-name prefix / strong last-name similarity (single-token queries)
+    2) Full normalized name substring
+    3) Tiny tiebreaker from character similarity + token overlap (only if (1) or (2) scored)
+
+    Unrelated names (no last-name signal, no substring) return 0 so callers can drop them.
+
+    Supports ``Last, First`` style display names (e.g. from Congress.gov list API).
+    """
+    q = _normalize_name(query)
+    if not q:
+        return 0.0
+    best = 0.0
+    for n in _normalized_name_variants(display_name):
+        best = max(best, _score_against_pair_norm(q, n))
+    return min(1.0, best)
