@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import BottomBar from "../components/BottomBar.jsx";
 import CategoryChips from "../components/CategoryChips.jsx";
 import ClaimsAccordion from "../components/ClaimsAccordion.jsx";
@@ -18,7 +18,7 @@ import StaffNetwork from "../components/StaffNetwork.jsx";
 import StoryAngles from "../components/StoryAngles.jsx";
 import Timeline from "../components/Timeline.jsx";
 import { DIRECTORY_OFFICIALS } from "../data/officialsDirectory.js";
-import { apiUrl, fetchCaseReport, apiHeaders } from "../lib/api.js";
+import { apiUrl, fetchCaseLookupByBioguide, fetchCaseReport, apiHeaders } from "../lib/api.js";
 import CongressPortrait from "../components/CongressPortrait.jsx";
 import {
   categoriesWithClaims,
@@ -132,7 +132,7 @@ function OfficialCasePage({ caseId }) {
     }
 
     setRefreshing(true);
-    fetchCaseReport(caseId, { signal: ac.signal })
+    fetchCaseReport(caseId, { signal: ac.signal, demoInternalSignals: true })
       .then((data) => {
         if (loadToken !== reportLoadTokenRef.current) {
           if (import.meta.env.DEV) {
@@ -457,12 +457,14 @@ function OfficialSenatorDossierPage({ bioguideId }) {
   const [dossier, setDossier] = useState(null);
   const [pollSession, setPollSession] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [caseRedirectId, setCaseRedirectId] = useState(null);
   const completedRef = useRef(false);
 
   useEffect(() => {
     setPollSession(0);
     setDossier(null);
     setLoadStatus("initial");
+    setCaseRedirectId(null);
   }, [bioguideId]);
 
   const dirMeta = DIRECTORY_OFFICIALS.find(
@@ -518,6 +520,12 @@ function OfficialSenatorDossierPage({ bioguideId }) {
         }
 
         if (res.status === 404) {
+          const lookup = await fetchCaseLookupByBioguide(bioguideId);
+          if (lookup?.case_id && !cancelled) {
+            setCaseRedirectId(lookup.case_id);
+            clearTimers();
+            return;
+          }
           setLoadStatus("not_found");
           setDossier(null);
           clearTimers();
@@ -612,6 +620,10 @@ function OfficialSenatorDossierPage({ bioguideId }) {
     setLoadStatus("initial");
     setPollSession((n) => n + 1);
   };
+
+  if (caseRedirectId) {
+    return <Navigate to={`/official/${caseRedirectId}`} replace />;
+  }
 
   const shareReceipt = () => {
     const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");

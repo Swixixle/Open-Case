@@ -5,7 +5,7 @@
 **Last updated:** 2026-04-26  
 **Last verified:** 2026-04-26 (pytest `tests/test_signing_bootstrap.py`, `tests/test_public_demo.py`; full-suite green not re-run this session)  
 **Pattern engine version:** v2.7  
-**Test count:** 399 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); CI floor still ≥201 passed (`server/scripts/ci_pytest_floor.py`)  
+**Test count:** 401 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); CI floor still ≥201 passed (`server/scripts/ci_pytest_floor.py`)  
 **CI floor:** ≥201 passed (`server/scripts/ci_pytest_floor.py`; invoked from `.github/workflows/ci.yml`)
 
 ---
@@ -18,7 +18,7 @@ Open Case is a government transparency investigation engine. It ingests public r
 
 **Vite dev:** `client/vite.config.js` proxies same-origin `/api` to `http://127.0.0.1:8000` so `fetch('/api/...')` and `curl http://127.0.0.1:8000/...` hit the same process when `VITE_OPEN_CASE_API_BASE` is unset. Set that env to a full URL to target a remote API.
 
-**Public demo (optional):** When `OPEN_CASE_PUBLIC_DEMO=1`, unauthenticated routes under `/api/v1/demo/*` run a fixed senator cohort through the real `execute_investigation_for_case` pipeline (server must still hold FEC/Congress keys in env). React path: `/app/demo` in production (static `base`), `/demo` in Vite dev. See `routes/demo.py` and `.env.example`.
+**Public demo (optional):** When `OPEN_CASE_PUBLIC_DEMO=1`, unauthenticated routes under `/api/v1/demo/*` run a fixed senator cohort through the real `execute_investigation_for_case` pipeline (server must still hold FEC/Congress keys in env). React path: `/app/demo` in production (static `base`), `/demo` in Vite dev. See `routes/demo.py` and `.env.example`. **`GET /api/v1/cases/lookup-by-bioguide/{id}`** returns the newest case for a bioguide so `/official/{bioguide}` can redirect to the investigate **case UUID** view. **`demo_internal_signals=1`** on **`GET /api/v1/cases/{id}/report`** (and HTML/card variants) includes quarantined/human-review signal rows **only** for demo-slug or `demo_public` cases.
 
 **Architecture shape:** Subject-type-driven. A `data/subject_type_sources.json` registry maps each subject type to ordered adapter lists in tiers (`primary`, `secondary`, `judicial`, `local`, `historical`, …). A `ResearchProfile` class in `services/research_profile.py` reads this registry. **The research algorithm is mostly uniform** — gather evidence, score proximity, sign receipt — but **the Indianapolis local pilot** also has explicit adapter choices in `routes/investigate.py` (e.g. required `idis` + `indy_*` for `government_level=local`); that path is not “registry-only,” so do not assume every row in the JSON is wired end-to-end yet.
 

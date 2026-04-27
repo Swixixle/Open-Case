@@ -67,6 +67,25 @@ export default function DemoPage() {
     return cohort.figures.slice(0, n).map((f) => ({ id: f.id, name: f.name }));
   }, [cohort, maxFigures]);
 
+  /** figure_id → case UUID for links to /official/{caseId} (persisted investigate report). */
+  const demoCaseByFigure = useMemo(() => {
+    const map = {};
+    const merge = (figures) => {
+      if (!Array.isArray(figures)) return;
+      for (const f of figures) {
+        if (f?.figure_id && f?.case_id) map[f.figure_id] = f.case_id;
+      }
+    };
+    merge(report?.figures);
+    try {
+      const raw = typeof localStorage !== "undefined" ? localStorage.getItem("openCaseDemoReport") : null;
+      if (raw) merge(JSON.parse(raw)?.figures);
+    } catch {
+      /* ignore */
+    }
+    return map;
+  }, [report]);
+
   const sharePageUrl = typeof window !== "undefined" ? window.location.href : "";
 
   const summary = report?.cohort_summary;
@@ -169,14 +188,19 @@ export default function DemoPage() {
         <section className="oc-demo-section">
           <h2>Cohort ({cohort.figures.length})</h2>
           <ul className="oc-demo-cohort">
-            {cohort.figures.map((f) => (
-              <li key={f.id}>
-                <strong>{f.name}</strong> ({f.party}-{f.state}){" "}
-                <Link to={`/official/${f.bioguide_id}`}>Profile</Link>
-                {" · "}
-                <Link to={`/demo/figure/${encodeURIComponent(f.id)}`}>Demo detail</Link>
-              </li>
-            ))}
+            {cohort.figures.map((f) => {
+                const caseId = demoCaseByFigure[f.id];
+                return (
+                  <li key={f.id}>
+                    <strong>{f.name}</strong> ({f.party}-{f.state}){" "}
+                    <Link to={caseId ? `/official/${caseId}` : `/official/${f.bioguide_id}`}>
+                      {caseId ? "Investigation profile" : "Profile"}
+                    </Link>
+                    {" · "}
+                    <Link to={`/demo/figure/${encodeURIComponent(f.id)}`}>Demo detail</Link>
+                  </li>
+                );
+              })}
           </ul>
         </section>
       )}
@@ -244,10 +268,16 @@ export default function DemoPage() {
                           View signed report →
                         </a>
                       )}
-                      {fig.bioguide_id && (
-                        <Link to={`/official/${fig.bioguide_id}`} className="oc-demo-action-btn">
-                          View profile →
+                      {fig.case_id ? (
+                        <Link to={`/official/${fig.case_id}`} className="oc-demo-action-btn">
+                          View case profile →
                         </Link>
+                      ) : (
+                        fig.bioguide_id && (
+                          <Link to={`/official/${fig.bioguide_id}`} className="oc-demo-action-btn">
+                            View profile →
+                          </Link>
+                        )
                       )}
                       <Link to={`/demo/figure/${encodeURIComponent(fig.figure_id)}`} className="oc-demo-action-btn">
                         Demo detail →

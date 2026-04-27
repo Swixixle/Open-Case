@@ -39,10 +39,15 @@ export async function fetchCasesList(params = {}) {
 
 /**
  * @param {string} caseId
- * @param {{ signal?: AbortSignal } | undefined} opts
+ * @param {{ signal?: AbortSignal, demoInternalSignals?: boolean } | undefined} opts
  */
 export async function fetchCaseReport(caseId, opts) {
-  const url = apiUrl(`/api/v1/cases/${encodeURIComponent(caseId)}/report`);
+  const q = new URLSearchParams();
+  if (opts?.demoInternalSignals) q.set("demo_internal_signals", "1");
+  const qs = q.toString();
+  const url = apiUrl(
+    `/api/v1/cases/${encodeURIComponent(caseId)}/report${qs ? `?${qs}` : ""}`,
+  );
   if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
     console.info("[open-case] fetchCaseReport start", { caseId, url: url.slice(0, 80) });
@@ -81,6 +86,21 @@ export async function fetchCaseReport(caseId, opts) {
       // eslint-disable-next-line no-console
       console.error("[open-case] fetchCaseReport: JSON parse failed", e);
     }
+    return null;
+  }
+}
+
+/** Newest investigate case for a bioguide id (404 if none). */
+export async function fetchCaseLookupByBioguide(bioguideId) {
+  const bg = encodeURIComponent(bioguideId || "");
+  const res = await fetch(apiUrl(`/api/v1/cases/lookup-by-bioguide/${bg}`), {
+    headers: apiHeaders(),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) return null;
+  try {
+    return await res.json();
+  } catch {
     return null;
   }
 }

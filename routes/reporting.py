@@ -59,6 +59,16 @@ def get_base_url() -> str:
     return os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
 
 
+def _is_demo_case_file(case: CaseFile) -> bool:
+    """Public-demo / batch-demo cases: relax signal visibility when client requests demo_internal_signals."""
+    slug_l = (case.slug or "").strip().lower()
+    if slug_l.startswith("open-case-public-demo-"):
+        return True
+    demo_handle = (os.getenv("OPEN_CASE_DEMO_INVESTIGATOR_HANDLE") or "demo_public").strip().lower()
+    creator = (case.created_by or "").strip().lower()
+    return bool(creator) and creator == demo_handle
+
+
 def _visible_evidence_rows(
     entries: list[EvidenceEntry], include_unreviewed: bool
 ) -> list[EvidenceEntry]:
@@ -557,6 +567,7 @@ def _collect_report_payload(
     *,
     include_unreviewed: bool = False,
     section: str | None = None,
+    demo_include_internal_signals: bool = False,
 ) -> dict[str, Any]:
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
@@ -620,12 +631,16 @@ def _collect_report_payload(
     source_lines = _source_status_lines(case)
     signal_rows_active = [
         _signal_to_report_row(
-            db, s, source_lines, include_unreviewed=include_unreviewed
+            db,
+            s,
+            source_lines,
+            include_unreviewed=include_unreviewed or demo_include_internal_signals,
         )
         for s in signals
         if not s.dismissed
     ]
-    if not include_unreviewed:
+    relax_signal_filter = include_unreviewed or demo_include_internal_signals
+    if not relax_signal_filter:
         signal_rows_active = [
             r for r in signal_rows_active if not r.get("requires_human_review")
         ]
@@ -659,7 +674,7 @@ def _collect_report_payload(
         votes,
         signal_rows_active,
         pattern_rows,
-        include_unreviewed,
+        include_unreviewed or demo_include_internal_signals,
     )
     epistemic_distribution = epistemic_distribution_from_entries(
         [e for e in _visible_evidence_rows(all_evidence, include_unreviewed) if not e.is_absence]
@@ -877,6 +892,35 @@ def list_cases_api(
     }
 
 
+@router.get("/cases/lookup-by-bioguide/{bioguide_id}")
+def lookup_case_by_bioguide(
+    bioguide_id: str,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Resolve the newest CaseFile for a Congress bioguide_id (investigate pipeline / demo cases).
+    Used when the UI opens /official/{bioguide} but only a case report exists (no senator dossier).
+    """
+    bg = (bioguide_id or "").strip().upper()
+    if not bg or len(bg) > 12:
+        raise HTTPException(status_code=400, detail="Invalid bioguide_id")
+    case = db.scalar(
+        select(CaseFile)
+        .join(SubjectProfile, SubjectProfile.case_file_id == CaseFile.id)
+        .where(SubjectProfile.bioguide_id == bg)
+        .order_by(CaseFile.created_at.desc())
+        .limit(1)
+    )
+    if not case:
+        raise HTTPException(status_code=404, detail="No case for bioguide_id")
+    return {
+        "case_id": str(case.id),
+        "slug": case.slug,
+        "subject_name": case.subject_name,
+        "subject_type": case.subject_type,
+    }
+
+
 @router.get("/cases/{case_id}/report")
 async def get_case_report(
     case_id: uuid.UUID,
@@ -884,12 +928,17 @@ async def get_case_report(
     db: Session = Depends(get_db),
     section: str | None = Query(None),
     include_unreviewed: bool = Query(False),
+    demo_internal_signals: bool = Query(
+        False,
+        description="For demo/batch cases only: include quarantined human-review signal rows.",
+    ),
     x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> dict[str, Any]:
     _enforce_report_query_params(section, include_unreviewed, x_admin_secret)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    demo_relaxed = bool(demo_internal_signals) and _is_demo_case_file(case)
     pending = case_needs_fec_refresh(db, case_id, case)
     if pending:
         background_tasks.add_task(report_pattern_refresh_task, case_id)
@@ -899,6 +948,7 @@ async def get_case_report(
         bump_view=True,
         include_unreviewed=include_unreviewed,
         section=section,
+        demo_include_internal_signals=demo_relaxed,
     )
     _attach_pattern_refresh_meta(report, case_id, pending)
     return report
@@ -912,12 +962,14 @@ async def get_case_report_html(
     db: Session = Depends(get_db),
     section: str | None = Query(None),
     include_unreviewed: bool = Query(False),
+    demo_internal_signals: bool = Query(False),
     x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> Any:
     _enforce_report_query_params(section, include_unreviewed, x_admin_secret)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    demo_relaxed = bool(demo_internal_signals) and _is_demo_case_file(case)
     pending = case_needs_fec_refresh(db, case_id, case)
     if pending:
         background_tasks.add_task(report_pattern_refresh_task, case_id)
@@ -927,6 +979,7 @@ async def get_case_report_html(
         bump_view=True,
         include_unreviewed=include_unreviewed,
         section=section,
+        demo_include_internal_signals=demo_relaxed,
     )
     _attach_pattern_refresh_meta(report, case_id, pending)
     return _TEMPLATES.TemplateResponse(
@@ -944,12 +997,14 @@ async def get_case_receipt_card(
     db: Session = Depends(get_db),
     section: str | None = Query(None),
     include_unreviewed: bool = Query(False),
+    demo_internal_signals: bool = Query(False),
     x_admin_secret: str | None = Header(None, alias="X-Admin-Secret"),
 ) -> HTMLResponse:
     _enforce_report_query_params(section, include_unreviewed, x_admin_secret)
     case = db.scalar(select(CaseFile).where(CaseFile.id == case_id))
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
+    demo_relaxed = bool(demo_internal_signals) and _is_demo_case_file(case)
     pending = case_needs_fec_refresh(db, case_id, case)
     if pending:
         background_tasks.add_task(report_pattern_refresh_task, case_id)
@@ -959,6 +1014,7 @@ async def get_case_receipt_card(
         bump_view=False,
         include_unreviewed=include_unreviewed,
         section=section,
+        demo_include_internal_signals=demo_relaxed,
     )
     _attach_pattern_refresh_meta(report, case_id, pending)
     released = [

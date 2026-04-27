@@ -60,12 +60,20 @@ export default function DemoFigurePage() {
                 </a>
               </p>
             )}
-            {data.bioguide_id && (
+            {data.case_id ? (
               <p>
-                <Link to={`/official/${data.bioguide_id}`} className="oc-demo-text-link">
-                  Client profile →
+                <Link to={`/official/${data.case_id}`} className="oc-demo-text-link">
+                  Investigation profile (case) →
                 </Link>
               </p>
+            ) : (
+              data.bioguide_id && (
+                <p>
+                  <Link to={`/official/${data.bioguide_id}`} className="oc-demo-text-link">
+                    Profile (bioguide) →
+                  </Link>
+                </p>
+              )
             )}
           </section>
           <section className="oc-demo-section">
