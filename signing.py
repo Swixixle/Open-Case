@@ -5,8 +5,10 @@ JCS canonicalization, SHA-256 digest (hex), sign digest as UTF-8 bytes, base64 s
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,45 @@ from cryptography.hazmat.primitives.serialization import (
     load_der_public_key,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _decode_private_key_b64(priv_b64: str) -> Ed25519PrivateKey | None:
+    """Return PKCS8 DER Ed25519 private key, or None if base64/DER is invalid."""
+    try:
+        raw = base64.b64decode(priv_b64.strip(), validate=False)
+        return load_der_private_key(raw, password=None)
+    except (ValueError, binascii.Error):
+        return None
+
+
+def _public_der_matches_private(sk: Ed25519PrivateKey, pub_b64: str) -> bool:
+    try:
+        want = sk.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+        got = base64.b64decode(pub_b64.strip(), validate=False)
+        return want == got
+    except (ValueError, binascii.Error):
+        return False
+
+
+def _persist_signing_keys_env(env_path: Path, priv_b64: str, pub_b64: str) -> None:
+    line_priv = f"OPEN_CASE_PRIVATE_KEY={priv_b64}"
+    line_pub = f"OPEN_CASE_PUBLIC_KEY={pub_b64}"
+    if env_path.exists():
+        text = env_path.read_text()
+        lines = [
+            ln
+            for ln in text.splitlines()
+            if not (
+                ln.strip().startswith("OPEN_CASE_PRIVATE_KEY=")
+                or ln.strip().startswith("OPEN_CASE_PUBLIC_KEY=")
+            )
+        ]
+        lines.extend([line_priv, line_pub])
+        env_path.write_text("\n".join(lines) + "\n")
+    else:
+        env_path.write_text(line_priv + "\n" + line_pub + "\n")
+
 
 def _load_private_key() -> Ed25519PrivateKey | None:
     from core.credentials import CredentialRegistry, CredentialUnavailable
@@ -32,7 +73,13 @@ def _load_private_key() -> Ed25519PrivateKey | None:
         raw = ""
     if not raw:
         return None
-    return load_der_private_key(base64.b64decode(raw), password=None)
+    try:
+        return load_der_private_key(base64.b64decode(raw.strip(), validate=False), password=None)
+    except binascii.Error as e:
+        raise ValueError(
+            "OPEN_CASE_PRIVATE_KEY is not valid base64 (often truncated when copy-pasting). "
+            "Fix or remove it in .env, or run: python3 scripts/regenerate_open_case_signing_keys.py"
+        ) from e
 
 
 def generate_keypair() -> tuple[str, str]:
@@ -151,27 +198,65 @@ def verify_signed_hash_string(
 
 
 def bootstrap_env_keys(project_root: Path | None = None) -> None:
-    """If keys are missing, generate a keypair and persist public (and private) key to .env."""
+    """
+    Ensure .env has a usable Ed25519 PKCS8 DER keypair.
+
+    - Missing or invalid private key → generate new pair (prior seals will not verify with old keys).
+    - Valid private, missing/mismatched public → derive public from private and save.
+    """
     root = project_root or Path(__file__).resolve().parent
     env_path = root / ".env"
     from dotenv import load_dotenv
 
     load_dotenv(env_path)
-    if os.environ.get("OPEN_CASE_PRIVATE_KEY") and os.environ.get("OPEN_CASE_PUBLIC_KEY"):
+    priv_s = (os.environ.get("OPEN_CASE_PRIVATE_KEY") or "").strip()
+    pub_s = (os.environ.get("OPEN_CASE_PUBLIC_KEY") or "").strip()
+
+    sk = _decode_private_key_b64(priv_s) if priv_s else None
+    if sk is not None:
+        if not pub_s:
+            new_pub = base64.b64encode(
+                sk.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+            ).decode()
+            logger.info("OPEN_CASE_PUBLIC_KEY was missing; derived from private and wrote to .env.")
+            _persist_signing_keys_env(env_path, priv_s, new_pub)
+            os.environ["OPEN_CASE_PUBLIC_KEY"] = new_pub
+            return
+        if _public_der_matches_private(sk, pub_s):
+            return
+        logger.warning(
+            "OPEN_CASE_PUBLIC_KEY did not match OPEN_CASE_PRIVATE_KEY; replacing public key in .env."
+        )
+        new_pub = base64.b64encode(
+            sk.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+        ).decode()
+        _persist_signing_keys_env(env_path, priv_s, new_pub)
+        os.environ["OPEN_CASE_PUBLIC_KEY"] = new_pub
         return
 
-    priv, pub = generate_keypair()
-    line_priv = f"OPEN_CASE_PRIVATE_KEY={priv}\n"
-    line_pub = f"OPEN_CASE_PUBLIC_KEY={pub}\n"
-
-    if env_path.exists():
-        text = env_path.read_text()
-        lines = [ln for ln in text.splitlines() if not ln.startswith("OPEN_CASE_")]
-        lines.append(line_priv.strip())
-        lines.append(line_pub.strip())
-        env_path.write_text("\n".join(lines) + "\n")
+    if priv_s:
+        logger.warning(
+            "OPEN_CASE_PRIVATE_KEY is missing or not valid base64/DER Ed25519 (common: truncated paste). "
+            "Generating a new keypair; existing seals will not verify against old keys."
+        )
     else:
-        env_path.write_text(line_priv + line_pub)
+        logger.info("OPEN_CASE signing keys not set; generating new Ed25519 keypair for .env.")
 
-    os.environ["OPEN_CASE_PRIVATE_KEY"] = priv
-    os.environ["OPEN_CASE_PUBLIC_KEY"] = pub
+    new_priv, new_pub = generate_keypair()
+    _persist_signing_keys_env(env_path, new_priv, new_pub)
+    os.environ["OPEN_CASE_PRIVATE_KEY"] = new_priv
+    os.environ["OPEN_CASE_PUBLIC_KEY"] = new_pub
+
+
+def regenerate_signing_keys_in_dotenv(project_root: Path | None = None) -> None:
+    """
+    Force a new keypair into .env and os.environ. Use when rotating keys or fixing corruption.
+    Invalidates prior receipt seals for verification with the old public key.
+    """
+    root = project_root or Path(__file__).resolve().parent
+    env_path = root / ".env"
+    new_priv, new_pub = generate_keypair()
+    _persist_signing_keys_env(env_path, new_priv, new_pub)
+    os.environ["OPEN_CASE_PRIVATE_KEY"] = new_priv
+    os.environ["OPEN_CASE_PUBLIC_KEY"] = new_pub
+    logger.warning("Regenerated OPEN_CASE signing keys in %s", env_path)

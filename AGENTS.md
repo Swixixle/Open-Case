@@ -3,9 +3,9 @@
 > **For AI coding assistants (Cursor, Claude, Cowork, Copilot, etc.):** Read **`AGENTS.md`** first. It is the authoritative **short-form** state of the project. Longer file-by-file history and architecture notes live in `docs/internal/PROJECT_STATE.md`, which may lag (see its header dates).
 
 **Last updated:** 2026-04-26  
-**Last verified:** 2026-04-26 (pytest `tests/test_public_demo.py` + engine v2.7; full-suite green not re-run this session)  
+**Last verified:** 2026-04-26 (pytest `tests/test_signing_bootstrap.py`, `tests/test_public_demo.py`; full-suite green not re-run this session)  
 **Pattern engine version:** v2.7  
-**Test count:** 395 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); CI floor still ≥201 passed (`server/scripts/ci_pytest_floor.py`)  
+**Test count:** 399 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); CI floor still ≥201 passed (`server/scripts/ci_pytest_floor.py`)  
 **CI floor:** ≥201 passed (`server/scripts/ci_pytest_floor.py`; invoked from `.github/workflows/ci.yml`)
 
 ---
