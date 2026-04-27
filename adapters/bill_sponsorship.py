@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
 from core.credentials import CredentialRegistry, CredentialUnavailable
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,7 @@ BASE = "https://api.congress.gov/v3/member"
 PER_PAGE = 25
 MAX_BILLS_PER_ROLE = 120  # soft cap per endpoint to keep investigate bounded
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; OpenCase/1.0) bill-sponsorship",
-    "Accept": "application/json",
-}
+HEADERS = CONGRESS_GOV_BROWSER_HEADERS
 
 
 def _norm_bill_type(raw: str) -> str:

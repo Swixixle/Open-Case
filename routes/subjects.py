@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
 from core.subject_name_match import subject_name_match_score
 from database import get_db
 from models import CaseFile, SubjectProfile
@@ -400,7 +401,9 @@ async def search_subjects(
                 "query": name,
                 "limit": list_limit,
             }
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(
+                timeout=10.0, headers=CONGRESS_GOV_BROWSER_HEADERS
+            ) as client:
                 response = await client.get(url, params=params)
                 data = response.json()
 

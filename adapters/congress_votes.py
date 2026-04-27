@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
 from core.credentials import CredentialRegistry
 
 logger = logging.getLogger(__name__)
@@ -23,11 +24,6 @@ MAX_ROLLS_SCAN = 400
 MAX_ROLL_CAP = 3500
 
 SENATE_XML_BASE = "https://www.senate.gov/legislative/LIS/roll_call_votes"
-
-DEFAULT_UA = (
-    "Mozilla/5.0 (compatible; OpenCase/1.0; +https://github.com/) "
-    "Congressional-research bot"
-)
 
 # Senate LIS XML lists `lis_member_id`, not Bioguide. Optional overrides when Congress.gov
 # profile match is unavailable. Verified from Senate vote XML (e.g. vote_119_1_00050.xml, 119th).
@@ -243,7 +239,9 @@ async def fetch_amendment_votes_for_member(
         "congress": congress,
     }
     try:
-        async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": DEFAULT_UA}) as client:
+        async with httpx.AsyncClient(
+            timeout=20.0, headers=CONGRESS_GOV_BROWSER_HEADERS
+        ) as client:
             r = await client.get(
                 f"https://api.congress.gov/v3/member/{bg}/votes",
                 params=params,
@@ -561,21 +559,18 @@ def _lis_document_to_api_bill(
     return None
 
 
-def _bioguides_from_bill_endpoint(payload: Any) -> set[str]:
+def _bioguides_from_member_list(raw: Any) -> set[str]:
+    """Extract bioguide IDs from a sponsors/cosponsors list or wrapped object."""
     out: set[str] = set()
-    if not isinstance(payload, dict):
-        return out
-    raw = payload.get("sponsors")
-    if raw is None:
-        raw = payload.get("cosponsors")
-    if raw is None:
-        return out
-
+    if isinstance(raw, dict) and (raw.get("bioguideId") or raw.get("bioguide_id")):
+        bid = raw.get("bioguideId") or raw.get("bioguide_id")
+        if bid:
+            return {str(bid).strip().upper()}
     items: list[Any] | None
     if isinstance(raw, list):
         items = raw
     elif isinstance(raw, dict):
-        inner = raw.get("sponsor") or raw.get("cosponsor")
+        inner = raw.get("sponsor") or raw.get("cosponsor") or raw.get("item")
         if isinstance(inner, list):
             items = inner
         elif isinstance(inner, dict):
@@ -593,6 +588,31 @@ def _bioguides_from_bill_endpoint(payload: Any) -> set[str]:
         if bid:
             out.add(str(bid).strip().upper())
     return out
+
+
+def _bioguides_sponsors_from_full_bill_payload(payload: Any) -> set[str]:
+    """
+    Primary sponsors from ``GET /v3/bill/{congress}/{type}/{number}``.
+    Congress.gov v3 does not implement ``/sponsors``; sponsors sit on ``bill.sponsors``.
+    """
+    if not isinstance(payload, dict):
+        return set()
+    bill = payload.get("bill")
+    if not isinstance(bill, dict):
+        return set()
+    return _bioguides_from_member_list(bill.get("sponsors"))
+
+
+def _bioguides_from_bill_endpoint(payload: Any) -> set[str]:
+    """Sponsors or cosponsors list from a list endpoint payload (e.g. ``/cosponsors``)."""
+    if not isinstance(payload, dict):
+        return set()
+    raw = payload.get("sponsors")
+    if raw is None:
+        raw = payload.get("cosponsors")
+    if raw is None:
+        return set()
+    return _bioguides_from_member_list(raw)
 
 
 async def _apply_cosponsorship_flags(
@@ -631,14 +651,14 @@ async def _apply_cosponsorship_flags(
     base = f"https://api.congress.gov/v3/bill/{cong_i}/{btype}/{bnum}"
     params = {"api_key": key, "format": "json"}
     try:
-        sp_resp = await client.get(f"{base}/sponsors", params=params, timeout=20.0)
+        bill_resp = await client.get(base, params=params, timeout=20.0)
         cs_resp = await client.get(f"{base}/cosponsors", params=params, timeout=20.0)
-        sp_json = sp_resp.json() if sp_resp.status_code == 200 else {}
+        bill_json = bill_resp.json() if bill_resp.status_code == 200 else {}
         cs_json = cs_resp.json() if cs_resp.status_code == 200 else {}
     except Exception:
         return
 
-    sponsors = _bioguides_from_bill_endpoint(sp_json)
+    sponsors = _bioguides_sponsors_from_full_bill_payload(bill_json)
     cosponsors = _bioguides_from_bill_endpoint(cs_json)
     vote["subject_is_sponsor"] = bg in sponsors
     vote["subject_is_cosponsor"] = bool(bg in cosponsors and bg not in sponsors)
@@ -677,9 +697,9 @@ class CongressVotesAdapter(BaseAdapter):
             else "credential_unavailable"
         )
 
-        headers = {"User-Agent": DEFAULT_UA}
-
-        async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0, headers=CONGRESS_GOV_BROWSER_HEADERS, follow_redirects=True
+        ) as client:
             profile = await _fetch_member_identity(client, bioguide_id)
             if not profile and not LIS_MEMBER_ID_BY_BIOGUIDE.get(bioguide_id.upper()):
                 logger.warning(
@@ -912,7 +932,9 @@ class CongressVotesAdapter(BaseAdapter):
             "limit": 5,
         }
 
-        async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": DEFAULT_UA}) as client:
+        async with httpx.AsyncClient(
+            timeout=20.0, headers=CONGRESS_GOV_BROWSER_HEADERS
+        ) as client:
             response = await client.get(
                 "https://api.congress.gov/v3/member", params=params
             )

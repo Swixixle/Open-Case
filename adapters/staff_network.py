@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from adapters.cache import get_cached_raw_json, store_cached_raw_json
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
 from core.credentials import CredentialRegistry
 from models import EvidenceEntry
 from services.perplexity_router import (
@@ -42,6 +43,7 @@ HEADERS_HTTP = {
         "Mozilla/5.0 (compatible; OpenCase/1.0; +https://github.com/) congressional-research"
     )
 }
+HEADERS_CONGRESS_SITES = CONGRESS_GOV_BROWSER_HEADERS
 
 PERPLEXITY_STAFF_SYSTEM = """You extract senior U.S. Senate office staff from the user-provided context and query.
 Return only a JSON array: [{"name": "Full Name", "role": "Chief of Staff"}].
@@ -307,7 +309,9 @@ async def _fetch_bioguide_contact_excerpt(client: httpx.AsyncClient, bioguide_id
     ]
     for url in urls:
         try:
-            r = await client.get(url, timeout=25.0, headers=HEADERS_HTTP, follow_redirects=True)
+            r = await client.get(
+                url, timeout=25.0, headers=HEADERS_CONGRESS_SITES, follow_redirects=True
+            )
             if r.status_code == 200 and len(r.text) > 200:
                 return _strip_html_to_text(r.text)[:15000]
         except Exception as e:
@@ -323,7 +327,7 @@ async def _fetch_congress_gov_member(
     params = {"api_key": api_key, "format": "json"}
     try:
         resp = await async_http_request_with_retry(
-            client, "GET", url, params=params, headers=HEADERS_HTTP
+            client, "GET", url, params=params, headers=HEADERS_CONGRESS_SITES
         )
         data = resp.json()
     except Exception as e:

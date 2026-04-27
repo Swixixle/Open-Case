@@ -12,7 +12,8 @@ import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from adapters.congress_votes import DEFAULT_UA, _US_STATE_ABBR, _fetch_member_identity
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
+from adapters.congress_votes import _US_STATE_ABBR, _fetch_member_identity
 from models import CaseFile, EvidenceEntry, SenatorCommittee, SubjectProfile, utc_now
 
 logger = logging.getLogger(__name__)
@@ -163,8 +164,9 @@ async def fetch_committee_assignments_for_bioguide(
     Live fetch (no DB). Each dict: committee_name, committee_code.
     """
     bioguide_id = bioguide_id.strip().upper()
-    headers = {"User-Agent": DEFAULT_UA}
-    async with httpx.AsyncClient(timeout=45.0, headers=headers, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=45.0, headers=CONGRESS_GOV_BROWSER_HEADERS, follow_redirects=True
+    ) as client:
         profile = await _fetch_member_identity(client, bioguide_id)
         html = await _download_assignments_html(client)
         if not profile:
@@ -190,8 +192,9 @@ async def fetch_committee_assignments_for_bioguide_fallback(
         return []
     last, abbr = parts
     anchor = f"{_sanitize_last_for_anchor(last)}{abbr}"
-    headers = {"User-Agent": DEFAULT_UA}
-    async with httpx.AsyncClient(timeout=45.0, headers=headers, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=45.0, headers=CONGRESS_GOV_BROWSER_HEADERS, follow_redirects=True
+    ) as client:
         html = await _download_assignments_html(client)
     return _assignments_from_html(html, anchor, bg)
 

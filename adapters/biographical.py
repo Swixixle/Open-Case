@@ -14,15 +14,13 @@ from typing import Any
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
 from core.credentials import CredentialRegistry, CredentialUnavailable
 
 logger = logging.getLogger(__name__)
 
 BASE = "https://api.congress.gov/v3/member"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; OpenCase/1.0) biographical",
-    "Accept": "application/json",
-}
+HEADERS = CONGRESS_GOV_BROWSER_HEADERS
 
 
 def _terms_as_list(member: dict[str, Any]) -> list[dict[str, Any]]:

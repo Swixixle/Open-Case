@@ -15,16 +15,14 @@ from typing import Any
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
 from adapters.govinfo_hearings import current_congress_number
 from core.credentials import CredentialRegistry, CredentialUnavailable
 
 logger = logging.getLogger(__name__)
 
 BASE = "https://api.congress.gov/v3"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; OpenCase/1.0) committee-assignments",
-    "Accept": "application/json",
-}
+HEADERS = CONGRESS_GOV_BROWSER_HEADERS
 
 
 def public_congress_gov_url_from_api(api_url: str) -> str:

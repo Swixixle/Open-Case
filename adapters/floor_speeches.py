@@ -13,15 +13,13 @@ from typing import Any
 import httpx
 
 from adapters.base import AdapterResponse, AdapterResult, BaseAdapter
+from adapters.congress_gov_headers import CONGRESS_GOV_BROWSER_HEADERS
 from adapters.govinfo_hearings import current_congress_number
 from core.credentials import CredentialRegistry, CredentialUnavailable
 
 BASE = "https://api.congress.gov/v3"
 MAX_ISSUES = 100
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; OpenCase/1.0) floor-speeches",
-    "Accept": "application/json",
-}
+HEADERS = CONGRESS_GOV_BROWSER_HEADERS
 
 CREC_WARNING = (
     "Congress.gov returns Congressional Record *issues* (daily volumes) for this "
@@ -85,6 +83,22 @@ def _crec_directory_url(full_pdf: str, congress: int) -> str:
     if full_pdf.startswith("http") and "/crec/" in full_pdf:
         return full_pdf.rsplit("/", 1)[0] + "/"
     return f"https://www.congress.gov/congressional-record/{int(congress)}th-congress"
+
+
+def _crec_issue_folder_from_metadata(
+    congress: int, publish_date: str | None, volume: int, issue: int
+) -> str | None:
+    """
+    When the API omits ``FullRecord`` PDF links, build the directory path Congress.gov
+    uses: ``/{congress}/crec/{YYYY}/{MM}/{DD}/{volume}/{issue}/``.
+    """
+    pub = publish_date or ""
+    if len(pub) != 10 or pub[4] != "-" or pub[7] != "-":
+        return None
+    if volume <= 0 or issue <= 0:
+        return None
+    y, mo, d = pub[0:4], pub[5:7], pub[8:10]
+    return f"https://www.congress.gov/{int(congress)}/crec/{y}/{mo}/{d}/{volume}/{issue}/"
 
 
 def _row_hash_id(rows: list[dict[str, Any]], bg: str) -> str:
@@ -201,7 +215,11 @@ class FloorSpeechesAdapter(BaseAdapter):
                 continue
             links = iss.get("Links") or iss.get("links")
             chamber = _chamber_label(links)
-            full_pdf = _full_record_url(links) or f"https://www.congress.gov/crec/{c_iss}/"
+            full_pdf = _full_record_url(links)
+            if not full_pdf:
+                full_pdf = _crec_issue_folder_from_metadata(c_iss, pub, vol, num) or (
+                    f"https://www.congress.gov/crec/{c_iss}/"
+                )
             source_page = _crec_directory_url(full_pdf, c_iss)
             tags = [f"congress={c_iss}", f"bioguide={bg}", "crec_issue"]
             excerpt = (
