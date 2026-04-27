@@ -31,6 +31,7 @@ from routes.admin import router as admin_router
 from routes.assist import router as assist_router
 from routes.auth import router as auth_router
 from routes.cases import router as cases_router
+from routes.demo import router as demo_router
 from routes.entity_resolution import router as entity_resolution_router
 from routes.evidence_disambig import router as evidence_disambig_router
 from routes.findings import router as findings_router
@@ -185,9 +186,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="OPEN CASE", version="0.2.0", lifespan=lifespan)
 
+_cors_origins = ["http://localhost:5173"]
+_extra_cors = os.getenv("OPEN_CASE_CORS_ORIGINS", "").strip()
+if _extra_cors:
+    _cors_origins.extend(
+        o.strip() for o in _extra_cors.split(",") if o.strip() and o.strip() not in _cors_origins
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -203,6 +211,7 @@ app.include_router(admin_router)
 app.include_router(assist_router)
 app.include_router(auth_router)
 app.include_router(cases_router)
+app.include_router(demo_router)
 app.include_router(entity_resolution_router)
 app.include_router(findings_router)
 app.include_router(investigate_router)

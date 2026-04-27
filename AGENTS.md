@@ -2,10 +2,10 @@
 
 > **For AI coding assistants (Cursor, Claude, Cowork, Copilot, etc.):** Read **`AGENTS.md`** first. It is the authoritative **short-form** state of the project. Longer file-by-file history and architecture notes live in `docs/internal/PROJECT_STATE.md`, which may lag (see its header dates).
 
-**Last updated:** 2026-04-23  
-**Last verified:** 2026-04-23 (pytest + engine v2.7; local E2E investigate for Todd Young with valid FEC key: evidence + signals produced)  
+**Last updated:** 2026-04-26  
+**Last verified:** 2026-04-26 (pytest `tests/test_public_demo.py` + engine v2.7; full-suite green not re-run this session)  
 **Pattern engine version:** v2.7  
-**Test count:** 354 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); last full run `354 passed` (`pytest tests/ -q | tail -3`)  
+**Test count:** 395 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); CI floor still ≥201 passed (`server/scripts/ci_pytest_floor.py`)  
 **CI floor:** ≥201 passed (`server/scripts/ci_pytest_floor.py`; invoked from `.github/workflows/ci.yml`)
 
 ---
@@ -17,6 +17,8 @@ Open Case is a government transparency investigation engine. It ingests public r
 **Stack:** FastAPI, SQLAlchemy, **SQLite by default** (Postgres typical in production), React/Vite frontend, Ed25519 signing (JCS canonicalization, SHA-256 digest), deployed on Render.
 
 **Vite dev:** `client/vite.config.js` proxies same-origin `/api` to `http://127.0.0.1:8000` so `fetch('/api/...')` and `curl http://127.0.0.1:8000/...` hit the same process when `VITE_OPEN_CASE_API_BASE` is unset. Set that env to a full URL to target a remote API.
+
+**Public demo (optional):** When `OPEN_CASE_PUBLIC_DEMO=1`, unauthenticated routes under `/api/v1/demo/*` run a fixed senator cohort through the real `execute_investigation_for_case` pipeline (server must still hold FEC/Congress keys in env). React path: `/app/demo` in production (static `base`), `/demo` in Vite dev. See `routes/demo.py` and `.env.example`.
 
 **Architecture shape:** Subject-type-driven. A `data/subject_type_sources.json` registry maps each subject type to ordered adapter lists in tiers (`primary`, `secondary`, `judicial`, `local`, `historical`, …). A `ResearchProfile` class in `services/research_profile.py` reads this registry. **The research algorithm is mostly uniform** — gather evidence, score proximity, sign receipt — but **the Indianapolis local pilot** also has explicit adapter choices in `routes/investigate.py` (e.g. required `idis` + `indy_*` for `government_level=local`); that path is not “registry-only,” so do not assume every row in the JSON is wired end-to-end yet.
 

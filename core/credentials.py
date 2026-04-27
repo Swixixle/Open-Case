@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.demo_credentials import get_demo_api_key_override
+
 # Adapters that may read a key from CREDENTIAL_DATA_DIR (see POST .../credentials/register).
 _FILE_FALLBACK_ADAPTERS: frozenset[str] = frozenset(
     {"fec", "congress", "regulations", "govinfo", "courtlistener"}
@@ -101,6 +103,9 @@ class CredentialRegistry:
         spec = cls.ADAPTERS.get(adapter_name)
         if not spec:
             raise ValueError(f"Unknown credential adapter: {adapter_name!r}")
+        demo_override = get_demo_api_key_override(adapter_name)
+        if demo_override is not None:
+            return demo_override
         env_var = spec["env_var"]
         raw = os.environ.get(env_var, "").strip()
         if raw:

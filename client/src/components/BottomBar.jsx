@@ -25,6 +25,7 @@ export default function BottomBar({ variant = "home", onShareReceipt }) {
 
   return (
     <nav className="oc-bottom-bar" aria-label="Quick actions">
+      <Link to="/demo">PUBLIC DEMO</Link>
       <Link to="/#directory">FIND SOURCES →</Link>
       <Link to="/#receipt">SHARE RECEIPT ↑</Link>
     </nav>

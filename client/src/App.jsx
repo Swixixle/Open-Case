@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
 import HomePage from "./pages/HomePage.jsx";
+import DemoPage from "./pages/DemoPage.jsx";
 import OfficialPage from "./pages/OfficialPage.jsx";
 import VerifyPage from "./pages/VerifyPage.jsx";
 
@@ -16,6 +17,7 @@ export default function App() {
     <BrowserRouter basename={basename}>
       <Routes>
         <Route path="/" element={<HomePage />} />
+        <Route path="/demo" element={<DemoPage />} />
         <Route path="/official/:id" element={<OfficialPage />} />
         <Route path="/senator/:bioguide_id" element={<LegacySenatorRedirect />} />
         <Route path="/verify/:dossier_id" element={<VerifyPage />} />

@@ -1,0 +1,148 @@
+.oc-demo-page {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 4rem;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  color: #0f172a;
+}
+
+.oc-demo-header h1 {
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.oc-demo-lead {
+  color: #334155;
+  margin-top: 0;
+}
+
+.oc-demo-nav {
+  margin-top: 1rem;
+}
+
+.oc-demo-nav a {
+  color: #1d4ed8;
+}
+
+.oc-demo-section {
+  margin-top: 2rem;
+}
+
+.oc-demo-cohort,
+.oc-demo-results {
+  padding-left: 1.25rem;
+}
+
+.oc-demo-cohort li,
+.oc-demo-results li {
+  margin-bottom: 0.35rem;
+}
+
+.oc-demo-muted {
+  color: #64748b;
+  font-size: 0.95rem;
+}
+
+.oc-demo-error {
+  color: #b91c1c;
+}
+
+.oc-demo-run-btn {
+  margin-top: 1rem;
+  padding: 0.65rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  background: #1d4ed8;
+  color: #fff;
+  border: none;
+  border-radius: 0.375rem;
+  cursor: pointer;
+}
+
+.oc-demo-run-btn:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.oc-demo-power {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  background: #f8fafc;
+  border-radius: 0.375rem;
+}
+
+.oc-demo-power label {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.oc-demo-power input {
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  margin-top: 0.25rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.oc-demo-cap {
+  display: block;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+
+.oc-demo-cap input {
+  display: block;
+  width: 6rem;
+  margin-top: 0.25rem;
+}
+
+.oc-demo-progress {
+  margin-top: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.oc-demo-pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 1rem;
+  border-radius: 0.375rem;
+  overflow: auto;
+  font-size: 0.85rem;
+}
+
+.oc-demo-epi {
+  font-weight: 600;
+  color: #4338ca;
+}
+
+.oc-demo-exports {
+  margin-top: 2rem;
+}
+
+.oc-demo-export-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.oc-demo-export-grid button {
+  padding: 0.4rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.375rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+.oc-demo-export-grid button:hover {
+  background: #f1f5f9;
+}
+
+.oc-demo-share-input {
+  width: 100%;
+  max-width: 40rem;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+}
