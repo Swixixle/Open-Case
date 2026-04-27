@@ -1,9 +1,18 @@
 import { useState } from "react";
+import { apiUrl } from "../../lib/api.js";
 
 /**
- * Triggers POST /api/v1/demo/investigate (public when OPEN_CASE_PUBLIC_DEMO=1 on server).
+ * POST /api/v1/demo/investigate — public when server sets OPEN_CASE_PUBLIC_DEMO=1.
+ * Styling matches app primary actions (oc-btn-sidebar: amber on dark card).
  */
-export default function RunDemoButton({ onBegin, onComplete, onError, customApiKeys, maxFigures }) {
+export default function RunDemoButton({
+  onBegin,
+  onComplete,
+  onError,
+  customApiKeys,
+  maxFigures,
+  cohortIds,
+}) {
   const [loading, setLoading] = useState(false);
 
   const handleRun = async () => {
@@ -11,14 +20,17 @@ export default function RunDemoButton({ onBegin, onComplete, onError, customApiK
     onBegin?.();
     try {
       const body = {};
+      if (Array.isArray(cohortIds) && cohortIds.length > 0) {
+        body.cohort = cohortIds;
+      }
       if (customApiKeys && Object.keys(customApiKeys).length > 0) {
         body.custom_api_keys = customApiKeys;
       }
-      if (maxFigures != null && maxFigures !== "") {
-        const n = Number(maxFigures);
-        if (!Number.isNaN(n)) body.max_figures = n;
+      const n = Number(maxFigures);
+      if (!Number.isNaN(n) && n >= 1 && n <= 7) {
+        body.max_figures = n;
       }
-      const res = await fetch("/api/v1/demo/investigate", {
+      const res = await fetch(apiUrl("/api/v1/demo/investigate"), {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(body),
@@ -49,9 +61,11 @@ export default function RunDemoButton({ onBegin, onComplete, onError, customApiK
       type="button"
       onClick={handleRun}
       disabled={loading}
-      className="oc-demo-run-btn"
+      className={`oc-btn-sidebar oc-demo-run-hero${loading ? " oc-demo-run-hero--loading" : ""}`}
     >
-      {loading ? "Running investigations (this may take several minutes)…" : "Run demo: full cohort investigations"}
+      {loading
+        ? "RUNNING INVESTIGATIONS…"
+        : "RUN DEMO INVESTIGATION →"}
     </button>
   );
 }

@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
 import HomePage from "./pages/HomePage.jsx";
 import DemoPage from "./pages/DemoPage.jsx";
+import DemoFigurePage from "./pages/DemoFigurePage.jsx";
 import OfficialPage from "./pages/OfficialPage.jsx";
 import VerifyPage from "./pages/VerifyPage.jsx";
 
@@ -18,6 +19,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/demo" element={<DemoPage />} />
+        <Route path="/demo/figure/:figureId" element={<DemoFigurePage />} />
         <Route path="/official/:id" element={<OfficialPage />} />
         <Route path="/senator/:bioguide_id" element={<LegacySenatorRedirect />} />
         <Route path="/verify/:dossier_id" element={<VerifyPage />} />
