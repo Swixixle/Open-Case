@@ -50,3 +50,16 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Belt / session tooling — runtime & machine-specific, not versioned.
+# (.gitignore has no inline comments — each note must be on its own line.)
+# IGNITION receipts, regenerated every session:
+ignition_data/
+# belt tool-generated runtime data (e.g. test-health history):
+belt/state/
+# machine-specific absolute paths; a belt-bootstrap tool will own generating it:
+/.mcp.json
+# personal one-off dev script; contains a local bearer token — never commit:
+/scripts/run_cruz_once.sh
+# stray nested checkout at repo root (full separate git repo, ~Apr 2026) — do not track:
+/Open-Case/
