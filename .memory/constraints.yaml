@@ -1,0 +1,27 @@
+non_negotiables:
+  - Ed25519 cryptographic receipts for all findings
+  - Deterministic pattern engine (no AI scoring)
+  - Epistemic tagging (VERIFIED/REPORTED/ALLEGED/DISPUTED/CONTEXTUAL)
+  - Source-driven classification only
+  - "Receipts not verdicts" philosophy
+
+forbidden_now:
+  - AI-generated credibility scoring
+  - Semantic claim matching
+  - Automated truth determination
+  - Subjective pattern weighting
+  - Opinion-based classification
+
+current_phase:
+  name: production_refinement
+  allowed:
+    - Bug fixes and data adapter improvements
+    - UI polish and UX refinement
+    - Test coverage expansion
+    - Pattern rule validation
+    - Performance optimization
+  disallowed:
+    - New pattern families requiring AI
+    - Verification scoring systems
+    - Automated dispute resolution
+    - Credibility ranking algorithms
