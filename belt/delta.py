@@ -5,9 +5,15 @@ The first belt trust tool. Deterministic, read-only, fail-loud. Pure git +
 filesystem; no LLM, no hand-maintained ledger. Every fact is computed from
 data that updates itself (git history, working tree, the .memory/ files).
 
-Anchor ("since when?"): the newest session log in .memory/sessions/ whose
-UTC timestamp can be parsed from its filename. If none exists, fall back to
-the last 7 days and say so. The anchor used is always printed.
+Anchor ("since when?"): the most recent session log in .memory/sessions/,
+ranked by an *effective* timestamp = max(timestamp parsed from filename,
+file mtime). Date-only /park filenames (session-YYYY-MM-DD-slug.md) parse to
+midnight — a lower bound on when that session actually ended — so a same-day
+full-timestamp log would otherwise outrank a later date-only park. Folding in
+the file's mtime recovers the real "last worked" instant; full-timestamp
+filenames are already precise, so max() leaves them unchanged. That same
+effective timestamp is used as --since. If no session log exists, fall back
+to the last 7 days and say so. The anchor used is always printed.
 
 Usage:
   python belt/delta.py           compact human report (### Delta block)
@@ -104,8 +110,32 @@ def parse_session_dt(filename: str) -> datetime | None:
         return None
 
 
+def _file_mtime_utc(path: str) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    except OSError:
+        return None
+
+
+def _effective_dt(filename_dt: datetime, mtime_dt: datetime | None) -> datetime:
+    """Real "last worked" instant: max(filename timestamp, file mtime).
+
+    A date-only filename parses to midnight — a *lower bound* on the session's
+    end — so mtime (when the log was actually written) refines it. A precise
+    full-timestamp filename is left unchanged when mtime ~= it.
+    """
+    if mtime_dt is None:
+        return filename_dt
+    return max(filename_dt, mtime_dt)
+
+
 def resolve_anchor(root: str, now: datetime) -> dict:
-    """Pick the anchor. Newest parseable session log, else 7-day fallback."""
+    """Pick the anchor: most recent session log by effective timestamp.
+
+    Effective timestamp = max(filename timestamp, mtime) so date-only /park
+    logs don't undersort beneath a same-day full-timestamp log. That same
+    value becomes --since. Falls back to a 7-day window if no log exists.
+    """
     sessions_dir = os.path.join(root, ".memory", "sessions")
     best_name: str | None = None
     best_dt: datetime | None = None
@@ -113,11 +143,13 @@ def resolve_anchor(root: str, now: datetime) -> dict:
         for name in os.listdir(sessions_dir):
             if not (name.startswith("session-") and name.endswith(".md")):
                 continue
-            dt = parse_session_dt(name)
-            if dt is None:
+            filename_dt = parse_session_dt(name)
+            if filename_dt is None:
                 continue
-            if best_dt is None or dt > best_dt:
-                best_dt, best_name = dt, name
+            mtime_dt = _file_mtime_utc(os.path.join(sessions_dir, name))
+            eff = _effective_dt(filename_dt, mtime_dt)
+            if best_dt is None or eff > best_dt:
+                best_dt, best_name = eff, name
 
     if best_dt is not None:
         return {
