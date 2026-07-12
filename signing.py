@@ -122,13 +122,37 @@ def sign_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def verify_signed_record(data: dict[str, Any], body_keys: frozenset[str]) -> dict[str, Any]:
+def verify_signed_record(
+    data: dict[str, Any],
+    body_keys: frozenset[str],
+    *,
+    trusted_public_key: str,
+) -> dict[str, Any]:
     """
-    Verify a signed dict that includes content_hash, signature, public_key and semantic fields.
-    body_keys: which top-level keys belong to the signed semantic payload (excludes crypto fields).
+    Verify a signed record against a public key pinned OUT OF BAND — never the
+    `public_key` embedded in the record.
+
+    Why the embedded key must not be trusted: the signature covers only
+    `content_hash` (the JCS digest of the semantic body). The `public_key`
+    field is appended *after* signing and is not covered, so an attacker can
+    forge a record with their own keypair and embed their own public key, and
+    it would "verify" against itself. Verifying a signature with the key shipped
+    next to it proves nothing.
+
+    Therefore `trusted_public_key` is required (keyword-only, no default — old
+    callers must be updated to pass a pinned key) and is the ONLY key used to
+    check the signature. A present-but-mismatched embedded key is treated as a
+    tamper signal and rejected; an absent embedded key does not affect the
+    verdict (it is display-only).
+
+    body_keys: top-level keys that belong to the signed semantic payload
+    (excludes crypto fields).
     """
     reasons: list[str] = []
-    pub_raw = data.get("public_key") or data.get("publicKey", "")
+    if not trusted_public_key or not trusted_public_key.strip():
+        return {"ok": False, "reasons": ["no trusted_public_key provided (fail closed)"]}
+    tpk = trusted_public_key.strip()
+
     sig_b64 = data.get("signature", "")
     stored_hash = data.get("content_hash") or data.get("contentHash", "")
 
@@ -138,17 +162,20 @@ def verify_signed_record(data: dict[str, Any], body_keys: frozenset[str]) -> dic
     if expected_hash != stored_hash:
         reasons.append("content_hash does not match signed semantic fields (JCS)")
 
-    if pub_raw and sig_b64:
-        try:
-            pub_key = load_der_public_key(base64.b64decode(pub_raw))
-            pub_key.verify(
-                base64.b64decode(sig_b64),
-                expected_hash.encode("utf-8"),
-            )
-        except Exception:
-            reasons.append("signature verification failed")
+    if not sig_b64:
+        reasons.append("missing signature")
     else:
-        reasons.append("missing public_key or signature")
+        try:
+            pub_key = load_der_public_key(base64.b64decode(tpk))
+            pub_key.verify(base64.b64decode(sig_b64), expected_hash.encode("utf-8"))
+        except Exception:
+            reasons.append("signature does not verify against trusted_public_key")
+
+    # Embedded public_key is display-only and NOT covered by the signature.
+    # If present it must match the pinned key; a mismatch is a tamper signal.
+    embedded = (data.get("public_key") or data.get("publicKey") or "").strip()
+    if embedded and embedded != tpk:
+        reasons.append("embedded public_key does not match trusted_public_key")
 
     return {"ok": len(reasons) == 0, "reasons": reasons}
 
