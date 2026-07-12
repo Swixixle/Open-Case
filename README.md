@@ -162,7 +162,7 @@ PYTHONPATH=. pytest tests/
 ```
 
 - **Full suite:** **344** tests collected (run locally to confirm current count).
-- **CI:** `.github/workflows/ci.yml` runs `server/scripts/ci_pytest_floor.py`, which requires **≥ 201** passed (regression floor). If the README cites “344,” that is the **current** full run; CI’s floor may lag until updated intentionally.
+- **CI:** `.github/workflows/ci.yml` runs `server/scripts/ci_pytest_floor.py`, which requires **≥ 210** passed (regression floor). **Note (enforcement history):** before the `pytest.ini` collection fix, `pytest` from the repo root aborted at *collection* — a stray root debug script (`test_narrative.py`) calls `sys.exit()` on import — so this floor was **not actually enforced** until that fix; it is enforced as of it. The full run is ~414 locally; CI’s floor is a **minimum** that may lag until raised intentionally.
 
 ---
 
