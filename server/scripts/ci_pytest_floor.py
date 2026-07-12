@@ -16,7 +16,7 @@ from pathlib import Path
 # server/scripts/ → repository root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-REGRESSION_FLOOR = 201
+REGRESSION_FLOOR = 210
 
 
 def main() -> int:
