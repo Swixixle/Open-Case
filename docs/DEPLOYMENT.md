@@ -129,7 +129,7 @@ PYTHONPATH=. pytest tests/
 
 **Full suite:** Run `PYTHONPATH=. pytest tests/` locally — **344** tests as of last README verification (count changes as tests are added).
 
-**CI regression floor:** `.github/workflows/ci.yml` runs `python server/scripts/ci_pytest_floor.py`, which requires **≥ 201** tests passed (see `REGRESSION_FLOOR` in that script). That floor is a **minimum bar**, not the full suite count.
+**CI regression floor:** `.github/workflows/ci.yml` runs `python server/scripts/ci_pytest_floor.py`, which requires **≥ 210** tests passed (see `REGRESSION_FLOOR` in that script). That floor is a **minimum bar**, not the full suite count. It became actually enforceable only once `pytest.ini` scoped collection to `tests/`; before that, `pytest` from the repo root crashed at collection on a stray root script and the floor was **not enforced**.
 
 ### CI workflow (`.github/workflows/ci.yml`)
 
@@ -138,7 +138,7 @@ PYTHONPATH=. pytest tests/
 - python-version: "3.12"
 - pip install -r requirements.txt
 - python -m compileall -q .  # byte-compile syntax check
-- python server/scripts/ci_pytest_floor.py  # enforces ≥201 passed
+- python server/scripts/ci_pytest_floor.py  # enforces ≥210 passed
 ```
 
 **Client job:**
