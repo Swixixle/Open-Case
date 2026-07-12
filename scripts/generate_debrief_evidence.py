@@ -20,6 +20,7 @@ import argparse
 import difflib
 import hashlib
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,13 +73,28 @@ def _sha256_utf8_lines(lines: list[str]) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def _git_tracked_files() -> list[str]:
+    """Repo-relative paths of git-tracked files. Counting tracked files (what a
+    fresh CI checkout contains) instead of walking the filesystem makes this
+    evidence immune to untracked local strays — e.g. a nested checkout at the
+    repo root — that would otherwise inflate counts and make --check unmatchable
+    locally vs CI."""
+    proc = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [p for p in proc.stdout.split("\0") if p]
+
+
 def _collect_python_files() -> list[str]:
     out: list[str] = []
-    for p in REPO_ROOT.rglob("*.py"):
-        try:
-            rel = p.relative_to(REPO_ROOT)
-        except ValueError:
+    for rel_str in _git_tracked_files():
+        if not rel_str.endswith(".py"):
             continue
+        rel = Path(rel_str)
         if _path_excluded(rel):
             continue
         out.append(rel.as_posix())
@@ -86,19 +102,17 @@ def _collect_python_files() -> list[str]:
 
 
 def _collect_client_js_files() -> list[str]:
-    client = REPO_ROOT / "client"
-    if not client.is_dir():
-        return []
+    exts = (".js", ".jsx", ".mjs", ".cjs")
     out: list[str] = []
-    for ext in (".js", ".jsx", ".mjs", ".cjs"):
-        for p in client.rglob(f"*{ext}"):
-            try:
-                rel = p.relative_to(REPO_ROOT)
-            except ValueError:
-                continue
-            if _path_excluded(rel):
-                continue
-            out.append(rel.as_posix())
+    for rel_str in _git_tracked_files():
+        if not rel_str.startswith("client/"):
+            continue
+        if not rel_str.endswith(exts):
+            continue
+        rel = Path(rel_str)
+        if _path_excluded(rel):
+            continue
+        out.append(rel.as_posix())
     return sorted(set(out))
 
 
@@ -277,26 +291,24 @@ def build_document() -> dict:
     py_files = _collect_python_files()
     js_files = _collect_client_js_files()
 
-    client_tree_paths: list[str] = []
-    server_tree_paths: list[str] = []
-    client_root = REPO_ROOT / "client"
-    server_root = REPO_ROOT / "server"
-    if client_root.is_dir():
-        for p in client_root.rglob("*"):
-            if p.is_file():
-                rel = p.relative_to(REPO_ROOT)
-                if _path_excluded(rel) or _tree_file_excluded(rel):
-                    continue
-                client_tree_paths.append(rel.as_posix())
-    if server_root.is_dir():
-        for p in server_root.rglob("*"):
-            if p.is_file():
-                rel = p.relative_to(REPO_ROOT)
-                if _path_excluded(rel) or _tree_file_excluded(rel):
-                    continue
-                server_tree_paths.append(rel.as_posix())
-    client_tree_paths.sort()
-    server_tree_paths.sort()
+    # Tree hashes count git-tracked files only. A filesystem walk here picks up
+    # untracked local files (build output, editor scratch) that a fresh CI
+    # checkout lacks, making --check fail on GitHub even when it passes locally.
+    tracked = _git_tracked_files()
+
+    def _tree_paths(prefix: str) -> list[str]:
+        out = []
+        for rel_str in tracked:
+            if not rel_str.startswith(prefix):
+                continue
+            rel = Path(rel_str)
+            if _path_excluded(rel) or _tree_file_excluded(rel):
+                continue
+            out.append(rel.as_posix())
+        return sorted(out)
+
+    client_tree_paths = _tree_paths("client/")
+    server_tree_paths = _tree_paths("server/")
 
     markers_by_path: dict[str, str] = {}
     file_evidence: list[dict] = []
@@ -327,7 +339,7 @@ def build_document() -> dict:
         "generated_at_utc": now,
         "generator": "scripts/generate_debrief_evidence.py",
         "count_method": {
-            "python_glob": "**/*.py under repository root",
+            "python_glob": "git-tracked *.py (git ls-files) under repository root",
             "javascript_glob": "client/**/*.{js,jsx,mjs,cjs} under repository root",
             "excluded_path_segments": sorted(EXCLUDE_DIR_PARTS),
             "excluded_tree_filenames": sorted(EXCLUDE_TREE_FILE_NAMES),

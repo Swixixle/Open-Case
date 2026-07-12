@@ -2,20 +2,20 @@
   "claims": {
     "claim_001": {
       "counts": {
-        "javascript_client_source_files": 39,
-        "python_repository_files": 183
+        "javascript_client_source_files": 47,
+        "python_repository_files": 238
       },
       "evidence": [
         {
           "label": "sorted_relative_paths_all_python_files",
-          "path_count": 183,
-          "sha256": "b128359592cf1231e6cde13f5ace70ffe47f0314b8c147bf52f71a3892ef8ae4",
+          "path_count": 238,
+          "sha256": "1f37739bfa1532a22fbd1959b9b5afa9d7571467409f7938130f7b6b65a32626",
           "type": "file_list_sha256"
         },
         {
           "label": "sorted_relative_paths_client_javascript_files",
-          "path_count": 39,
-          "sha256": "2bbe25e07ead0a5c76b6131c83faa4e4466002b286fa568392d9415b28a414ec",
+          "path_count": 47,
+          "sha256": "d19db44d33b81737a0a71a67d649685a56ead479da6d5fabf9f055ca021a2b9c",
           "type": "file_list_sha256"
         },
         {
@@ -26,7 +26,7 @@
         },
         {
           "path": "main.py",
-          "sha256": "bb5baf4791e17258bafebd88f99b731787972fac92ed44da4c8f4901cf41b52b",
+          "sha256": "ce7dcb7688399eeb51726e706b6bd71af58cc238d2d59a0faa084d982f05213a",
           "snippet_hash_verified": true,
           "type": "marker_file"
         },
@@ -37,7 +37,7 @@
           "type": "marker_file"
         }
       ],
-      "statement": "Primary languages: JavaScript (39 source files under client/), Python (183 .py files in the repository tree, same exclusions).",
+      "statement": "Primary languages: JavaScript (47 source files under client/), Python (238 .py files in the repository tree, same exclusions).",
       "status": "evidenced"
     },
     "claim_002": {
@@ -55,9 +55,9 @@
           "type": "directory_marker_file"
         },
         {
-          "file_count": 47,
+          "file_count": 56,
           "root": "client/",
-          "sha256": "18ff22ad72898c999317ccd3a102960259e0507732935d5c0eed2dfe8f839495",
+          "sha256": "3fd37d03063a843141ce8a3ca9dc0bda977adbfc1070b5c19d0ef6c2a22a627d",
           "type": "file_tree_sha256"
         },
         {
@@ -87,9 +87,9 @@
       ".env.local"
     ],
     "javascript_glob": "client/**/*.{js,jsx,mjs,cjs} under repository root",
-    "python_glob": "**/*.py under repository root"
+    "python_glob": "git-tracked *.py (git ls-files) under repository root"
   },
-  "generated_at_utc": "2026-04-19T06:00:26.763006+00:00",
+  "generated_at_utc": "2026-07-12T09:30:46.688780+00:00",
   "generator": "scripts/generate_debrief_evidence.py",
   "schema_version": 1
 }
