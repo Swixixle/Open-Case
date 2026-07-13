@@ -9,6 +9,13 @@ os.environ.setdefault("OPEN_CASE_TESTING", "1")
 # APScheduler + Starlette TestClient: add_job/start can raise when the event loop is torn down.
 os.environ.setdefault("DISABLE_SCHEDULER", "1")
 
+# Tests must never run in production mode. bootstrap_env_keys() (called at import
+# time from main.py) fails closed under ENV=production, which would abort
+# collection. Force development even if a stray ENV=production is set in the shell
+# or CI runner. Tests that exercise the prod guard set ENV=production via
+# monkeypatch for their own scope only (restored after each test).
+os.environ["ENV"] = "development"
+
 import uuid
 from unittest.mock import patch
 
