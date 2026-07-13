@@ -224,18 +224,50 @@ def verify_signed_hash_string(
     return {"ok": True, "reasons": []}
 
 
+def _is_production() -> bool:
+    """True only when ``ENV=production`` (case-insensitive); development otherwise,
+    including when ``ENV`` is unset/empty.
+
+    One lever, one source of truth: this is the same ``ENV`` convention main.py's
+    BASE_URL check already uses. Development (the default) fails *open* —
+    auto-generating a signing key stays a dev/test convenience, never a
+    production behavior.
+    """
+    return (os.environ.get("ENV") or "").strip().lower() == "production"
+
+
 def bootstrap_env_keys(project_root: Path | None = None) -> None:
     """
     Ensure .env has a usable Ed25519 PKCS8 DER keypair.
 
-    - Missing or invalid private key → generate new pair (prior seals will not verify with old keys).
     - Valid private, missing/mismatched public → derive public from private and save.
+    - Missing or invalid private key:
+        * production (``ENV=production``) → **raise and refuse to start**; never
+          auto-generate, which would silently rotate the trust anchor and invalidate
+          every prior receipt (and can let a dev key become a prod key).
+        * dev/test → generate a new pair (prior seals will not verify with old keys).
     """
     root = project_root or Path(__file__).resolve().parent
     env_path = root / ".env"
     from dotenv import load_dotenv
 
     load_dotenv(env_path)
+
+    # Log the detected mode loudly so a misconfiguration (e.g. a live deploy that
+    # forgot ENV=production) is visible in logs rather than silently booting into
+    # dev behavior and generating a throwaway key.
+    if _is_production():
+        logger.info(
+            "Open Case starting in PRODUCTION mode (ENV=production); "
+            "a valid OPEN_CASE_PRIVATE_KEY is required."
+        )
+    else:
+        logger.warning(
+            "Open Case starting in DEVELOPMENT mode (ENV is not 'production'); "
+            "signing keys auto-generate if missing — NOT for production use. "
+            "Set ENV=production for a real deployment."
+        )
+
     priv_s = (os.environ.get("OPEN_CASE_PRIVATE_KEY") or "").strip()
     pub_s = (os.environ.get("OPEN_CASE_PUBLIC_KEY") or "").strip()
 
@@ -260,6 +292,17 @@ def bootstrap_env_keys(project_root: Path | None = None) -> None:
         _persist_signing_keys_env(env_path, priv_s, new_pub)
         os.environ["OPEN_CASE_PUBLIC_KEY"] = new_pub
         return
+
+    # Reached only when the private key is missing or malformed.
+    if _is_production():
+        detail = "malformed" if priv_s else "missing"
+        raise RuntimeError(
+            f"OPEN_CASE_PRIVATE_KEY is {detail} and ENV=production. "
+            "Refusing to start: auto-generating a signing "
+            "key in production would silently rotate the trust anchor and invalidate all prior "
+            "receipts. Provision a valid OPEN_CASE_PRIVATE_KEY before starting "
+            "(scripts/regenerate_open_case_signing_keys.py generates one for non-production use)."
+        )
 
     if priv_s:
         logger.warning(
