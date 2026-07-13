@@ -3,10 +3,10 @@
 > **For AI coding assistants (Cursor, Claude, Cowork, Copilot, etc.):** Read **`AGENTS.md`** first. It is the authoritative **short-form** state of the project. Longer file-by-file history and architecture notes live in `docs/internal/PROJECT_STATE.md`, which may lag (see its header dates).
 
 **Last updated:** 2026-07-12  
-**Last verified:** 2026-04-26 (`PYTHONPATH=. pytest tests/ -q`; 405 passed)  
+**Last verified:** 2026-07-12 (`PYTHONPATH=. pytest tests/ -q`)  
 **Pattern engine version:** v2.7  
-**Test count:** 405 collected (`PYTHONPATH=. pytest tests/ --co -q | tail -1`); CI floor still ≥201 passed (`server/scripts/ci_pytest_floor.py`)  
-**CI floor:** ≥201 passed (`server/scripts/ci_pytest_floor.py`; invoked from `.github/workflows/ci.yml`)
+**Test count:** see `python scripts/verify_documentation.py` (collect vs floor); CI floor ≥210 passed (`server/scripts/ci_pytest_floor.py`)  
+**CI floor:** ≥210 passed (`server/scripts/ci_pytest_floor.py`; invoked from `.github/workflows/ci.yml`). Enforced only since the `pytest.ini` collection fix — before that, `pytest` from the repo root crashed at collection and the floor was not enforced.
 
 ---
 
@@ -129,6 +129,7 @@ Retroactive re-classification: `python3 scripts/classify_epistemic_levels.py` (i
 - **CI floor is a floor, not a target.** Do not delete or skip tests to pass CI.
 - **Ed25519 signing is load-bearing.** If a change touches `signing.py`, JCS canonicalization, or receipt schema, re-sign or migrate deliberately — do not invalidate existing receipts silently.
 - **Verification pins the trusted key out of band; it never trusts a key embedded in the record.** The `public_key` field is appended after signing and is *not* covered by the signature, so a forged record can carry any key. `verify_signed_record` requires an explicit `trusted_public_key` (keyword-only) and the wired paths (`verify_case_file_seal` → `verify_signed_hash_string`) verify against `OPEN_CASE_PUBLIC_KEY`. Never verify against the embedded key.
+- **Key handling fails closed in production.** Production is `ENV=production` (single source of truth, same as main.py's BASE_URL check); development otherwise. `bootstrap_env_keys()` auto-generates a keypair only in dev/test and logs the detected mode loudly at startup. In production a missing/malformed `OPEN_CASE_PRIVATE_KEY` raises and refuses to start — never auto-generates, which would silently rotate the trust anchor. (This does NOT get the key off the host; that's follow-up #11.)
 - **Epistemic labels are source-driven, not author-driven.** Do not let pattern authors set the label from opinion; it comes from the classifier / source registry.
 - **"Receipts, not verdicts."** Surface the pattern, show the evidence, label the epistemic level. The system does not say "this person is corrupt." Language in rule text, UI copy, and reports must hold this line.
 

@@ -6,7 +6,7 @@ Hash-verified evidence: `docs/DEBRIEF_STRUCTURE_EVIDENCE.json`
 
 ## claim_001 — Primary languages
 
-Primary languages: JavaScript (47 source files under client/), Python (239 .py files in the repository tree, same exclusions).
+Primary languages: JavaScript (47 source files under client/), Python (240 .py files in the repository tree, same exclusions).
 
 ## claim_002 — client/ and server/
 
