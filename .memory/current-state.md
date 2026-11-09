@@ -1,6 +1,14 @@
 # Current State
 
 ## What is true right now
+_Updated 2026-07-13 (park, close-out-seal-hardening):_ **The entire seal/integrity hardening arc is MERGED to `main` and CI is real + green.** All four PRs merged: #7 (#4 tamper tests + `pytest.ini` + floor 210), #9 (git-tracked debrief generator + doc-claim fixes + nested-repo removal), #8 (#1 embedded-key hardening — `verify_signed_record` requires keyword-only `trusted_public_key`), #10 (#2 fail-closed key handling — `bootstrap_env_keys` refuses to start under `ENV=production` with a missing/malformed key; single `ENV` lever; loud startup mode log). Guard verified live on `main`. Issues **#1/#2/#4 CLOSED** (via `gh issue close` + PR-reference comments; auto-close keywords hadn't fired). Open: **#3** (anchoring, P0), **#5** (key rotation, P1), **#6** (seal-shape versioning, P2), **#11** (key custody, P0), **#12** (live-DB drift, P1?), **#13** (import-time cleanup, P2). Branch `fix/fail-closed-key-handling` is stale (merged) — deletable. Belt (13 tests) untouched. **NOT YET DONE — operator: redeploy Render from `main`, then set `ENV=production` + a real key** (the guard is on `main` but inert in prod until redeploy).
+
+---
+
+_Updated 2026-07-12 (park, seal-integrity-hardening):_ **`main` CI is real and green for the first time** — it was previously red (a tracked stray root `test_narrative.py` crashed pytest collection + a stale debrief-evidence check). Merged this session: **#7** (#4 tamper tests + `pytest.ini` collection scoping + floor 201→210) and **#9** (git-tracked debrief generator so local==CI + regenerated evidence + corrected false "CI enforces ≥201" doc claims; removed the untracked nested `/Open-Case/` repo). Open + green + `MERGEABLE/CLEAN`, ready for maintainer merge: **#8** (#1 — `verify_signed_record` requires keyword-only `trusted_public_key`, never trusts the embedded key; forgery test; CI collects 420) and **#10** (#2 — `bootstrap_env_keys` fails closed in prod: `_is_production()` = `ENV=production` ONLY [single lever, `APP_ENV` dropped], missing/malformed key → refuse to start, dev/test auto-generate, loud startup mode log; subprocess-abort test; CI collects 423). Filed: **#11** key custody (P0), **#12** live-DB drift (P1?), **#13** import-time cleanup (P2). Belt (delta/violations, 13 tests) untouched. Security tests confirmed green on REAL CI (414/420/423 collect).
+
+---
+
 _Updated 2026-07-11 (park, rotate-api-key):_ The leaked Open-Case admin API key formerly hardcoded in `scripts/run_cruz_once.sh` is ROTATED and de-hardcoded. A fresh key was minted for handle `localhost_d495f9e7` via `POST /api/v1/auth/keys` (re-issue revokes the prior key by overwriting its stored SHA-256 hash), stored in `.env` as `OPEN_CASE_API_KEY` (gitignored); the script now reads `AUTH="Authorization: Bearer ${OPEN_CASE_API_KEY:?set OPEN_CASE_API_KEY}"` (zero hardcoded tokens). Verified live: new key → `POST /cases` 200; old key → 401. Both `.env` and the script are gitignored, so the key can never be committed. `main` unchanged at `945f14a` (rotation touched only gitignored files — nothing to commit). Belt unchanged: 13 tests pass, delta anchors correctly. Residual: rotation only revoked the key in the LOCAL sqlite DB (moot unless a deployed instance ever accepted it).
 
 ---
@@ -30,6 +38,14 @@ Branch `main`; no active IGNITION session. Test baseline per canon: 392 collecte
 **The belt now runs in BOTH Cowork/Claude Desktop and Claude Code.** loadmem and ignition are wired into Claude Code via a project-scoped `.mcp.json` at the repo root — ignition uses the absolute `ignition-mcp` binary plus an explicit PATH env; loadmem uses the absolute `uv` + script path. Verified in a fresh Claude Code session launched from Open-Case: `ignition_current` and `memory_get_state` both returned real data.
 
 ## What changed in the last session
+_2026-07-13 (park, close-out-seal-hardening):_ Ran `ignite`, which caught that merging #8 first had turned #10's CI red — GitHub tests the PR merged-into-main, and #8's new `.py` file made #10's debrief evidence stale in the merge context (and `verify_documentation` fails before pytest, so the security tests never ran in that CI job — the maintainer rightly demanded I prove they pass rather than assert it). Rebuilt #10 (reset onto post-#8 main + re-apply ENV-only + regen debrief, same pattern as #9), after aborting a rebase that conflicted on AGENTS.md/debrief. PROVED in the merge context: all 22 seal-security tests pass by name + full suite 427/floor 210 → debrief gate was the sole red. `APP_ENV` = 0. Force-pushed; #10 green on real CI; maintainer merged it. Closed #1/#2/#4 with PR-reference comments. Correction: the MCP GitHub connector is read/PR-only, but the `gh` CLI (repo scope) CAN close/comment issues.
+
+---
+
+_2026-07-12 (park, seal-integrity-hardening):_ Executed the seal/integrity hardening prompt (issues #1–#6): landed #4/#1/#2 + the CI infrastructure; deferred #3 by design. Verified each issue against real code first — flagged #1's `verify_signed_record` as dead code (no `/verify` route trusts the embedded key) and surfaced a NEW gap now filed as #12 (`verify_case_file_seal`'s embedded-payload branch ignores live `entries` → proves snapshot authenticity, not live-DB drift). Discovered CI had NEVER enforced its floor (root `pytest` crashed on `test_narrative.py`; `verify_documentation.py` failed on stale debrief evidence) → fixed via `pytest.ini`, floor 210, a git-tracked debrief generator, nested-repo removal, and corrected the false doc claims (PRs #7+#9 → main green). #1 = PR #8; #2 = PR #10 (maintainer chose a single `ENV` lever, dropped my initial `APP_ENV`, + a loud DEVELOPMENT-mode startup warning). Confirmed the security net green on REAL GitHub CI. Caught two "local-green ≠ CI-green" traps (file-inventory drift): debrief must count git-tracked files, and a new test file must be `git add`ed before regenerating the debrief.
+
+---
+
 _2026-07-11 (park, rotate-api-key):_ Rotated the leaked localhost admin token and fixed the root cause (no belt work). Confirmed the mechanism in `routes/auth.py` first; started the local sqlite server, minted a new key with `X-Admin-Secret`, wrote it to `.env` as `OPEN_CASE_API_KEY`, and de-hardcoded `scripts/run_cruz_once.sh` via `sed` (env var + `:?` fail-fast). Proof: new key `POST /cases` = 200, old key = 401; env-wiring tested both ways. Recalibrated risk mid-task: localhost admin token, hygiene not emergency. One throwaway `RotationVerify` case row left in the local dev DB; server stopped after. No git commits (both edited files gitignored).
 
 ---
@@ -57,6 +73,25 @@ _2026-07-09 (park):_ Ran `/park` end-to-end in Claude Code for the first time (p
 First full ignite belt run (Keysmith / repo-memory / IGNITION / GitHub) was executed and dashboarded. Identified that repo-memory recorded nothing at session end, so "where I left off" came from canon alone — fixed by writing this file, `constraints.md`, and the first session log (all done from Cowork). Wrote a `/park` command at `~/.claude/commands/park.md`. Then wired loadmem + ignition into Claude Code via project `.mcp.json` and confirmed both resolve there. Also noted: no durable ignite plugin is installed (ignite exists only in transient session copies).
 
 ## What needs to happen next
+_2026-07-13 (post close-out):_
+1. **OPERATOR (time-sensitive): redeploy Render from current `main`, THEN set/confirm `ENV=production` AND provision a real `OPEN_CASE_PRIVATE_KEY`.** Until the redeploy, the fail-closed guard is on `main` but NOT in production — `ENV=production` is inert on the deployed (old auto-generate) code, and any real signing before the redeploy has no fail-closed guarantee. With the guard live, a missing key makes the service refuse to boot (the point).
+2. **Issue #3 (external anchoring / OpenTimestamps) in a FRESH session** — heaviest item, deferred. Then **#5** (key rotation with history), **#6** (canonical seal-shape versioning keyed by `schema_version`).
+3. Follow-ups: **#11** (get the key off the host, P0 — the real threat-model move), **#12** (answer its open question — report/verify views from sealed snapshot or live DB rows? sets severity), **#13** (import-time cleanup, P2).
+4. Per-PR checklist for any seal PR touching `signing.py`/`models.py`/engines/adapters: code + tests + regenerate debrief (git-add new `.py` FIRST) + update AGENTS.md + let CI go green — expect any still-open PR to re-red its debrief gate when another `.py`-adding PR merges.
+5. Housekeeping: delete the stale merged branch `fix/fail-closed-key-handling`; commit the uncommitted `.memory/` park writes.
+
+---
+
+_2026-07-12 (post seal-integrity-hardening) — SUPERSEDED (all merged):_
+1. **Maintainer: merge #8 (#1) then #10 (#2)** — both green + CLEAN; keep the rule "let each check go green before merging" (merging #7 red earlier broke main and cost a repair PR).
+2. **Operator action:** confirm `ENV=production` is set on the live Render service — it is now the single switch the entire fail-closed key guard depends on (forgetting it boots prod in dev mode; the new startup warning surfaces that in logs).
+3. **Issue #3 (external anchoring — OpenTimestamps) in a FRESH session** — heaviest item, deliberately deferred. Then **#5** (key rotation with history) and **#6** (canonical seal-shape versioning keyed by `schema_version`).
+4. Per-PR checklist for any seal PR touching `signing.py`/`models.py`/engines/adapters: code + tests + **regenerate debrief evidence** (git-add new `.py` files FIRST) + **update AGENTS.md** + let CI go green.
+5. Follow-ups: **#11** (get key off host, P0 — the real half of #2; threat model stays open until it lands), **#12** (answer its open question — report/verify views render from the sealed snapshot or live DB rows? that sets severity), **#13** (import-time side-effect cleanup, P2).
+Also pending from earlier (non-#3): belt tool #3 `test-health`; Part B ignite dashboard wiring in Cowork.
+
+---
+
 _2026-07-11 (post rotate-api-key):_
 SESSION 2 — build `test-health` (belt tool #3): first feeder adding a new signal beyond delta; gitignored append-only history at `belt/state/test-health-history.jsonl` (`belt/state/` already gitignored), pure analysis functions + hermetic tests, `--run`/no-run/`--json`. Then wire test-health into violations' `FEEDERS` registry (small; ask for spec).
 PART B — DEFERRED TO COWORK (live-run-verifiable): add the handed-off violations startup step to the ignite `SKILL.md` (first dashboard block above Keysmith, fallback line if not a belt repo); verify via a fresh ignite run. (Blocked from Claude Code — no durable ignite SKILL.md on disk here.)

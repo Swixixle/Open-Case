@@ -63,3 +63,8 @@ belt/state/
 /scripts/run_cruz_once.sh
 # stray nested checkout at repo root (full separate git repo, ~Apr 2026) — do not track:
 /Open-Case/
+
+# local Claude Code settings
+.claude/settings.local.json
+# local investigation job queue db — runtime state
+investigation_jobs.sqlite3*
